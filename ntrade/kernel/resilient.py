@@ -71,6 +71,7 @@ class ResilientKernel(TradingKernel):
             if self.store is not None:
                 self.bus.subscribe(Event, self._record)
         self._reseed_execution()
+        self._rebuild_open_orders()
         self.recovered_events = len(events)
         self.recovered_at = self.clock.now()
         self._recovered = True
@@ -100,6 +101,24 @@ class ResilientKernel(TradingKernel):
         for target in self.router._targets.values():
             if isinstance(target, SimulatedExecution):
                 target._seq = max_seq
+
+    def _rebuild_open_orders(self) -> None:
+        """Rehydrate the live executor's open-order delta tracker (H3).
+
+        Replaying fills rebuilds portfolio/balance, but BrokerExecution's
+        in-memory ``_open`` map (per-order filled-so-far) is lost on crash.
+        Rebuild it from the store's recorded order lifecycle so a
+        partially-filled order's remaining quantity survives recovery and
+        ``poll()`` resumes emitting only the delta since the last fill.
+        """
+        if not self.recovery_store:
+            return
+        from ntrade.execution.broker_executor import BrokerExecution
+
+        deltas = self.recovery_store.open_order_deltas()
+        for target in self.router._targets.values():
+            if isinstance(target, BrokerExecution):
+                target.restore_open(deltas)
 
     # ------------------------------------------------------------------ helpers
     def last_event_ts(self):

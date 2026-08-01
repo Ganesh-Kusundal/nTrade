@@ -57,6 +57,9 @@ class OrderFilledEvent(Event):
     quantity: int
     fill_price: float
     commission: float = 0.0
+    # Statutory charges (STT/exchange/SEBI/GST/stamp) deducted on this fill
+    # (H6). Zero by default so zero-cost execution stays an explicit opt-out.
+    statutory: float = 0.0
     strategy: str = ""
 
 

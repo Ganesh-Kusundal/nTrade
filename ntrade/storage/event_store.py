@@ -134,6 +134,52 @@ class EventStore:
         types = (TickEvent, QuoteEvent, DepthEvent)
         return [e for e in self._events if isinstance(e, types)]
 
+    def open_order_deltas(self) -> dict[str, dict]:
+        """Reconstruct the open-order partial-fill deltas a crash loses (H3).
+
+        Walks the recorded order lifecycle and returns, for every order that
+        was accepted but never reached a terminal state (COMPLETED, REJECTED,
+        CANCELLED), how much of its quantity has been filled so far and how
+        much remains. This mirrors the in-memory ``_open`` delta map that
+        ``BrokerExecution`` holds and that a crash wipes; recovery rebuilds it
+        from here so a partially-filled order's remaining quantity survives
+        the restart.
+
+        Returns ``{order_id: {"quantity", "filled", "remaining", "symbol",
+        "exchange", "side", "strategy", "status", "placed_at"}}`` for
+        still-open orders only (terminal or fully-filled orders excluded).
+        """
+        from ntrade.events.order import (
+            OrderAcceptedEvent, OrderFilledEvent, OrderRejectedEvent,
+            OrderUpdatedEvent,
+        )
+
+        terminal = {"COMPLETED", "REJECTED", "CANCELLED"}
+        deltas: dict[str, dict] = {}
+        for event in self._events:
+            if isinstance(event, OrderAcceptedEvent):
+                deltas[event.order_id] = {
+                    "quantity": event.quantity, "filled": 0,
+                    "symbol": event.symbol, "exchange": event.exchange,
+                    "side": event.side, "strategy": event.strategy,
+                    "status": "PENDING", "placed_at": event.ts,
+                }
+            elif isinstance(event, OrderFilledEvent) and event.order_id in deltas:
+                deltas[event.order_id]["filled"] += event.quantity
+            elif isinstance(event, OrderUpdatedEvent) and event.order_id in deltas:
+                rec = deltas[event.order_id]
+                rec["status"] = event.status
+                if event.filled_qty > rec["filled"]:
+                    rec["filled"] = event.filled_qty
+            elif isinstance(event, OrderRejectedEvent) and event.order_id in deltas:
+                deltas[event.order_id]["status"] = "REJECTED"
+        return {
+            order_id: {**rec, "remaining": rec["quantity"] - rec["filled"]}
+            for order_id, rec in deltas.items()
+            if rec["status"] not in terminal
+            and rec["quantity"] - rec["filled"] > 0
+        }
+
     def recovery_events(self):
         """Causal events for crash recovery: market data + fills.
 

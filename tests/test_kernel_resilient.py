@@ -1,12 +1,16 @@
-"""ResilientKernel crash recovery tests (Slice F1)."""
+"""ResilientKernel crash recovery tests (Slice F1 + H3 partial-fill deltas)."""
 
+import types
 from datetime import datetime, timedelta
 
 import pytest
 
+from ntrade.brokers.dhan import DhanBroker
 from ntrade.domain.instruments.cash import Equity
 from ntrade.events.market import TickEvent
-from ntrade.events.order import OrderFilledEvent
+from ntrade.events.order import (
+    OrderAcceptedEvent, OrderFilledEvent, OrderRejectedEvent, OrderUpdatedEvent,
+)
 from ntrade.engines.strategy_engine import Strategy
 from ntrade.kernel.clock import ReplayClock
 from ntrade.kernel.session import TradingKernel
@@ -222,3 +226,170 @@ def test_recover_records_recovered_session_to_separate_store():
     # but a subsequent live event is recorded
     rk.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=105.0, ts=_ts(20)))
     assert len(record.events(TickEvent)) == 1
+
+
+# ---------------------------------------------------------------------------
+# H3 — partial-fill delta state rebuildable on recovery
+
+
+def _make_broker(**tsl_methods) -> DhanBroker:
+    """A real DhanBroker wired to a stubbed Tradehull (like test_live_execution)."""
+    broker = DhanBroker.__new__(DhanBroker)
+    broker._connected = True
+    broker.tsl = types.SimpleNamespace(**tsl_methods)
+    return broker
+
+
+def _partial_fill_store(order_id: str = "ORD-300", quantity: int = 10,
+                        filled: int = 3) -> EventStore:
+    """A store recording one accepted order with a partial fill, still open."""
+    store = EventStore()
+    store.append(OrderAcceptedEvent(
+        order_id=order_id, symbol="NIFTY", exchange="NSE", side="BUY",
+        quantity=quantity, strategy="buy_first", ts=_ts(0)))
+    store.append(OrderFilledEvent(
+        order_id=order_id, symbol="NIFTY", exchange="NSE", side="BUY",
+        quantity=filled, fill_price=100.0, strategy="buy_first", ts=_ts(1)))
+    store.append(OrderUpdatedEvent(
+        order_id=order_id, symbol="NIFTY", exchange="NSE", side="BUY",
+        status="PARTIALLY_FILLED", filled_qty=filled, avg_price=100.0,
+        strategy="buy_first", ts=_ts(1)))
+    return store
+
+
+def _partial_broker():
+    """A stub broker that reports PARTIAL until flipped to COMPLETE."""
+    state = {"status": "PARTIAL"}
+
+    def order_placement(**kw):
+        return "ORD-300"
+
+    def get_order_status(orderid=None, **kw):
+        return state["status"]
+
+    def get_order_detail(orderid=None, **kw):
+        return {"orderId": orderid, "orderStatus": state["status"],
+                "filledQty": 10 if state["status"] == "COMPLETE" else 3,
+                "avgPrice": 100.0}
+
+    broker = _make_broker(order_placement=order_placement,
+                          get_order_status=get_order_status,
+                          get_order_detail=get_order_detail)
+    return broker, state
+
+
+def test_store_open_order_deltas_reconstructs_partial_fill():
+    """The store can rebuild the per-order filled/remaining delta (H3)."""
+    deltas = _partial_fill_store().open_order_deltas()
+    assert set(deltas) == {"ORD-300"}
+    d = deltas["ORD-300"]
+    assert d["quantity"] == 10
+    assert d["filled"] == 3
+    assert d["remaining"] == 7
+    assert d["side"] == "BUY"
+    assert d["strategy"] == "buy_first"
+
+
+def test_store_open_order_deltas_excludes_terminal_orders():
+    """Fully-filled, completed, rejected and cancelled orders are not open."""
+    store = _partial_fill_store()
+    # fully filled + completed
+    store.append(OrderAcceptedEvent(
+        order_id="ORD-301", symbol="NIFTY", exchange="NSE", side="BUY",
+        quantity=5, strategy="", ts=_ts(2)))
+    store.append(OrderFilledEvent(
+        order_id="ORD-301", symbol="NIFTY", exchange="NSE", side="BUY",
+        quantity=5, fill_price=100.0, ts=_ts(3)))
+    store.append(OrderUpdatedEvent(
+        order_id="ORD-301", symbol="NIFTY", exchange="NSE", side="BUY",
+        status="COMPLETED", filled_qty=5, avg_price=100.0, ts=_ts(3)))
+    # rejected at placement
+    store.append(OrderAcceptedEvent(
+        order_id="ORD-302", symbol="NIFTY", exchange="NSE", side="BUY",
+        quantity=5, strategy="", ts=_ts(4)))
+    store.append(OrderRejectedEvent(
+        order_id="ORD-302", symbol="NIFTY", exchange="NSE", side="BUY",
+        quantity=5, reason="insufficient margin", ts=_ts(5)))
+    # partial then cancelled
+    store.append(OrderAcceptedEvent(
+        order_id="ORD-303", symbol="NIFTY", exchange="NSE", side="BUY",
+        quantity=5, strategy="", ts=_ts(6)))
+    store.append(OrderFilledEvent(
+        order_id="ORD-303", symbol="NIFTY", exchange="NSE", side="BUY",
+        quantity=2, fill_price=100.0, ts=_ts(7)))
+    store.append(OrderUpdatedEvent(
+        order_id="ORD-303", symbol="NIFTY", exchange="NSE", side="BUY",
+        status="CANCELLED", filled_qty=2, avg_price=100.0, ts=_ts(7)))
+    deltas = store.open_order_deltas()
+    assert set(deltas) == {"ORD-300"}  # only the still-open partial fill
+
+
+def test_recover_rebuilds_open_order_deltas():
+    """Recovery rehydrates the executor's open-order tracker with the
+    partial-fill delta so the remaining quantity survives the crash."""
+    store = _partial_fill_store()
+    broker, _ = _partial_broker()
+    rk = ResilientKernel(store=store, mode="live", clock=ReplayClock(),
+                         broker=broker, initial_cash=100_000.0)
+    rk.register(Equity("NIFTY", broker=broker))
+    rk.recover()
+    exe = rk.broker_execution()
+    assert exe is not None
+    assert exe.open_orders() == ["ORD-300"]
+    record = exe._open["ORD-300"]
+    assert record["filled"] == 3          # already-filled delta preserved
+    assert record["intent"].quantity == 10  # original order size known
+    assert record["order"].order_id == "ORD-300"
+    assert record["order"].filled_qty == 3
+    # recovered fill applied exactly once to the portfolio
+    pos = rk.ctx.portfolio.position("NIFTY")
+    assert pos is not None and pos.quantity == 3
+
+
+def test_recover_resumed_poll_emits_only_remaining_delta():
+    """After recovery, poll() emits only the remaining 7 — never re-emits
+    the already-filled 3 (no double-count on the resumed lifecycle)."""
+    store = _partial_fill_store()
+    broker, state = _partial_broker()
+    rk = ResilientKernel(store=store, mode="live", clock=ReplayClock(),
+                         broker=broker, initial_cash=100_000.0)
+    rk.register(Equity("NIFTY", broker=broker))
+    rk.recover()
+    assert rk.broker_execution().open_orders() == ["ORD-300"]
+
+    state["status"] = "COMPLETE"
+    emitted = rk.poll_orders()
+    fills = [e for e in emitted if isinstance(e, OrderFilledEvent)]
+    assert len(fills) == 1 and fills[0].quantity == 7  # remaining only
+    assert rk.broker_execution().open_orders() == []    # now terminal
+    pos = rk.ctx.portfolio.position("NIFTY")
+    assert pos is not None and pos.quantity == 10  # 3 recovered + 7 resumed
+
+
+def test_recover_reseed_prevents_brk_id_collision():
+    """New orders after recovery must not collide with restored BRK- ids."""
+    from ntrade.events.order import OrderIntentEvent
+
+    store = _partial_fill_store(order_id="BRK-000042", quantity=5, filled=2)
+    # a broker that never assigns its own id → the BRK- fallback must fire
+    broker = _make_broker(
+        order_placement=lambda **kw: None,
+        get_order_status=lambda orderid=None, **kw: "COMPLETE",
+        get_order_detail=lambda orderid=None, **kw: {
+            "orderId": orderid, "orderStatus": "COMPLETE",
+            "filledQty": 5, "avgPrice": 100.0},
+    )
+    rk = ResilientKernel(store=store, mode="live", clock=ReplayClock(),
+                         broker=broker, initial_cash=100_000.0)
+    rk.register(Equity("NIFTY", broker=broker))
+    rk.recover()
+    exe = rk.broker_execution()
+    assert exe is not None
+    assert exe._seq >= 42  # restored order bumped the sequence
+    intent = OrderIntentEvent(symbol="NIFTY", exchange="NSE", side="BUY",
+                              quantity=1, price=100.0, strategy="", ts=_ts(10))
+    outcome = exe.submit(intent)
+    assert outcome is None  # accepted (not rejected)
+    # the fresh order got the next BRK- id — strictly past the restored one
+    new_ids = [oid for oid in exe.open_orders() if oid != "BRK-000042"]
+    assert new_ids == ["BRK-000043"]

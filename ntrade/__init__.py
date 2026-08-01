@@ -50,7 +50,10 @@ from ntrade.kernel.trading_session import TradingSession
 from ntrade.engines.strategy_engine import Strategy
 from ntrade.execution.broker_executor import BrokerExecution
 from ntrade.execution.retry import RetryPolicy
-from ntrade.execution.costs import FixedSlippage, PercentageSlippage, FlatCommission, PercentageCommission
+from ntrade.execution.costs import (
+    FixedSlippage, PercentageSlippage, FlatCommission, PercentageCommission,
+    IndianStatutoryCosts, STATUTORY_DEFAULT,
+)
 from ntrade.execution.router import ExecutionRouter
 from ntrade.execution.simulator import SimulatedExecution
 from ntrade.storage.event_store import EventStore
@@ -91,6 +94,7 @@ __all__ = [
     "ResilientKernel", "StrategyRunner", "TradingSession",
     "ExecutionRouter", "SimulatedExecution", "BrokerExecution", "RetryPolicy",
     "FixedSlippage", "PercentageSlippage", "FlatCommission", "PercentageCommission",
+    "IndianStatutoryCosts", "STATUTORY_DEFAULT",
     "EventStore", "ReplayEngine", "BacktestSimulator", "BacktestResult", "FillPolicy",
     "BarAwareExecution", "MarketFeedSource", "SimulatedFeedSource",
     "DhanMarketFeedSource", "dhan_payload_to_events",

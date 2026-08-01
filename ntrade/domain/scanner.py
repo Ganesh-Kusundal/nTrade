@@ -79,8 +79,8 @@ class ScannerFacade:
     def __init__(self, session: "TradingSession"):
         self._session = session
         self._scanners: dict[str, Scanner] = {}
-        self._last_run: dict[str, datetime] = {}
-        self._cached: dict[str, list[ScannerResult]] = {}
+        self._last_run: dict[tuple, datetime] = {}
+        self._cached: dict[tuple, list[ScannerResult]] = {}
         self._register_builtins()
 
     def _register_builtins(self) -> None:
@@ -142,10 +142,15 @@ class ScannerFacade:
         """
         limit = kw.pop("rate_limit_seconds", getattr(scanner, "rate_limit_seconds", 0.0)) or 0.0
         now = kw.get("now") or datetime.now()
-        # Cache is keyed by the scanner *instance*, not its name — two distinct
-        # scanners sharing a name (e.g. repeated ``custom()`` calls) must never
-        # serve each other's stale results (M6).
-        key = id(scanner)
+        # Cache is keyed by the scanner *instance* AND the call parameters —
+        # two distinct scanners sharing a name never share results, and a
+        # parameterized scan (e.g. ``momentum(min_score=…)`` with different
+        # args) never serves results computed for other arguments (M6). ``now``
+        # and the throttle knob are excluded: ``now`` is the throttle clock
+        # itself (it differs every tick by design), not a scan parameter.
+        params = tuple(sorted((k, repr(v)) for k, v in kw.items()
+                              if k not in ("now", "rate_limit_seconds")))
+        key = (scanner, params)
         if limit > 0:
             last = self._last_run.get(key)
             if last is not None and (now - last).total_seconds() < limit:

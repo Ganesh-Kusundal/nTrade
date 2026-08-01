@@ -46,12 +46,15 @@ class PortfolioEngine:
                 position.ltp = event.fill_price
 
         notional = event.fill_price * event.quantity
+        # Statutory charges (STT/exchange/SEBI/GST/stamp) are deducted from
+        # cash on every leg, exactly like a live broker payout (H6).
+        charges = event.commission + event.statutory
         if event.side == "BUY":
             self.ctx.account.balance = round(
-                self.ctx.account.balance - notional - event.commission, 4)
+                self.ctx.account.balance - notional - charges, 4)
         else:
             self.ctx.account.balance = round(
-                self.ctx.account.balance + notional - event.commission, 4)
+                self.ctx.account.balance + notional - charges, 4)
 
         remaining = portfolio.position(event.symbol) if position is not None else None
         self.ctx.bus.publish(PositionUpdatedEvent(

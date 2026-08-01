@@ -168,7 +168,8 @@ def test_broker_execution_rejection_on_placement():
 def test_live_kernel_zero_parity_with_simulated():
     """Same signal → same fills/positions/balance through broker or simulator."""
     # --- simulated reference ---
-    sim = TradingKernel(mode="replay", clock=ReplayClock(), initial_cash=100_000.0)
+    sim = TradingKernel(mode="replay", clock=ReplayClock(), initial_cash=100_000.0,
+                        statutory=None)  # live broker pays no sim statutory
     sim.register(Equity("NIFTY"))
     sim.register_strategy(BuyOnFirstTick())
     sim.run_replay([_tick()])

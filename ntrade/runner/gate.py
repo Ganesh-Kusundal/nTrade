@@ -22,7 +22,7 @@ def _equity_trace(kernel, *, initial_cash: float):
     for e in kernel.bus.history:
         if isinstance(e, OrderFilledEvent):
             direction = 1 if e.side == "BUY" else -1
-            cash -= e.quantity * e.fill_price * direction + e.commission
+            cash -= e.quantity * e.fill_price * direction + e.commission + e.statutory
             positions[e.symbol] = positions.get(e.symbol, 0) + e.quantity * direction
         elif isinstance(e, TickEvent):
             ltp[e.symbol] = e.price

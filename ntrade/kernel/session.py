@@ -23,6 +23,7 @@ from ntrade.events.lifecycle import (
     KernelStartedEvent, SessionStartedEvent, SessionStoppedEvent,
 )
 from ntrade.execution.broker_executor import BrokerExecution
+from ntrade.execution.costs import STATUTORY_DEFAULT
 from ntrade.execution.router import ExecutionRouter
 from ntrade.execution.simulator import SimulatedExecution
 from ntrade.kernel.clock import LiveClock, ReplayClock, TradingClock
@@ -51,6 +52,7 @@ class TradingKernel:
         session_id: str = "",
         initial_cash: float = 100_000.0,
         store=None,
+        statutory=STATUTORY_DEFAULT,
     ):
         self.mode = mode
         self.session_id = session_id
@@ -90,7 +92,10 @@ class TradingKernel:
             if broker is not None:
                 execution.add("default", BrokerExecution(self.ctx, broker))
             else:
-                execution.add("default", SimulatedExecution(self.ctx))
+                # Simulated target: statutory Indian charges by default (H6) so
+                # paper/backtest PnL converges on live; pass statutory=None to
+                # opt back into zero-cost simulation.
+                execution.add("default", SimulatedExecution(self.ctx, statutory=statutory))
             execution.default("default")
         self.router = execution
         self.order_engine = OrderEngine(self.ctx, router=self.router)

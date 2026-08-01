@@ -6,9 +6,11 @@ same cost pipeline everywhere.
 
 Statutory costs (H6): STT, exchange transaction charges, SEBI fee, GST on
 brokerage and stamp duty are what make Indian backtest PnL diverge from live.
-They are modeled as an additive ``IndianStatutoryCosts`` component that wraps a
-commission model; ``total_cost(notional, side, product)`` returns the full
-charge so callers can report realised PnL accurately.
+They are modeled as an additive ``IndianStatutoryCosts`` component configured
+with a brokerage amount; ``total_cost(notional, side)`` returns the full
+charge so callers can report realised PnL accurately, and
+``for_instrument()`` picks the product schedule (equity/futures/options) from
+the instrument class so F&O backtests are not silently charged equity rates.
 """
 
 from __future__ import annotations
@@ -148,16 +150,76 @@ class IndianStatutoryCosts:
             ("equity_delivery_buy" if self.delivery else "equity_intraday")
         return notional * self._stamp_rates.get(key, 0.0)
 
-    def gst(self, notional: float) -> float:
-        base = self.brokerage + self.exchange_charge(notional) + self.sebi(notional)
+    def gst(self, notional: float, *, brokerage: float | None = None) -> float:
+        """GST (18%) on brokerage + exchange charge + SEBI fee.
+
+        ``brokerage`` overrides the model's configured amount per call — the
+        execution layer passes the actual per-fill commission so GST is charged
+        on the commission the user configured, exactly like a live payout.
+        """
+        brk = self.brokerage if brokerage is None else brokerage
+        base = brk + self.exchange_charge(notional) + self.sebi(notional)
         return base * self.gst_rate
 
-    def total_cost(self, notional: float, side: str) -> float:
+    def total_cost(
+        self, notional: float, side: str, *, brokerage: float | None = None,
+    ) -> float:
         """Full statutory charge for one leg (order side)."""
         return (
             self.stt(notional, side)
             + self.exchange_charge(notional)
             + self.sebi(notional)
             + self.stamp(notional, side)
-            + self.gst(notional)
+            + self.gst(notional, brokerage=brokerage)
         )
+
+    def for_instrument(self, instrument) -> "IndianStatutoryCosts":
+        """Product/delivery-adjusted model for an instrument's class.
+
+        Futures and Options use the F&O STT/stamp/exchange schedule; everything
+        else keeps the configured product (default equity-intraday). Custom
+        rates (``stt``/``exchange_charge``/``stamp_duty``/…) are preserved — only
+        the schedule keys change. Returns ``self`` when no adjustment applies.
+        """
+        from ntrade.domain.instruments.derivatives import Future, Option
+
+        product, delivery = self.product, self.delivery
+        if isinstance(instrument, Option):
+            product, delivery = "options", False
+        elif isinstance(instrument, Future):
+            product, delivery = "futures", False
+        if product == self.product and delivery == self.delivery:
+            return self
+        return IndianStatutoryCosts(
+            product=product, delivery=delivery, brokerage=self.brokerage,
+            stt=self._stt_rates, exchange_charge=self._exchange_rates,
+            sebi_fee=self.sebi_fee, gst_rate=self.gst_rate,
+            stamp_duty=self._stamp_rates,
+        )
+
+
+class _StatutoryDefault:
+    """Sentinel meaning 'use IndianStatutoryCosts() defaults'.
+
+    Distinct from ``None`` (zero-cost opt-out) so simulated execution can
+    default to realistic Indian charges while still allowing an explicit
+    zero-cost mode — backtests that ignore statutory charges do not converge
+    on live PnL.
+    """
+
+    def __repr__(self) -> str:
+        return "<default Indian statutory costs>"
+
+
+STATUTORY_DEFAULT = _StatutoryDefault()
+
+
+def resolve_statutory(model):
+    """Resolve a ``statutory`` argument to a cost model or ``None``.
+
+    ``STATUTORY_DEFAULT`` → a fresh ``IndianStatutoryCosts()``; ``None`` →
+    zero-cost opt-out; anything else is used as-is (custom rates).
+    """
+    if model is STATUTORY_DEFAULT:
+        return IndianStatutoryCosts()
+    return model

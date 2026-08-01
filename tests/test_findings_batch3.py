@@ -154,6 +154,38 @@ def test_m6_unlimited_scanner_runs_every_time():
     assert calls["n"] == 2  # no rate limit → always re-scan
 
 
+def test_m6_parameterized_scan_never_serves_stale_params():
+    """Within the rate window, a scan called with *different* parameters must
+    re-scan — never serve results computed for other arguments (M6 cache key
+    includes the call params, not just the scanner instance)."""
+    from ntrade.domain.scanner import Scanner, ScannerFacade, ScannerResult
+    from ntrade.kernel.trading_session import TradingSession
+
+    seen: list[float] = []
+
+    class ParamScanner(Scanner):
+        name = "param"
+        rate_limit_seconds = 60.0
+
+        def scan(self, session, *, min_score: float = 0.0, **kw):
+            seen.append(min_score)
+            return [ScannerResult(instrument=object(), scanner_name=self.name,
+                                  score=min_score, signal="BUY")]
+
+    session = TradingSession.paper()
+    facade = ScannerFacade(session)
+    scanner = ParamScanner()  # one instance, different params across calls
+    t0 = datetime(2026, 1, 1, 9, 15)
+
+    facade._run(scanner, min_score=0.3, now=t0)
+    facade._run(scanner, min_score=0.8, now=t0 + timedelta(seconds=5))  # same window, diff args
+    assert seen == [0.3, 0.8]  # different params → both actually scanned
+
+    # identical params within the window → cached, not re-scanned
+    facade._run(scanner, min_score=0.8, now=t0 + timedelta(seconds=10))
+    assert seen == [0.3, 0.8]
+
+
 # ---------------------------------------------------------------------------
 # M8 — pandas leak at transport boundary
 

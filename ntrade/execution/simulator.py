@@ -3,6 +3,15 @@
 Used by paper trading, backtests and replays: no network, deterministic. Zero
 parity: the exact same OrderEngine → ExecutionTarget flow runs live via
 ``BrokerExecution`` and here via this class — only the fill source differs.
+
+Costs: slippage and commission are configurable models; statutory Indian
+charges (STT / exchange / SEBI / GST / stamp, H6) default to the real
+``IndianStatutoryCosts`` schedule so simulated PnL converges on live. Pass
+``statutory=None`` for the explicit zero-cost opt-out. The product schedule
+(equity/futures/options) is derived from each filled instrument's class, and
+GST is charged on the actual per-fill commission; pass a custom
+``IndianStatutoryCosts(product=..., delivery=True)`` to override (e.g.
+delivery-equity backtests).
 """
 
 from __future__ import annotations
@@ -13,7 +22,14 @@ from ntrade.events.order import (
     OrderIntentEvent,
     OrderRejectedEvent,
 )
-from ntrade.execution.costs import CommissionModel, FlatCommission, SlippageModel
+from ntrade.execution.costs import (
+    CommissionModel,
+    FlatCommission,
+    IndianStatutoryCosts,
+    SlippageModel,
+    STATUTORY_DEFAULT,
+    resolve_statutory,
+)
 
 
 class SimulatedExecution:
@@ -25,12 +41,15 @@ class SimulatedExecution:
         *,
         slippage: SlippageModel | None = None,
         commission: CommissionModel | None = None,
+        statutory=STATUTORY_DEFAULT,
     ):
         from ntrade.execution.costs import FixedSlippage
 
         self.ctx = context
         self.slippage = slippage or FixedSlippage(0.0)
         self.commission = commission or FlatCommission(0.0)
+        # None → zero-cost opt-out; STATUTORY_DEFAULT → IndianStatutoryCosts().
+        self.statutory: IndianStatutoryCosts | None = resolve_statutory(statutory)
         self._seq = 0
         self.fills: list[OrderFilledEvent] = []
 
@@ -65,11 +84,20 @@ class SimulatedExecution:
             order_id=order_id, symbol=intent.symbol, exchange=intent.exchange,
             side=intent.side, quantity=intent.quantity, strategy=intent.strategy, ts=intent.ts,
         ))
-        commission = round(self.commission.apply(fill_price * intent.quantity), 4)
+        notional = fill_price * intent.quantity
+        commission = round(self.commission.apply(notional), 4)
+        if self.statutory is not None:
+            # Product schedule from the instrument class (F&O vs equity) and
+            # GST on the actual per-fill commission — the two details that
+            # would otherwise make simulated charges diverge from live.
+            model = self.statutory.for_instrument(instrument)
+            statutory = round(model.total_cost(notional, intent.side, brokerage=commission), 4)
+        else:
+            statutory = 0.0
         filled = OrderFilledEvent(
             order_id=order_id, symbol=intent.symbol, exchange=intent.exchange,
             side=intent.side, quantity=intent.quantity, fill_price=round(fill_price, 4),
-            commission=commission, strategy=intent.strategy, ts=intent.ts,
+            commission=commission, statutory=statutory, strategy=intent.strategy, ts=intent.ts,
         )
         self.ctx.bus.publish(filled)
         self.fills.append(filled)

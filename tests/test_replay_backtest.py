@@ -133,7 +133,7 @@ def _ohlcv(bars: int = 20, step_price: float = 1.0) -> pd.DataFrame:
 def test_backtest_simulator_produces_equity_curve():
     from ntrade.backtest.simulator import BacktestSimulator
 
-    sim = BacktestSimulator(timeframe="5m", initial_cash=100_000.0)
+    sim = BacktestSimulator(timeframe="5m", initial_cash=100_000.0, statutory=None)
     sim.register_strategy(BuySellOnCandles())
     result = sim.run(_ohlcv())
 
@@ -170,7 +170,7 @@ def test_backtest_commissions_and_drawdown():
     from ntrade.backtest.simulator import BacktestSimulator
     from ntrade.execution.costs import PercentageCommission
 
-    sim = BacktestSimulator(timeframe="5m", initial_cash=100_000.0,
+    sim = BacktestSimulator(timeframe="5m", initial_cash=100_000.0, statutory=None,
                             commission=PercentageCommission(pct=0.01))
     sim.register_strategy(BuySellOnCandles())
     result = sim.run(_ohlcv())

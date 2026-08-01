@@ -49,6 +49,9 @@ class SellOnSecondTick(Strategy):
 def _kernel(**kw):
     kw.setdefault("mode", "replay")
     kw.setdefault("clock", ReplayClock())
+    # These tests assert mechanics (fills, netting, risk) with exact balances —
+    # opt out of statutory charges so the cost pipeline is not under test here.
+    kw.setdefault("statutory", None)
     k = TradingKernel(**kw)
     k.register(Equity("RELIANCE"))
     return k

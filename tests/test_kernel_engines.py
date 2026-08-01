@@ -35,6 +35,16 @@ def test_market_engine_projects_tick():
     assert updated and updated[0].ltp == 2500.5
 
 
+def test_market_engine_broadcasts_tick_own_price_for_depth_kind():
+    k = _kernel()
+    updated = []
+    k.bus.subscribe(QuoteUpdatedEvent, lambda e: updated.append(e))
+    tick = TickEvent(symbol="RELIANCE", exchange="NSE", price=2498.75, quantity=0,
+                     kind="depth", ts=datetime(2026, 1, 1, 9, 15))
+    k.bus.publish(tick)
+    assert updated and updated[0].ltp == tick.price
+
+
 def test_market_engine_projects_quote():
     k = _kernel()
     k.bus.publish(QuoteEvent(symbol="RELIANCE", exchange="NSE", ltp=2500.0, bid=2499.5,

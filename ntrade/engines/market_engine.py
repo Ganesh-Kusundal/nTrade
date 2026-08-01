@@ -33,7 +33,7 @@ class MarketEngine:
         instrument._stream.ingest_tick(tick)
         self.ctx.bus.publish(QuoteUpdatedEvent(
             symbol=event.symbol, exchange=event.exchange,
-            ltp=instrument._quote.ltp, bid=instrument._quote.bid, ask=instrument._quote.ask, ts=event.ts,
+            ltp=event.price, bid=instrument._quote.bid, ask=instrument._quote.ask, ts=event.ts,
         ))
 
     def on_quote(self, event: QuoteEvent) -> None:

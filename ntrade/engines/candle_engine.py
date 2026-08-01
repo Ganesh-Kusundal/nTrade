@@ -40,8 +40,12 @@ class CandleEngine:
         return epoch - (epoch % self.seconds)
 
     def on_tick(self, event: TickEvent) -> None:
+        # In backtest mode a bar's QuoteEvent is the authoritative volume unit
+        # for its bucket; the paired close tick (and any extra same-bucket
+        # ticks from a future multi-trade backtest source) is intentionally
+        # skipped so volume is not double-counted.
         if self._bar_seeded.get(event.symbol) == self._bucket(event.ts):
-            return  # same bucket already seeded from a bar-shaped quote; skip
+            return
         self._ingest(event.symbol, event.exchange, event.price, event.ts, volume=event.quantity)
 
     def on_quote(self, event: QuoteEvent) -> None:

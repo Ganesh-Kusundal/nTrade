@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from ntrade.events.market import QuoteEvent, TickEvent
+from ntrade.events.market import QuoteEvent
 from ntrade.kernel.clock import ReplayClock
 from ntrade.kernel.session import TradingKernel
 

@@ -20,7 +20,11 @@ from ntrade.events.order import (
 )
 from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
 from ntrade.engines.strategy_engine import Strategy
+from ntrade.execution.broker_executor import BrokerExecution
+from ntrade.execution.costs import FlatCommission
 from ntrade.kernel.clock import ReplayClock
+from ntrade.kernel.context import TradingContext
+from ntrade.kernel.event_bus import EventBus
 from ntrade.kernel.session import TradingKernel
 
 
@@ -169,7 +173,7 @@ def test_live_kernel_zero_parity_with_simulated():
     """Same signal → same fills/positions/balance through broker or simulator."""
     # --- simulated reference ---
     sim = TradingKernel(mode="replay", clock=ReplayClock(), initial_cash=100_000.0,
-                        statutory=None)  # live broker pays no sim statutory
+                        statutory=None)  # zero-cost parity: live broker pays no statutory
     sim.register(Equity("NIFTY"))
     sim.register_strategy(BuyOnFirstTick())
     sim.run_replay([_tick()])
@@ -178,7 +182,7 @@ def test_live_kernel_zero_parity_with_simulated():
     op, gos, god, _ = _completed_order_status()
     broker = make_broker(order_placement=op, get_order_status=gos, get_order_detail=god)
     live = TradingKernel(mode="live", clock=ReplayClock(), broker=broker,
-                         initial_cash=100_000.0)
+                         initial_cash=100_000.0, statutory=None)
     live.register(Equity("NIFTY", broker=broker))
     live.register_strategy(BuyOnFirstTick())
     live.bus.publish(_tick())
@@ -196,6 +200,47 @@ def test_live_kernel_zero_parity_with_simulated():
     assert len(sim_fills) == len(live_fills) == 1
     assert live_fills[0].fill_price == sim_fills[0].fill_price == 100.0
     assert live_fills[0].quantity == sim_fills[0].quantity == 5
+
+
+def test_live_broker_fill_charges_statutory_by_default():
+    """Live fills charge default Indian statutory costs (H6), like the sim."""
+    op, gos, god, _ = _completed_order_status()
+    broker = make_broker(order_placement=op, get_order_status=gos, get_order_detail=god)
+    k = TradingKernel(mode="live", clock=ReplayClock(), broker=broker)
+    k.register(Equity("NIFTY", broker=broker))
+    k.register_strategy(BuyOnFirstTick())
+    k.bus.publish(_tick())
+    k.poll_orders()
+
+    fills = [e for e in k.bus.history if isinstance(e, OrderFilledEvent)]
+    assert len(fills) == 1
+    assert fills[0].commission == 0.0  # FlatCommission default
+    assert fills[0].statutory > 0.0  # statutory default charged (H6)
+
+    # same notional through the simulated target charges identically
+    sim = TradingKernel(mode="replay", clock=ReplayClock())
+    sim.register(Equity("NIFTY"))
+    sim.register_strategy(BuyOnFirstTick())
+    sim.run_replay([_tick()])
+    sim_fills = [e for e in sim.bus.history if isinstance(e, OrderFilledEvent)]
+    assert sim_fills[0].commission == fills[0].commission
+    assert sim_fills[0].statutory == pytest.approx(fills[0].statutory)
+
+
+def test_broker_execution_flat_commission_statutory_none_opt_out():
+    """FlatCommission applies; statutory=None preserves the zero-cost opt-out."""
+    op, gos, god, _ = _completed_order_status()
+    broker = make_broker(order_placement=op, get_order_status=gos, get_order_detail=god)
+    ctx = TradingContext(EventBus(), ReplayClock(), mode="live", instruments={})
+    ctx.register(Equity("NIFTY", broker=broker))
+    exe = BrokerExecution(ctx, broker, commission=FlatCommission(5.0), statutory=None)
+    exe.submit(OrderIntentEvent(symbol="NIFTY", exchange="NSE", side="BUY",
+                                quantity=5, order_type="LIMIT", price=100.0, ts=_ts()))
+    emitted = exe.poll()
+    fills = [e for e in emitted if isinstance(e, OrderFilledEvent)]
+    assert len(fills) == 1
+    assert fills[0].commission == 5.0
+    assert fills[0].statutory == 0.0
 
 
 def test_live_kernel_sync_positions_reconciles():

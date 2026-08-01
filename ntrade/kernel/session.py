@@ -90,7 +90,9 @@ class TradingKernel:
         if execution is None:
             execution = ExecutionRouter(self.ctx)
             if broker is not None:
-                execution.add("default", BrokerExecution(self.ctx, broker))
+                # Live target charges the same statutory schedule as the sim
+                # target (H6); pass statutory=None to opt into zero-cost live.
+                execution.add("default", BrokerExecution(self.ctx, broker, statutory=statutory))
             else:
                 # Simulated target: statutory Indian charges by default (H6) so
                 # paper/backtest PnL converges on live; pass statutory=None to

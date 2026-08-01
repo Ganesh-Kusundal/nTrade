@@ -25,6 +25,13 @@ from ntrade.events.order import (
     OrderTimeoutEvent,
     OrderUpdatedEvent,
 )
+from ntrade.execution.costs import (
+    CommissionModel,
+    FlatCommission,
+    IndianStatutoryCosts,
+    STATUTORY_DEFAULT,
+    resolve_statutory,
+)
 
 logger = logging.getLogger("ntrade.execution")
 
@@ -46,9 +53,14 @@ def _fill_qty(order) -> int:
 class BrokerExecution:
     name = "broker"
 
-    def __init__(self, context, broker):
+    def __init__(self, context, broker, *,
+                 commission: CommissionModel | None = None,
+                 statutory=STATUTORY_DEFAULT):
         self.ctx = context
         self.broker = broker
+        self.commission = commission or FlatCommission(0.0)
+        # None → zero-cost opt-out; STATUTORY_DEFAULT → IndianStatutoryCosts().
+        self.statutory: IndianStatutoryCosts | None = resolve_statutory(statutory)
         self._seq = 0
         # order_id -> {"intent": ..., "order": ..., "filled": int}
         self._open: dict[str, dict] = {}
@@ -247,9 +259,25 @@ class BrokerExecution:
         if new_qty <= 0:
             return
         price = _fill_price(order) or intent.price or 0.0
+        notional = price * new_qty
+        commission = round(self.commission.apply(notional), 4)
+        if self.statutory is None:
+            statutory = 0.0
+        else:
+            # Product schedule from the instrument class (F&O vs equity), GST
+            # on the actual per-fill commission — the same cost pipeline as the
+            # simulated target so paper PnL converges on live (H6).
+            instrument = self.ctx.instrument(intent.symbol)
+            if instrument is None:
+                model = self.statutory  # default product schedule, never crash
+            else:
+                model = self.statutory.for_instrument(instrument)
+            statutory = round(
+                model.total_cost(notional, intent.side, brokerage=commission), 4)
         fill = OrderFilledEvent(
             order_id=order_id, symbol=intent.symbol, exchange=intent.exchange,
             side=intent.side, quantity=new_qty, fill_price=price,
+            commission=commission, statutory=statutory,
             strategy=intent.strategy, ts=self.ctx.now(),
         )
         self.ctx.bus.publish(fill)

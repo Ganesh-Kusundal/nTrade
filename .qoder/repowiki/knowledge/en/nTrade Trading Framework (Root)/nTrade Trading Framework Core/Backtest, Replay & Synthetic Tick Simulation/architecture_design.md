@@ -1,0 +1,5 @@
+Three sibling packages share the same zero-parity invariant — they all drive the core `TradingKernel` with a deterministic clock instead of live market data:
+- `backtest/`: `BacktestSimulator` iterates an OHLCV DataFrame, publishes a `QuoteEvent` then a `TickEvent` per bar through the kernel bus, and optionally applies futures carry/roll costs. `BarAwareExecution` extends `SimulatedExecution` to resolve limit orders against bar high/low via a pluggable `FillPolicy`. `BacktestResult` aggregates fills, equity curve, commissions, statutory fees, and max drawdown.
+- `replay/`: `ReplayEngine` wraps a `ReplayClock` and delegates replay execution to `kernel.run_replay(events)`, ensuring identical strategy decisions as live trading.
+- `sim/`: `synthesize_1m_ticks` deterministically generates per-second `SimTick` objects from a single OHLCV bar, enforcing invariants (open/close match, prices within [low,high], both extremes touched, volume preserved, seed-deterministic).
+Dependency direction is one-way: these packages depend on `ntrade.kernel`, `ntrade.events`, `ntrade.execution`, and `ntrade.domain.instruments`; nothing in the core kernel depends back on them.

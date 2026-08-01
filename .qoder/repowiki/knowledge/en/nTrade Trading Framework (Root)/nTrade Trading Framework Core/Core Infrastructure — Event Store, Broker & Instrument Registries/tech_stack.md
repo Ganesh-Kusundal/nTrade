@@ -1,0 +1,1 @@
+Pure Python stdlib: `dataclasses` for event serialization, `json` + line-delimited JSONL for persistence, `threading.RLock` for concurrent access safety, and `pathlib.Path` for file handles. Events are dataclass-based and self-describing via a `__type__` discriminator field.

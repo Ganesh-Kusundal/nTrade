@@ -46,7 +46,7 @@ def main() -> int:
         from ntrade.kernel.trading_session import TradingSession
         session = TradingSession.connect("dhan")
         instrument = session.index(args.symbol)
-        frame = instrument.history(args.timeframe, days=args.days, force=True).df
+        frame = instrument.market.history()(args.timeframe, days=args.days, force=True).df
         k.register(Index(args.symbol))
         print(f"synth feed: {len(frame)} x {args.timeframe} bars for {args.symbol}")
 

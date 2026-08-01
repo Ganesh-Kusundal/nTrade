@@ -72,6 +72,27 @@ class DhanBroker(BrokerAdapter):
         self._connected = True
         return self
 
+    def _ensure_tsl(self):
+        """Ensure the token is fresh before critical operations.
+
+        Mirrors testTrade's pattern where DhanHttpClient calls
+        token_manager.get_token() on every HTTP request. This checks
+        if the token is expired/near-expiry and refreshes via PIN+TOTP
+        if needed, then propagates the new tsl to the transport.
+
+        Returns the current (or refreshed) Tradehull instance.
+        Defensive: if _auth doesn't exist (test mock), skip refresh.
+        """
+        auth = getattr(self, "_auth", None)
+        if auth is None:
+            return self.tsl  # Test mock or uninitialized — skip refresh
+        new_tsl = auth.refresh_if_needed()
+        if new_tsl is not self.tsl:
+            self.tsl = new_tsl
+            if self._transport is not None:
+                self._transport.tsl = new_tsl
+        return self.tsl
+
     def set_clock(self, clock) -> "DhanBroker":
         """Inject a TradingClock, propagating it to the transport too so the
         parity-critical paths (transport.get_quote / get_daily_historical)
@@ -84,6 +105,7 @@ class DhanBroker(BrokerAdapter):
 
     # ------------------------------------------------------------ market data
     def get_quote(self, instrument: "Instrument", *, now: datetime | None = None) -> Quote:
+        self._ensure_tsl()  # Ensure token is fresh before API call
         names = [dhan_symbol(instrument)]
         ltp = 0.0
         # Dhan's get_ltp_data intermittently returns None / failure dicts
@@ -280,6 +302,7 @@ class DhanBroker(BrokerAdapter):
 
     # ------------------------------------------------------------ orders
     def place_order(self, order: Order) -> Order:
+        self._ensure_tsl()  # Ensure token is fresh before order placement
         # SEBI (Apr 2026): MARKET orders banned for F&O — force LIMIT.
         if order.instrument.exchange in _SEBI_FNO_EXCHANGES and order.order_type.value == "MARKET":
             order.order_type = order.order_type.__class__("LIMIT")
@@ -329,6 +352,7 @@ class DhanBroker(BrokerAdapter):
 
     def cancel_order(self, order: Order) -> Order:
         """Cancel a placed order via the Dhan OMS."""
+        self._ensure_tsl()  # Ensure token is fresh before cancellation
         try:
             self.tsl.cancel_order(OrderID=order.order_id)
             order.status = OrderStatus.CANCELLED
@@ -338,6 +362,7 @@ class DhanBroker(BrokerAdapter):
 
     def modify_order(self, order: Order, *, price=None, quantity=None, order_type=None, trigger_price=None) -> Order:
         """Modify an open order via the Dhan OMS."""
+        self._ensure_tsl()  # Ensure token is fresh before modification
         ot = order_type if order_type is not None else order.order_type.value
         ot = ot.value if hasattr(ot, "value") else str(ot).upper()
         try:
@@ -472,6 +497,7 @@ class DhanBroker(BrokerAdapter):
 
     # ------------------------------------------------------------ portfolio
     def get_balance(self) -> float:
+        self._ensure_tsl()  # Ensure token is fresh before balance fetch
         # Deliberately NOT collapsed to 0.0 on failure: a 0.0 balance is
         # indistinguishable from a genuine empty account, and silently zeroing
         # the account on a network blip would corrupt PositionSyncEngine.
@@ -485,6 +511,7 @@ class DhanBroker(BrokerAdapter):
         "flat", so collapsing a transport error to [] would silently wipe the
         kernel's portfolio during reconciliation (PositionSyncEngine keeps the
         previous state when this raises)."""
+        self._ensure_tsl()  # Ensure token is fresh before position fetch
         df = self.tsl.get_positions()
         return _positions_from_df(df)
 

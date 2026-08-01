@@ -1,0 +1,5 @@
+- Each scanner subclass defines a `name` attribute and a `scan(session, *, now=None, **kw)` method returning a list of `ScannerResult` objects with signal, score, matched_conditions, and indicator_values.
+- Optional data access is wrapped in helper functions (`_safe_ltp`, `_safe_indicators`, `_instruments`) that return None or empty containers so scanners can skip instruments without try/except blocks.
+- Heavy or optional dependencies are imported lazily inside functions (e.g., `from ntrade.sources.synthetic_feed import SyntheticMarketFeedSource`) to break circular imports between runner, sources, and domain packages.
+- Public APIs are exposed through `__all__` in each package's `__init__.py`, limiting the module surface to explicitly re-exported names.
+- Time-based loops use `time.monotonic` for elapsed checks and injectable `_timer`/`_sleep` attributes on `LiveRunner` to enable testing.

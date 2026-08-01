@@ -1,0 +1,182 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: en-US
+branch: main
+nodes_managed: true
+exported_at: "2026-08-01T19:31:20Z"
+modules:
+    "":
+        dir_name: nTrade Trading Framework (Root)
+        title: nTrade Trading Framework (Root)
+        scope:
+            - ARCHITECTURE.md
+            - pyproject.toml
+            - .gitignore
+            - skills-lock.json
+            - check_connection.py
+        source_files: []
+        children:
+            - agents_skills
+            - benchmarks_and_cache
+            - ntrade_core
+            - scripts
+            - tests
+        depends_on: []
+        related_to: []
+    agents_skills:
+        dir_name: Agent Skills Library (Dhan-Tradehull & Graphify)
+        title: Agent Skills Library (Dhan-Tradehull & Graphify)
+        scope:
+            - .agents/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    benchmarks_and_cache:
+        dir_name: Kanban Board & SDD Progress Tracking
+        title: Kanban Board & SDD Progress Tracking
+        scope:
+            - .kanban/
+            - .superpowers/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    ntrade_core:
+        dir_name: nTrade Trading Framework Core
+        title: nTrade Trading Framework Core
+        scope:
+            - ntrade/
+        source_files: []
+        children:
+            - ntrade_core/backtest_replay_sim
+            - ntrade_core/brokers
+            - ntrade_core/core_infrastructure
+            - ntrade_core/domain_models
+            - ntrade_core/engines
+            - ntrade_core/execution_pipeline
+            - ntrade_core/kernel_event_bus
+            - ntrade_core/market_data_sources
+            - ntrade_core/runner_scanners
+        depends_on: []
+        related_to: []
+    ntrade_core/backtest_replay_sim:
+        dir_name: Backtest, Replay & Synthetic Tick Simulation
+        title: Backtest, Replay & Synthetic Tick Simulation
+        scope:
+            - ntrade/backtest/
+            - ntrade/replay/
+            - ntrade/sim/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/kernel_event_bus
+    ntrade_core/brokers:
+        dir_name: Broker Adapters & Dhan Integration
+        title: Broker Adapters & Dhan Integration
+        scope:
+            - ntrade/brokers/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: scripts
+    ntrade_core/core_infrastructure:
+        dir_name: Core Infrastructure — Event Store, Broker & Instrument Registries
+        title: Core Infrastructure — Event Store, Broker & Instrument Registries
+        scope:
+            - ntrade/storage/
+            - ntrade/facade.py
+            - ntrade/factories.py
+            - ntrade/registry.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/kernel_event_bus
+    ntrade_core/domain_models:
+        dir_name: Trading Domain Models
+        title: Trading Domain Models
+        scope:
+            - ntrade/domain/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    ntrade_core/engines:
+        dir_name: Event-Driven Trading Engines
+        title: Event-Driven Trading Engines
+        scope:
+            - ntrade/engines/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    ntrade_core/execution_pipeline:
+        dir_name: Execution Pipeline & Order Routing
+        title: Execution Pipeline & Order Routing
+        scope:
+            - ntrade/execution/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    ntrade_core/kernel_event_bus:
+        dir_name: Trading Kernel Event Bus & Event Model
+        title: Trading Kernel Event Bus & Event Model
+        scope:
+            - ntrade/kernel/
+            - ntrade/events/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/backtest_replay_sim
+            - path: ntrade_core/core_infrastructure
+            - path: ntrade_core/runner_scanners
+            - path: tests
+    ntrade_core/market_data_sources:
+        dir_name: Market Data Feed Sources
+        title: Market Data Feed Sources
+        scope:
+            - ntrade/sources/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/runner_scanners
+            - path: scripts
+    ntrade_core/runner_scanners:
+        dir_name: Live Runner & Built-in Market Scanners
+        title: Live Runner & Built-in Market Scanners
+        scope:
+            - ntrade/runner/
+            - ntrade/scanners/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/kernel_event_bus
+            - path: ntrade_core/market_data_sources
+    scripts:
+        dir_name: Trading Kernel Scripts & Runners
+        title: Trading Kernel Scripts & Runners
+        scope:
+            - scripts/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/brokers
+            - path: ntrade_core/market_data_sources
+    tests:
+        dir_name: Pytest Test Suite for nTrade Trading Kernel
+        title: Pytest Test Suite for nTrade Trading Kernel
+        scope:
+            - tests/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/kernel_event_bus

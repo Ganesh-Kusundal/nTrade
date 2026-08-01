@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: tests
+title: Pytest Test Suite for nTrade Trading Kernel
+scope:
+    - tests/
+source_files: []
+depends_on: []
+related_to:
+    - path: ntrade_core/kernel_event_bus

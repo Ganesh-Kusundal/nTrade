@@ -1,0 +1,1 @@
+`python check_connection.py` from the repo root performs a no-op connection check against Dhan Tradehull (fetches NIFTY LTP and balance); `pytest` runs the full suite under `tests/`; install via `pip install -e .` using the setuptools build backend declared in pyproject.toml.

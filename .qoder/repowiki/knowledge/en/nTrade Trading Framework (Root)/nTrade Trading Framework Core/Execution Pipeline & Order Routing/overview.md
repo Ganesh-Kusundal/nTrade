@@ -1,0 +1,1 @@
+Interchangeable order-execution targets (live broker and simulated) with cost models, retry/backoff, and a strategy-name router that enforces zero-parity between paper trading and live execution.

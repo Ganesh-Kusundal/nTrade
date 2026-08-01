@@ -1,0 +1,1 @@
+Pure Python stdlib: `dataclasses` (frozen, kw_only), `threading.RLock` for serialization, `collections.defaultdict` + `deque(maxlen=...)` for subscriber registry and bounded event history, `uuid.uuid4` for event IDs. No external libraries in this scope.

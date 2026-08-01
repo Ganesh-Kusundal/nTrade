@@ -1,0 +1,1 @@
+No build or test commands are required. Default brokers are lazily registered on first `BrokerRegistry.get()` call; if optional packages like `ntrade.brokers.dhan` are missing they are silently skipped. The event store persists to a JSONL file only when constructed with a non-None `path` argument.

@@ -1,0 +1,5 @@
+- Domain objects are immutable snapshots (Quote, Tick, Greeks, MarketDepth are frozen dataclasses) and updated only via explicit apply_* methods on the read model.
+- Broker-specific behavior is added through the @capability decorator and resolved at call time via BrokerExtensionFacade rather than if/else branches.
+- All time sources go through TradingClock (LiveClock/ReplayClock/SimulationClock) — strategies never call datetime.now().
+- Event handlers are registered via on_* decorators and errors are swallowed so a single bad subscriber cannot crash the kernel.
+- New brokers subclass BrokerAdapter and implement get_quote/get_historical/place_order without touching domain code, preserving zero parity across paper/replay/live.

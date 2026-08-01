@@ -1,0 +1,1 @@
+Python ABCs for the adapter interface; pandas DataFrames for market data; optional `Dhan_Tradehull` library for live Dhan integration (import-guarded so the package imports without it); dotenv for `.env` loading; threading for timeout-bounded websocket depth snapshots; `RetryPolicy` from `ntrade.execution.retry` for transient failure retries.

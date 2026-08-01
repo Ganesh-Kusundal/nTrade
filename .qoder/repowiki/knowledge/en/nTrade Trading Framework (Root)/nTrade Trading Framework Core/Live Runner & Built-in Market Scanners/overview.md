@@ -1,0 +1,1 @@
+Orchestrates live trading via a polling loop over market feeds and risk checks, plus a set of built-in scanners (gap, volume spike, momentum, breakout, imbalance) that evaluate instruments against the TradingSession kernel.

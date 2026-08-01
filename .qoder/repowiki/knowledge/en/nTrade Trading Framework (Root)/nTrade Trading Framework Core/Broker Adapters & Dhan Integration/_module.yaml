@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: ntrade_core/brokers
+title: Broker Adapters & Dhan Integration
+scope:
+    - ntrade/brokers/
+source_files: []
+depends_on: []
+related_to:
+    - path: scripts

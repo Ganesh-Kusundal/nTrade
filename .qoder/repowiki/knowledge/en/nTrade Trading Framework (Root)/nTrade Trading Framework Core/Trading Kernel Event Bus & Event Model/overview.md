@@ -1,0 +1,1 @@
+Defines the immutable event model and the synchronous, thread-safe publish/subscribe EventBus that coordinates all trading kernel engines, with clock abstraction and session lifecycle wiring.

@@ -1,0 +1,1 @@
+Live Dhan feeds require `dhanhq` installed via Dhan-Tradehull and credentials resolved through `ntrade.brokers.dhan_auth.get_tradehull()` at runtime; the `feed_factory` parameter on `DhanMarketFeedSource` allows injecting a mock feed for offline tests without real credentials.

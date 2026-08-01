@@ -62,3 +62,19 @@ $ ./.venv/bin/python -m pytest -q
 - `QuoteEvent` has no `close` field; the bar close is taken from `QuoteEvent.ltp`, which the backtest producer sets to the bar close. If another backtest producer ever publishes `ltp != close`, candles would carry the wrong close. Not an issue for the current simulator (simulator.py:130 sets `ltp=close`).
 - In backtest, the bar's `QuoteEvent` is authoritative for its whole bucket: any additional ticks in that bucket are skipped. The current simulator publishes exactly one quote + one tick per bar, so this is correct and avoids volume double-counting. A backtest source that publishes *multiple* trades per bar would undercount volume (by design of this fix — the bar is the unit).
 - The report's assertion tolerance `atr_14 ≈ 3.0 ± 0.5` accommodates pandas ewm warm-up (first row's `prev_close` is NaN), which lands ATR at ~2.93, not exactly 3.0.
+
+## Review fix round 1
+
+Applied reviewer findings for F-005 (documentation only, no behavior change):
+
+- `ntrade/engines/candle_engine.py::on_tick` — expanded the skip comment to a short block above the `_bar_seeded` check, documenting that in backtest mode a bar's `QuoteEvent` is the authoritative volume unit for its bucket and that extra same-bucket ticks (the paired close tick today, and any future multi-trade backtest source) are intentionally skipped to avoid volume double-counting.
+- `tests/test_candle_engine.py` — removed the unused `TickEvent` import (only `QuoteEvent` is used).
+
+Covering tests:
+```
+$ ./.venv/bin/python -m pytest -q tests/test_candle_engine.py tests/test_kernel_engines.py tests/test_replay_backtest.py
+......................                                                   [100%]
+22 passed in 0.63s
+```
+
+Commit: `be18e1d76826ecceca75c55b11fa74104db66135` — `F-005 review: document bar-authoritative tick-skip; drop unused import` (only `ntrade/engines/candle_engine.py` + `tests/test_candle_engine.py` staged).

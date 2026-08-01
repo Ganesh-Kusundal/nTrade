@@ -1,0 +1,1 @@
+Python ≥3.10 with setuptools packaging; pandas/numpy for dataframes, python-dotenv for config, Dhan-Tradehull≥3.3.2 as the sole broker transport; pytest for the test suite.

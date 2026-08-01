@@ -23,7 +23,7 @@ def main() -> int:
     print(f"NIFTY quote -> ltp={nifty.ltp} spread={nifty.spread()} mid={nifty.mid_price()}")
 
     # 2) History
-    series = nifty.history("5m", days=1)
+    series = nifty.market.history()("5m", days=1)
     print(f"NIFTY 5m history -> rows={len(series)} cached={series.cached} fresh={series.is_fresh()}")
     print(f"last close={series.df['close'].iloc[-1] if not series.df.empty else 'n/a'}")
 

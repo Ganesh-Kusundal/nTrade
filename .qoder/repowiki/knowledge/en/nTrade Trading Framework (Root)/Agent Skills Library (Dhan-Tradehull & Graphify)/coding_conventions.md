@@ -1,0 +1,4 @@
+- Each skill is declared via YAML frontmatter at the top of `SKILL.md` with `name` and `description` fields that drive agent trigger matching.
+- Reference documentation is organized as separate Markdown files under a `references/` subdirectory and cross-referenced by relative path within the main `SKILL.md`.
+- Executable examples are placed in an `examples/` subdirectory alongside the skill, keeping runnable snippets separate from prose instructions.
+- Procedural instructions use numbered steps with embedded bash/python code blocks that substitute placeholders like `INPUT_PATH` before execution.

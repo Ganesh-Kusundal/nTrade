@@ -1,0 +1,1 @@
+Standalone Python entrypoints that exercise the ntrade trading kernel through latency benchmarks, EMA crossover backtests, live-read endpoint validation, synthetic/live runner harnesses, and a paper-to-live gate check against the Dhan broker API.

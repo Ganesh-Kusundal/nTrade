@@ -1,0 +1,5 @@
+- Shared mutable state (SymbolMaster cache, BrokerRegistry factory map) is protected by `threading.RLock` to make flyweight and registry lookups safe across feed and strategy threads.
+- Object creation goes through factories (`InstrumentFactory`, `OptionFactory`) that delegate to `SymbolMaster.get`, so repeated lookups of the same symbol resolve to the same instance.
+- Event types are discovered and registered automatically by scanning known `ntrade.events.*` modules for subclasses of `Event`, rather than manual registration calls.
+- Recovery and replay methods return only causal market-data events (Tick/Quote/Depth) plus fills, explicitly excluding derived events that must be recomputed by the kernel to avoid double-application.
+- Backward-compatibility adapters (e.g. `Market`) delegate all behavior to the canonical implementation (`TradingSession`) instead of duplicating logic.

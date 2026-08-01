@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: ntrade_core
+title: nTrade Trading Framework Core
+scope:
+    - ntrade/
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,6 @@
+- Market value objects are modeled as `@dataclass(frozen=True)` with `empty()` classmethods (e.g., `Quote.empty()`, `MarketDepth.empty(symbol)`) to construct default instances safely.
+- Capabilities are exposed as `@cached_property` attributes on `Instrument` that lazily instantiate a dedicated capability class holding a reference to the owning instrument, keeping all mutable state on the instrument itself.
+- Cross-module imports that could create cycles are guarded by `if TYPE_CHECKING:` blocks, with actual imports performed inside method bodies where needed.
+- Each sub-package re-exports its public API through an `__init__.py` that imports from sibling modules and defines an explicit `__all__` list.
+- Domain objects expose a consistent `as_dict()` / `to_dict()` serialization method alongside `snapshot()` on `Instrument`, providing a uniform escape hatch for persistence or debugging.
+- Broker interaction is always routed through an optional `BrokerAdapter` accessed via `instrument.broker_adapter`; when absent, operations either return early or raise a descriptive `RuntimeError` rather than failing silently.

@@ -1,0 +1,1 @@
+No special build or setup required; each package exposes its public API via `__init__.py` (`BacktestSimulator`/`BacktestResult`/`FillPolicy`, `ReplayEngine`, `SimTick`/`synthesize_1m_ticks`). Backtests are run by passing a pandas OHLCV DataFrame to `BacktestSimulator.run()`.

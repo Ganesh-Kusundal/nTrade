@@ -71,8 +71,8 @@ def main() -> int:
     check("depth20 capability (RELIANCE)", lambda: rel.broker.depth20(levels=5),
           sane=lambda d: len(d.bids) > 0)
 
-    check("history 5m (NIFTY)", lambda: len(nifty.history("5m", days=1).df), sane=lambda v: v > 0)
-    check("history DAY (NIFTY)", lambda: len(nifty.history("1d", days=5).df), sane=lambda v: v > 0)
+    check("history 5m (NIFTY)", lambda: len(nifty.market.history()("5m", days=1).df), sane=lambda v: v > 0)
+    check("history DAY (NIFTY)", lambda: len(nifty.market.history()("1d", days=5).df), sane=lambda v: v > 0)
     check("history long-term (1d, 2026-07-01..2026-07-31)",
           lambda: len(session.broker.get_long_term_historical(nifty, timeframe="1d",
                                                        from_date="2026-07-01", to_date="2026-07-31")),

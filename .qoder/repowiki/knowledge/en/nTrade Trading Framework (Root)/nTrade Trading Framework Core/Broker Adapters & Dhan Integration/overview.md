@@ -1,0 +1,1 @@
+Defines the BrokerAdapter abstract interface and provides concrete implementations for a paper trading broker and a live Dhan broker, with capability-based extensions and transport/auth/mapping helpers.

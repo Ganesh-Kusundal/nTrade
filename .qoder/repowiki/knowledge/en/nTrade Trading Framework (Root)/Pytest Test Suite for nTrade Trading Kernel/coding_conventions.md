@@ -1,0 +1,5 @@
+- Each test file defines small local helper factories (e.g. `_kernel()`, `_source()`, `_ohlcv_1m()`) that return fully wired `TradingKernel` instances with default `mode='replay'`, `ReplayClock`, and `statutory=None` to keep cost calculations out of scope.
+- Strategies used in tests are defined inline as subclasses of `ntrade.engines.strategy_engine.Strategy` with a `name` attribute and an `on_tick` / `on_candle_closed` handler that calls `self.emit_signal(...)`.
+- Assertions rely on inspecting `kernel.bus.history` for specific event types (e.g. `OrderFilledEvent`, `SignalRejectedEvent`, `SignalApprovedEvent`) rather than querying object state directly.
+- External dependencies (brokers, clocks) are replaced via constructor injection or monkey-patching (e.g. `runner._sleep = lambda s: None`, `broker.get_order_status.side_effect = RuntimeError(...)`).
+- Integration tests start both `kernel.start()` and `source.start()`, then call `source.join(timeout=...)` to wait for background tick publication before asserting outcomes.

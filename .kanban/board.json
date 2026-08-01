@@ -305,6 +305,134 @@
       "title": "No integration test for full pipeline: feed → kernel → strategy → risk → execution → portfolio",
       "created": "2026-08-01T05:44:36Z",
       "updated": "2026-08-01T06:49:12Z"
+    },
+    {
+      "id": "B-006",
+      "type": "bug",
+      "status": "done",
+      "title": "F-004 live fills carry zero commission/statutory — parity gap",
+      "created": "2026-08-01T12:03:31Z",
+      "updated": "2026-08-01T12:03:31Z"
+    },
+    {
+      "id": "B-007",
+      "type": "bug",
+      "status": "done",
+      "title": "F-005 backtest candles degenerate (open=high=low=close) — QuoteEvent OHLCV ignored by CandleEngine",
+      "created": "2026-08-01T12:03:31Z",
+      "updated": "2026-08-01T12:03:31Z"
+    },
+    {
+      "id": "B-008",
+      "type": "bug",
+      "status": "done",
+      "title": "Scanner reads indicator keys pipeline never produces (avg_volume/rsi/supertrend vs rsi_14/atr_14/stx_10_3) — 3 dead branches",
+      "created": "2026-08-01T12:03:31Z",
+      "updated": "2026-08-01T12:03:31Z"
+    },
+    {
+      "id": "B-009",
+      "type": "bug",
+      "status": "done",
+      "title": "HF-001 MarketEngine.on_tick broadcasts read-model _quote.ltp instead of event.price (stale 0.0 for depth-kind ticks; fragile ordering dependence)",
+      "created": "2026-08-01T12:03:32Z",
+      "updated": "2026-08-01T12:03:32Z"
+    },
+    {
+      "id": "D-017",
+      "type": "debt",
+      "status": "done",
+      "title": "gate.py re-derives equity/drawdown with divergent MTM vs RiskEngine.equity/Position.market_value",
+      "created": "2026-08-01T12:03:32Z",
+      "updated": "2026-08-01T12:03:32Z"
+    },
+    {
+      "id": "T-011",
+      "type": "task",
+      "status": "done",
+      "title": "Auto-refresh Dhan token on expiry — proactive buffer + background timer + _ensure_tsl() in critical paths",
+      "created": "2026-08-01T12:19:51Z",
+      "updated": "2026-08-01T12:19:51Z"
+    },
+    {
+      "id": "T-012",
+      "type": "task",
+      "status": "planned",
+      "title": "Route DhanBroker data calls through DhanTransport — finish T-005/D-005 provider decomposition",
+      "created": "2026-08-01T19:26:50Z",
+      "updated": "2026-08-01T19:26:50Z"
+    },
+    {
+      "id": "T-013",
+      "type": "task",
+      "status": "planned",
+      "title": "Wire capability layer into production reads — finish T-002/D-001 (use .market/.history/.stream instead of inst._quote)",
+      "created": "2026-08-01T19:26:50Z",
+      "updated": "2026-08-01T19:26:50Z"
+    },
+    {
+      "id": "T-014",
+      "type": "task",
+      "status": "planned",
+      "title": "Attach consumers for R-006 observability events (Heartbeat/FeedDisconnected/OrderTimeout) — watchdog + alerting",
+      "created": "2026-08-01T19:26:50Z",
+      "updated": "2026-08-01T19:26:50Z"
+    },
+    {
+      "id": "T-015",
+      "type": "task",
+      "status": "planned",
+      "title": "Wire DhanAuthProvider.stop() into LiveRunner shutdown path — finish T-011 token refresh",
+      "created": "2026-08-01T19:26:54Z",
+      "updated": "2026-08-01T19:26:54Z"
+    },
+    {
+      "id": "T-016",
+      "type": "task",
+      "status": "planned",
+      "title": "Arm RateLimiter/RetryPolicy in hot paths — finish D-006 resilience infrastructure",
+      "created": "2026-08-01T19:26:54Z",
+      "updated": "2026-08-01T19:26:54Z"
+    },
+    {
+      "id": "T-017",
+      "type": "task",
+      "status": "planned",
+      "title": "Arm ScannerFacade M6 throttle on a built-in scanner",
+      "created": "2026-08-01T19:26:54Z",
+      "updated": "2026-08-01T19:26:54Z"
+    },
+    {
+      "id": "T-018",
+      "type": "task",
+      "status": "planned",
+      "title": "Wire feed watchdog reconnection (LiveStream reconnect events) — finish R-004",
+      "created": "2026-08-01T19:26:54Z",
+      "updated": "2026-08-01T19:26:54Z"
+    },
+    {
+      "id": "T-019",
+      "type": "task",
+      "status": "planned",
+      "title": "Wire DhanFeed mode matrix (ticker/quote/depth) for the live streaming plan",
+      "created": "2026-08-01T19:27:01Z",
+      "updated": "2026-08-01T19:27:01Z"
+    },
+    {
+      "id": "T-020",
+      "type": "task",
+      "status": "planned",
+      "title": "Remove fake streaming no-ops (market_feed/order_update_stream stubs) from capability surface",
+      "created": "2026-08-01T19:27:01Z",
+      "updated": "2026-08-01T19:27:01Z"
+    },
+    {
+      "id": "T-021",
+      "type": "task",
+      "status": "planned",
+      "title": "StrategyRunner full surface or trim to documented API",
+      "created": "2026-08-01T19:27:01Z",
+      "updated": "2026-08-01T19:27:01Z"
     }
   ],
   "flows": {

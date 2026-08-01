@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: ntrade_core/engines
+title: Event-Driven Trading Engines
+scope:
+    - ntrade/engines/
+source_files: []
+depends_on: []
+related_to: []

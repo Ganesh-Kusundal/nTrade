@@ -1,0 +1,1 @@
+Python ABCs for the feed abstraction, pandas DataFrames for OHLCV frames, threading for background production in `SyntheticMarketFeedSource`, and optional `dhanhq` library (lazy-imported) for live websocket connectivity.

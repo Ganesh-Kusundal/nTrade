@@ -1,0 +1,1 @@
+Core event-processing subsystems that transform market ticks into candles, compute indicators, screen signals through risk rules, materialize orders, update portfolio state, and synchronize live broker positions.

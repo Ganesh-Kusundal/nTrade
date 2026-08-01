@@ -1,0 +1,1 @@
+Pure Python with `time.monotonic`/`time.sleep` for timing, `signal.SIGTERM`/`SIGINT` handlers for graceful shutdown, and lazy imports inside functions to avoid circular imports (e.g., `Equity`, `SyntheticMarketFeedSource`, `DhanMarketFeedSource`).

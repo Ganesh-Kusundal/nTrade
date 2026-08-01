@@ -1,0 +1,5 @@
+- Every engine constructor follows the pattern `self.ctx = context; context.bus.subscribe(EventClass, self.on_xxx)` to register handlers against the shared event bus.
+- Engine methods are named as `on_<event>` handlers that consume exactly one event type and publish zero or more downstream events via `self.ctx.bus.publish(...)`.
+- All classes use `from __future__ import annotations` and rely on PEP 604-style union types (e.g. `int | None`, `float | None`) for parameter typing.
+- External I/O (broker calls in `PositionSyncEngine`, router submission in `OrderEngine`) is wrapped in try/except blocks that return `None` on failure rather than raising, preserving kernel state on transient errors.
+- Stateful engines cap memory growth with a `max_*` parameter (e.g. `max_candles`, `max_rows`) and trim oldest entries when the buffer exceeds the limit.

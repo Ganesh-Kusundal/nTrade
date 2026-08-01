@@ -1,0 +1,6 @@
+- Each execution target implements a `name` class attribute (e.g. `"broker"`, `"simulated"`) and a `submit(intent) -> OrderRejectedEvent | None` method, enabling registration and dispatch through `ExecutionRouter.add(name, target)`.
+- Rejections are returned as typed `OrderRejectedEvent` objects rather than raising exceptions, keeping error flow uniform across live and simulated paths.
+- All side effects (order acceptance, fills, rejections, updates) are published through `self.ctx.bus.publish(...)` using strongly-typed event classes from `ntrade.events.order` instead of direct callbacks.
+- Cost models follow an abstract base class pattern: `SlippageModel` and `CommissionModel` define `apply(...)` methods implemented by concrete `Fixed*` / `Percentage*` subclasses.
+- Optional configuration uses sentinel values (`STATUTORY_DEFAULT` for statutory costs) to distinguish "use defaults" from explicit `None` (zero-cost opt-out) rather than relying on default arguments alone.
+- Internal helpers use defensive typing with `from __future__ import annotations` and `TYPE_CHECKING` imports to avoid circular imports between execution, events, and domain layers.

@@ -32,7 +32,7 @@ def main() -> int:
     from ntrade.kernel.trading_session import TradingSession
     session = TradingSession.connect("dhan")
     instrument = session.index(symbol)
-    series = instrument.history("5m", days=days, force=True)
+    series = instrument.market.history()("5m", days=days, force=True)
     frame = series.df
     print(f"fetched {len(frame)} x 5m candles for {symbol} ({days}d)")
 

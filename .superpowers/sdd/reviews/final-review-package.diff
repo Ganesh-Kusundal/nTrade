@@ -1,0 +1,446 @@
+diff --git a/ntrade/domain/analytics/indicators.py b/ntrade/domain/analytics/indicators.py
+index d558bf0..23cf4d4 100644
+--- a/ntrade/domain/analytics/indicators.py
++++ b/ntrade/domain/analytics/indicators.py
+@@ -171,20 +171,21 @@ def compute_bundle(df: pd.DataFrame, **params) -> dict[str, float]:
+     def _series_last(name: str, series_fn, *, store_key: str | None = None):
+         def _run():
+             s = series_fn()
+             v = s.iloc[-1]
+             return float(v)
+         _capture(name, _run, store_key=store_key)
+ 
+     _series_last("rsi", lambda: rsi(df, rsi_period), store_key=f"rsi_{rsi_period}")
+     _series_last("atr", lambda: atr(df, atr_period), store_key=f"atr_{atr_period}")
+     _series_last("vwap", lambda: vwap(df), store_key="vwap")
++    _capture("avg_volume", lambda: float(df["volume"].astype(float).mean()))
+ 
+     def _supertrend_last():
+         st = supertrend(df, st_period, st_mult)
+         return st[f"STX_{st_period}_{st_mult}"].iloc[-1]
+     _capture("supertrend", _supertrend_last, store_key=f"stx_{st_period}_{st_key_mult}")
+ 
+     for period in ema_periods:
+         _series_last(f"ema{int(period)}", lambda p=period: ema(df, int(p)),
+                      store_key=f"ema_{int(period)}")
+     for period in sma_periods:
+diff --git a/ntrade/engines/candle_engine.py b/ntrade/engines/candle_engine.py
+index d79f33a..b4a0804 100644
+--- a/ntrade/engines/candle_engine.py
++++ b/ntrade/engines/candle_engine.py
+@@ -2,49 +2,80 @@
+ 
+ One engine per timeframe (1m, 5m, ...). A candle closes when a tick arrives in
+ a later bucket; the closed candle is broadcast for indicators/strategies. The
+ last partial candle can be flushed explicitly at session end.
+ """
+ 
+ from __future__ import annotations
+ 
+ from datetime import datetime, timezone
+ 
+-from ntrade.events.market import CandleClosedEvent, TickEvent
++from ntrade.events.market import CandleClosedEvent, QuoteEvent, TickEvent
+ 
+ _INTERVAL_SECONDS = {
+     "1s": 1, "5s": 5, "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400,
+ }
+ 
+ 
+ class CandleEngine:
+     def __init__(self, context, timeframe: str = "1m", *, max_candles: int = 10_000):
+         if timeframe not in _INTERVAL_SECONDS:
+             raise ValueError(f"Unsupported timeframe {timeframe!r}; expected one of {sorted(_INTERVAL_SECONDS)}")
+         self.ctx = context
+         self.timeframe = timeframe
+         self.seconds = _INTERVAL_SECONDS[timeframe]
+         self._open: dict[str, dict] = {}
+         self._closed: dict[str, list[CandleClosedEvent]] = {}
+         self._max_candles = max_candles
++        # last bucket seeded from a bar-shaped QuoteEvent (backtest only); the
++        # paired close tick sharing that bucket is skipped to avoid double volume
++        self._bar_seeded: dict[str, int] = {}
+         context.bus.subscribe(TickEvent, self.on_tick)
++        context.bus.subscribe(QuoteEvent, self.on_quote)
+ 
+     # ------------------------------------------------------------------ ingest
+     def _bucket(self, ts: datetime) -> int:
+         if ts.tzinfo is None:
+             ts = ts.replace(tzinfo=timezone.utc)  # naive -> UTC-pinned epoch
+         epoch = int(ts.timestamp())
+         return epoch - (epoch % self.seconds)
+ 
+     def on_tick(self, event: TickEvent) -> None:
++        # In backtest mode a bar's QuoteEvent is the authoritative volume unit
++        # for its bucket; the paired close tick (and any extra same-bucket
++        # ticks from a future multi-trade backtest source) is intentionally
++        # skipped so volume is not double-counted.
++        if self._bar_seeded.get(event.symbol) == self._bucket(event.ts):
++            return
+         self._ingest(event.symbol, event.exchange, event.price, event.ts, volume=event.quantity)
+ 
++    def on_quote(self, event: QuoteEvent) -> None:
++        if self.ctx.mode != "backtest":
++            return  # live/replay quotes carry day-session OHLCV, not bars
++        self._ingest_bar(event.symbol, event.exchange, event.open, event.high,
++                         event.low, event.ltp, event.volume, event.ts)
++
++    def _ingest_bar(self, symbol, exchange, open_, high, low, close, volume, ts) -> None:
++        bucket = self._bucket(ts)
++        candle = self._open.get(symbol)
++        if candle is None or candle["bucket"] != bucket:
++            if candle is not None:
++                self._close(symbol, candle)
++            candle = self._open[symbol] = {
++                "bucket": bucket, "exchange": exchange,
++                "open": open_, "high": high, "low": low, "close": close, "volume": 0,
++            }
++        candle["open"], candle["high"] = open_, high
++        candle["low"], candle["close"] = low, close
++        candle["volume"] = volume
++        self._bar_seeded[symbol] = bucket
++
+     def _ingest(self, symbol, exchange, price, ts, volume: int = 0) -> None:
+         bucket = self._bucket(ts)
+         candle = self._open.get(symbol)
+         if candle is None or candle["bucket"] != bucket:
+             if candle is not None:
+                 self._close(symbol, candle)
+             candle = self._open[symbol] = {
+                 "bucket": bucket, "exchange": exchange,
+                 "open": price, "high": price, "low": price, "close": price, "volume": 0,
+             }
+diff --git a/ntrade/engines/market_engine.py b/ntrade/engines/market_engine.py
+index 75a4529..1db485a 100644
+--- a/ntrade/engines/market_engine.py
++++ b/ntrade/engines/market_engine.py
+@@ -26,21 +26,21 @@ class MarketEngine:
+         instrument = self._instrument(event.symbol)
+         if instrument is None:
+             return
+         tick = Tick(
+             symbol=event.symbol, price=event.price, quantity=event.quantity,
+             side=event.side, timestamp=event.ts, kind=event.kind,
+         )
+         instrument._stream.ingest_tick(tick)
+         self.ctx.bus.publish(QuoteUpdatedEvent(
+             symbol=event.symbol, exchange=event.exchange,
+-            ltp=instrument._quote.ltp, bid=instrument._quote.bid, ask=instrument._quote.ask, ts=event.ts,
++            ltp=event.price, bid=instrument._quote.bid, ask=instrument._quote.ask, ts=event.ts,
+         ))
+ 
+     def on_quote(self, event: QuoteEvent) -> None:
+         instrument = self._instrument(event.symbol)
+         if instrument is None:
+             return
+         instrument.apply_quote(Quote(
+             ltp=event.ltp, bid=event.bid, ask=event.ask, open=event.open,
+             high=event.high, low=event.low, prev_close=event.prev_close,
+             volume=event.volume, oi=event.oi, timestamp=event.ts,
+diff --git a/ntrade/execution/broker_executor.py b/ntrade/execution/broker_executor.py
+index 953f19f..273fc25 100644
+--- a/ntrade/execution/broker_executor.py
++++ b/ntrade/execution/broker_executor.py
+@@ -18,20 +18,27 @@ import logging
+ 
+ from ntrade.domain.orders.order import OrderStatus, OrderType, TradeType
+ from ntrade.events.order import (
+     OrderAcceptedEvent,
+     OrderFilledEvent,
+     OrderIntentEvent,
+     OrderRejectedEvent,
+     OrderTimeoutEvent,
+     OrderUpdatedEvent,
+ )
++from ntrade.execution.costs import (
++    CommissionModel,
++    FlatCommission,
++    IndianStatutoryCosts,
++    STATUTORY_DEFAULT,
++    resolve_statutory,
++)
+ 
+ logger = logging.getLogger("ntrade.execution")
+ 
+ 
+ def _fill_price(order) -> float:
+     try:
+         return float(order.avg_price or 0.0)
+     except (TypeError, ValueError):
+         return 0.0
+ 
+@@ -39,23 +46,28 @@ def _fill_price(order) -> float:
+ def _fill_qty(order) -> int:
+     try:
+         return int(order.filled_qty or 0)
+     except (TypeError, ValueError):
+         return 0
+ 
+ 
+ class BrokerExecution:
+     name = "broker"
+ 
+-    def __init__(self, context, broker):
++    def __init__(self, context, broker, *,
++                 commission: CommissionModel | None = None,
++                 statutory=STATUTORY_DEFAULT):
+         self.ctx = context
+         self.broker = broker
++        self.commission = commission or FlatCommission(0.0)
++        # None → zero-cost opt-out; STATUTORY_DEFAULT → IndianStatutoryCosts().
++        self.statutory: IndianStatutoryCosts | None = resolve_statutory(statutory)
+         self._seq = 0
+         # order_id -> {"intent": ..., "order": ..., "filled": int}
+         self._open: dict[str, dict] = {}
+         self._stale_limit = 10  # max consecutive status-refresh failures before eviction
+ 
+     # ------------------------------------------------------------- submission
+     def submit(self, intent: OrderIntentEvent) -> OrderRejectedEvent | None:
+         """Place the order; publish accepted immediately, fill if synchronous."""
+         instrument = self.ctx.instrument(intent.symbol)
+         if instrument is None or instrument.broker_adapter is None:
+@@ -240,22 +252,38 @@ class BrokerExecution:
+     # ------------------------------------------------------------------ fills
+     def _emit_fill(self, order_id: str, intent: OrderIntentEvent,
+                    order, emitted: list | None = None) -> None:
+         """Emit the newly-filled quantity since the last poll (partial-safe)."""
+         record = self._open.get(order_id)
+         already = record["filled"] if record else 0
+         new_qty = _fill_qty(order) - already
+         if new_qty <= 0:
+             return
+         price = _fill_price(order) or intent.price or 0.0
++        notional = price * new_qty
++        commission = round(self.commission.apply(notional), 4)
++        if self.statutory is None:
++            statutory = 0.0
++        else:
++            # Product schedule from the instrument class (F&O vs equity), GST
++            # on the actual per-fill commission — the same cost pipeline as the
++            # simulated target so paper PnL converges on live (H6).
++            instrument = self.ctx.instrument(intent.symbol)
++            if instrument is None:
++                model = self.statutory  # default product schedule, never crash
++            else:
++                model = self.statutory.for_instrument(instrument)
++            statutory = round(
++                model.total_cost(notional, intent.side, brokerage=commission), 4)
+         fill = OrderFilledEvent(
+             order_id=order_id, symbol=intent.symbol, exchange=intent.exchange,
+             side=intent.side, quantity=new_qty, fill_price=price,
++            commission=commission, statutory=statutory,
+             strategy=intent.strategy, ts=self.ctx.now(),
+         )
+         self.ctx.bus.publish(fill)
+         logger.info("filled %s %s x%d @ %.2f (order %s)",
+                     intent.side, intent.symbol, new_qty, price, order_id)
+         if emitted is not None:
+             emitted.append(fill)
+         if record:
+             record["filled"] += new_qty
+diff --git a/ntrade/kernel/session.py b/ntrade/kernel/session.py
+index ea63f2e..36d370d 100644
+--- a/ntrade/kernel/session.py
++++ b/ntrade/kernel/session.py
+@@ -83,21 +83,23 @@ class TradingKernel:
+         self.strategy_engine = StrategyEngine(self.ctx)
+         self.risk_engine = RiskEngine(self.ctx)
+         self.portfolio_engine = PortfolioEngine(self.ctx)
+ 
+         # --- execution target (the only interchangeable piece) ---------------
+         self.broker = broker
+         self.position_sync = PositionSyncEngine(self.ctx, broker) if broker is not None else None
+         if execution is None:
+             execution = ExecutionRouter(self.ctx)
+             if broker is not None:
+-                execution.add("default", BrokerExecution(self.ctx, broker))
++                # Live target charges the same statutory schedule as the sim
++                # target (H6); pass statutory=None to opt into zero-cost live.
++                execution.add("default", BrokerExecution(self.ctx, broker, statutory=statutory))
+             else:
+                 # Simulated target: statutory Indian charges by default (H6) so
+                 # paper/backtest PnL converges on live; pass statutory=None to
+                 # opt back into zero-cost simulation.
+                 execution.add("default", SimulatedExecution(self.ctx, statutory=statutory))
+             execution.default("default")
+         self.router = execution
+         self.order_engine = OrderEngine(self.ctx, router=self.router)
+ 
+     # ------------------------------------------------------------------ wiring
+diff --git a/ntrade/runner/gate.py b/ntrade/runner/gate.py
+index c195617..8383df5 100644
+--- a/ntrade/runner/gate.py
++++ b/ntrade/runner/gate.py
+@@ -1,44 +1,50 @@
+ """Paper->live validation gate: turn a paper run's event history into the
+ evidence checklist that must pass before a strategy is switched to live."""
+ 
+ from __future__ import annotations
+ 
+-from ntrade.events.market import QuoteEvent, TickEvent
+ from ntrade.events.order import OrderFilledEvent
++from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
+ 
+ 
+ def _equity_trace(kernel, *, initial_cash: float):
+-    """Reconstruct the equity path from fills + market events.
++    """Reconstruct the equity path from the portfolio read-model events.
+ 
+-    Order-independent: cash is derived from fills (not BalanceChangedEvent, so a
+-    fill's balance dip is never confused with a drawdown) and open positions are
+-    marked to the last observed price. Yields (peak_equity, current_equity) as
+-    the history advances.
++    Consumes PositionUpdatedEvent (position quantity/ltp) and
++    BalanceChangedEvent (cash) — the canonical stream published by the
++    PortfolioEngine on every fill — so the trace's mark-to-market basis is
++    exactly ``RiskEngine.equity`` (account.balance + Σ Position.market_value).
++    Yields (peak_equity, current_equity) after each state change.
+     """
+     cash = float(initial_cash)
+-    positions: dict[str, int] = {}
+-    ltp: dict[str, float] = {}
++    positions: dict[str, tuple[int, float]] = {}
+     peak = cash
++    yield peak, cash
+     for e in kernel.bus.history:
+-        if isinstance(e, OrderFilledEvent):
+-            direction = 1 if e.side == "BUY" else -1
+-            cash -= e.quantity * e.fill_price * direction + e.commission + e.statutory
+-            positions[e.symbol] = positions.get(e.symbol, 0) + e.quantity * direction
+-        elif isinstance(e, TickEvent):
+-            ltp[e.symbol] = e.price
+-        elif isinstance(e, QuoteEvent):
+-            ltp[e.symbol] = e.ltp
+-        eq = cash + sum(q * ltp.get(sym, 0) for sym, q in positions.items())
++        if isinstance(e, PositionUpdatedEvent):
++            positions[e.symbol] = (e.quantity, e.ltp)
++            if e.quantity == 0:
++                positions.pop(e.symbol, None)
++            continue
++        if not isinstance(e, BalanceChangedEvent):
++            continue
++        # Equity is only computed on a settled balance event: PortfolioEngine
++        # publishes PositionUpdatedEvent then BalanceChangedEvent, both already
++        # reflecting the fill — computing at the position event would count the
++        # new position against the pre-fill cash and spike the peak. RiskEngine
++        # samples equity between complete event groups, so a yielded point here
++        # must equal what RiskEngine.equity() returns after that group.
++        cash = e.balance
++        eq = cash + sum(q * ltp for q, ltp in positions.values())
+         peak = max(peak, eq)
+-        if peak:
+-            yield peak, eq
++        yield peak, eq
+ 
+ 
+ def build_paper_report(kernel, *, initial_cash: float = 100_000.0) -> dict:
+     fills = [e for e in kernel.bus.history if isinstance(e, OrderFilledEvent)]
+     trades = [{
+         "order_id": f.order_id, "symbol": f.symbol, "side": f.side,
+         "quantity": f.quantity, "fill_price": f.fill_price,
+         "commission": f.commission, "statutory": f.statutory,
+         "ts": f.ts.isoformat(),
+     } for f in fills]
+diff --git a/ntrade/scanners/builtin.py b/ntrade/scanners/builtin.py
+index 65160fb..732c6be 100644
+--- a/ntrade/scanners/builtin.py
++++ b/ntrade/scanners/builtin.py
+@@ -121,27 +121,27 @@ class MomentumScanner(Scanner):
+     name = "momentum"
+ 
+     def scan(self, session: "TradingSession", *, rsi_threshold: float = 60.0,
+              min_change_pct: float = 1.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
+         results: list[ScannerResult] = []
+         for inst in _instruments(session):
+             ltp = _safe_ltp(inst)
+             if not ltp:
+                 continue
+             indicators = _safe_indicators(inst)
+-            rsi = indicators.get("rsi")
++            rsi = indicators.get("rsi_14")
+             if rsi is not None and rsi >= rsi_threshold:
+                 results.append(ScannerResult(
+                     instrument=inst, scanner_name=self.name,
+                     score=rsi, signal="BUY",
+                     matched_conditions=("rsi_momentum",),
+-                    indicator_values={"rsi": rsi},
++                    indicator_values={"rsi_14": rsi},
+                     timestamp=now or datetime.now(),
+                 ))
+                 continue
+             prev = inst._quote.prev_close
+             if prev and prev > 0:
+                 change = (ltp - prev) / prev * 100
+                 if abs(change) >= min_change_pct:
+                     signal = "BUY" if change > 0 else "SELL"
+                     results.append(ScannerResult(
+                         instrument=inst, scanner_name=self.name,
+@@ -151,61 +151,61 @@ class MomentumScanner(Scanner):
+                         timestamp=now or datetime.now(),
+                     ))
+         return results
+ 
+ 
+ # ============================================================== Breakout
+ 
+ class BreakoutScanner(Scanner):
+     """Detect instruments breaking above recent highs or below recent lows.
+ 
+-    Uses ``supertrend`` or ``atr`` indicators if available; otherwise
+-    compares LTP against a simple high/low range from the quote.
++    Uses ``stx_10_3`` (supertrend) or ``atr_14`` indicators if available;
++    otherwise compares LTP against a simple high/low range from the quote.
+     """
+ 
+     name = "breakout"
+ 
+     def scan(self, session: "TradingSession", *, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
+         results: list[ScannerResult] = []
+         for inst in _instruments(session):
+             ltp = _safe_ltp(inst)
+             if not ltp:
+                 continue
+             indicators = _safe_indicators(inst)
+-            supertrend = indicators.get("supertrend")
++            stx = indicators.get("stx_10_3")
+             high = inst._quote.high or 0
+             low = inst._quote.low or 0
+             conditions: list[str] = []
+             score = 0.0
+             # Supertrend-based breakout
+-            if supertrend is not None and supertrend > 0:
+-                if ltp > supertrend:
++            if stx is not None and stx > 0:
++                if ltp > stx:
+                     conditions.append("above_supertrend")
+-                    score = (ltp - supertrend) / supertrend * 100
++                    score = (ltp - stx) / stx * 100
+             # High/low breakout
+             elif high > 0 and low > 0:
+                 range_ = high - low
+                 if range_ > 0:
+                     if ltp >= high:
+                         conditions.append("high_breakout")
+                         score = (ltp - high) / range_ * 100
+                     elif ltp <= low:
+                         conditions.append("low_breakout")
+                         score = (low - ltp) / range_ * 100
+             if not conditions:
+                 continue
+             signal = "BUY" if "low_breakout" not in conditions else "SELL"
+             results.append(ScannerResult(
+                 instrument=inst, scanner_name=self.name,
+                 score=round(score, 4), signal=signal,
+                 matched_conditions=tuple(conditions),
+-                indicator_values={k: indicators.get(k, 0) for k in ("supertrend", "atr") if indicators.get(k)},
++                indicator_values={k: indicators.get(k, 0) for k in ("stx_10_3", "atr_14") if indicators.get(k)},
+                 timestamp=now or datetime.now(),
+             ))
+         return results
+ 
+ 
+ # ============================================================== Imbalance
+ 
+ class ImbalanceScanner(Scanner):
+     """Detect order-book imbalance (bid vs ask pressure).
+ 

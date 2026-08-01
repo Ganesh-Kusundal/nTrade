@@ -1,0 +1,1 @@
+Core trading domain layer defining instruments, market data value objects, orders, portfolio/account composites, analytics (Greeks/indicators), scanners, and session state that together form the SDK's type-safe model of a tradable instrument.

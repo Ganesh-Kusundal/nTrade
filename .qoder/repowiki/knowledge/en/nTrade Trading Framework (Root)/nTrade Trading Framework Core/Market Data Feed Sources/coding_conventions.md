@@ -1,0 +1,5 @@
+- Every feed source subclasses `MarketFeedSource` and implements `start()`/`stop()`, publishing events exclusively through `self.bus.publish(...)` rather than calling kernel methods directly.
+- Each concrete source sets a `name` class attribute (e.g. `'simulated'`, `'dhan'`, `'synthetic'`) used as an identifier for the feed type.
+- External dependencies are imported lazily inside methods (e.g. `dhanhq` import in `_build_feed`) so the module can be imported without those packages present.
+- Wire-format payloads are converted to canonical events via pure functions (e.g. `dhan_payload_to_events`) that return lists of events and never raise, skipping malformed inputs silently.
+- Sources expose a `ticks_published` counter incremented each time a tick is published, providing a simple ingestion metric for tests and monitoring.

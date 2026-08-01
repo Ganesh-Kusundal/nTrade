@@ -1,0 +1,1 @@
+Interchangeable market event sources that publish canonical TickEvent/QuoteEvent/DepthEvent objects to the kernel bus, supporting live Dhan websocket, deterministic simulation, and synthetic OHLCV-derived ticks under a zero-parity abstraction.

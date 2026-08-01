@@ -70,6 +70,8 @@ def test_compute_bundle(df):
     assert "atr_14" in bundle
     assert "vwap" in bundle
     assert "stx_10_3" in bundle
+    assert "avg_volume" in bundle
+    assert bundle["avg_volume"] == 1000.0
 
 
 def test_sma():

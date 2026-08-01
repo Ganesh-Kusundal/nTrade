@@ -242,7 +242,7 @@ class TestVolumeSpikeScanner:
 
 class TestMomentumScanner:
     def test_rsi_momentum(self):
-        inst = _make_instrument("INFY", ltp=1500, indicators={"rsi": 72.0})
+        inst = _make_instrument("INFY", ltp=1500, indicators={"rsi_14": 72.0})
         session = _make_session_with_instruments(inst)
         results = MomentumScanner().scan(session, rsi_threshold=60.0)
         assert len(results) == 1
@@ -269,7 +269,7 @@ class TestMomentumScanner:
 class TestBreakoutScanner:
     def test_supertrend_breakout(self):
         inst = _make_instrument("HDFC", ltp=1700,
-                                indicators={"supertrend": 1650.0})
+                                indicators={"stx_10_3": 1650.0})
         session = _make_session_with_instruments(inst)
         results = BreakoutScanner().scan(session)
         assert len(results) == 1

@@ -128,13 +128,13 @@ class MomentumScanner(Scanner):
             if not ltp:
                 continue
             indicators = _safe_indicators(inst)
-            rsi = indicators.get("rsi")
+            rsi = indicators.get("rsi_14")
             if rsi is not None and rsi >= rsi_threshold:
                 results.append(ScannerResult(
                     instrument=inst, scanner_name=self.name,
                     score=rsi, signal="BUY",
                     matched_conditions=("rsi_momentum",),
-                    indicator_values={"rsi": rsi},
+                    indicator_values={"rsi_14": rsi},
                     timestamp=now or datetime.now(),
                 ))
                 continue
@@ -158,8 +158,8 @@ class MomentumScanner(Scanner):
 class BreakoutScanner(Scanner):
     """Detect instruments breaking above recent highs or below recent lows.
 
-    Uses ``supertrend`` or ``atr`` indicators if available; otherwise
-    compares LTP against a simple high/low range from the quote.
+    Uses ``stx_10_3`` (supertrend) or ``atr_14`` indicators if available;
+    otherwise compares LTP against a simple high/low range from the quote.
     """
 
     name = "breakout"
@@ -171,16 +171,16 @@ class BreakoutScanner(Scanner):
             if not ltp:
                 continue
             indicators = _safe_indicators(inst)
-            supertrend = indicators.get("supertrend")
+            stx = indicators.get("stx_10_3")
             high = inst._quote.high or 0
             low = inst._quote.low or 0
             conditions: list[str] = []
             score = 0.0
             # Supertrend-based breakout
-            if supertrend is not None and supertrend > 0:
-                if ltp > supertrend:
+            if stx is not None and stx > 0:
+                if ltp > stx:
                     conditions.append("above_supertrend")
-                    score = (ltp - supertrend) / supertrend * 100
+                    score = (ltp - stx) / stx * 100
             # High/low breakout
             elif high > 0 and low > 0:
                 range_ = high - low
@@ -198,7 +198,7 @@ class BreakoutScanner(Scanner):
                 instrument=inst, scanner_name=self.name,
                 score=round(score, 4), signal=signal,
                 matched_conditions=tuple(conditions),
-                indicator_values={k: indicators.get(k, 0) for k in ("supertrend", "atr") if indicators.get(k)},
+                indicator_values={k: indicators.get(k, 0) for k in ("stx_10_3", "atr_14") if indicators.get(k)},
                 timestamp=now or datetime.now(),
             ))
         return results

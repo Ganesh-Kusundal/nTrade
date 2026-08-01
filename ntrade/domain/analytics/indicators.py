@@ -178,6 +178,7 @@ def compute_bundle(df: pd.DataFrame, **params) -> dict[str, float]:
     _series_last("rsi", lambda: rsi(df, rsi_period), store_key=f"rsi_{rsi_period}")
     _series_last("atr", lambda: atr(df, atr_period), store_key=f"atr_{atr_period}")
     _series_last("vwap", lambda: vwap(df), store_key="vwap")
+    _capture("avg_volume", lambda: float(df["volume"].astype(float).mean()))
 
     def _supertrend_last():
         st = supertrend(df, st_period, st_mult)

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from ntrade.events.market import CandleClosedEvent, TickEvent
+from ntrade.events.market import CandleClosedEvent, QuoteEvent, TickEvent
 
 _INTERVAL_SECONDS = {
     "1s": 1, "5s": 5, "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400,
@@ -26,7 +26,11 @@ class CandleEngine:
         self._open: dict[str, dict] = {}
         self._closed: dict[str, list[CandleClosedEvent]] = {}
         self._max_candles = max_candles
+        # last bucket seeded from a bar-shaped QuoteEvent (backtest only); the
+        # paired close tick sharing that bucket is skipped to avoid double volume
+        self._bar_seeded: dict[str, int] = {}
         context.bus.subscribe(TickEvent, self.on_tick)
+        context.bus.subscribe(QuoteEvent, self.on_quote)
 
     # ------------------------------------------------------------------ ingest
     def _bucket(self, ts: datetime) -> int:
@@ -36,7 +40,30 @@ class CandleEngine:
         return epoch - (epoch % self.seconds)
 
     def on_tick(self, event: TickEvent) -> None:
+        if self._bar_seeded.get(event.symbol) == self._bucket(event.ts):
+            return  # same bucket already seeded from a bar-shaped quote; skip
         self._ingest(event.symbol, event.exchange, event.price, event.ts, volume=event.quantity)
+
+    def on_quote(self, event: QuoteEvent) -> None:
+        if self.ctx.mode != "backtest":
+            return  # live/replay quotes carry day-session OHLCV, not bars
+        self._ingest_bar(event.symbol, event.exchange, event.open, event.high,
+                         event.low, event.ltp, event.volume, event.ts)
+
+    def _ingest_bar(self, symbol, exchange, open_, high, low, close, volume, ts) -> None:
+        bucket = self._bucket(ts)
+        candle = self._open.get(symbol)
+        if candle is None or candle["bucket"] != bucket:
+            if candle is not None:
+                self._close(symbol, candle)
+            candle = self._open[symbol] = {
+                "bucket": bucket, "exchange": exchange,
+                "open": open_, "high": high, "low": low, "close": close, "volume": 0,
+            }
+        candle["open"], candle["high"] = open_, high
+        candle["low"], candle["close"] = low, close
+        candle["volume"] = volume
+        self._bar_seeded[symbol] = bucket
 
     def _ingest(self, symbol, exchange, price, ts, volume: int = 0) -> None:
         bucket = self._bucket(ts)

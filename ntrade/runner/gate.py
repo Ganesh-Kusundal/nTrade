@@ -19,19 +19,25 @@ def _equity_trace(kernel, *, initial_cash: float):
     cash = float(initial_cash)
     positions: dict[str, tuple[int, float]] = {}
     peak = cash
+    yield peak, cash
     for e in kernel.bus.history:
         if isinstance(e, PositionUpdatedEvent):
             positions[e.symbol] = (e.quantity, e.ltp)
             if e.quantity == 0:
                 positions.pop(e.symbol, None)
-        elif isinstance(e, BalanceChangedEvent):
-            cash = e.balance
-        else:
             continue
+        if not isinstance(e, BalanceChangedEvent):
+            continue
+        # Equity is only computed on a settled balance event: PortfolioEngine
+        # publishes PositionUpdatedEvent then BalanceChangedEvent, both already
+        # reflecting the fill — computing at the position event would count the
+        # new position against the pre-fill cash and spike the peak. RiskEngine
+        # samples equity between complete event groups, so a yielded point here
+        # must equal what RiskEngine.equity() returns after that group.
+        cash = e.balance
         eq = cash + sum(q * ltp for q, ltp in positions.values())
         peak = max(peak, eq)
-        if peak:
-            yield peak, eq
+        yield peak, eq
 
 
 def build_paper_report(kernel, *, initial_cash: float = 100_000.0) -> dict:

@@ -53,5 +53,12 @@ def test_equity_trace_converges_on_portfolio_read_model():
     # The gate's equity must converge on the portfolio read model
     # (RiskEngine.equity = account.balance + Σ Position.market_value).
     assert report["final_equity"] == pytest.approx(k.risk_engine.equity(), abs=0.01)
-    _, final_eq = list(_equity_trace(k, initial_cash=100_000.0))[-1]
+    trace = list(_equity_trace(k, initial_cash=100_000.0))
+    peak, final_eq = trace[-1]
+    # A single BUY fill at 100.0 with no subsequent price move must not spike:
+    # the position is marked at fill price and cash is debited at the same
+    # time, so no intermediate equity may exceed the pre-fill cash, and the
+    # settled value must match RiskEngine.equity exactly.
+    assert peak == pytest.approx(100_000.0, abs=0.01)
     assert final_eq == pytest.approx(k.risk_engine.equity(), abs=0.01)
+    assert report["max_drawdown_pct"] == pytest.approx(0.0, abs=0.01)

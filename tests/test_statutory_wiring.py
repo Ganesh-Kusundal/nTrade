@@ -212,3 +212,52 @@ def test_kernel_default_target_carries_statutory_model():
     targets = list(k.router._targets.values())
     assert len(targets) == 1
     assert isinstance(targets[0].statutory, IndianStatutoryCosts)
+
+
+# ------------------------------------------------- delivery (overnight) costs
+def test_overnight_equity_sell_uses_delivery_schedule():
+    """A sell entered on a previous session date is delivery-priced: sell leg on
+    the delivery schedule plus the buy-leg uplift (delivery STT + stamp)."""
+    k = _kernel(initial_cash=100_000.0)
+    k.router.submit(_intent(side="BUY", qty=10, price=100.0, ts=datetime(2026, 1, 1, 9, 15)))
+    k.router.submit(_intent(side="SELL", qty=10, price=110.0, ts=datetime(2026, 1, 2, 9, 15)))
+    fills = [e for e in k.bus.history if isinstance(e, OrderFilledEvent)]
+    buy, sell = fills[0], fills[1]
+    model = IndianStatutoryCosts()  # equity-intraday default
+    delivery = model.for_instrument(Equity("RELIANCE", exchange="NSE"), delivery=True)
+    entry_notional = buy.fill_price * buy.quantity
+    sell_notional = sell.fill_price * sell.quantity
+    adjustment = round(
+        delivery.stt(entry_notional, "BUY") + delivery.stamp(entry_notional, "BUY")
+        - model.stt(entry_notional, "BUY") - model.stamp(entry_notional, "BUY"), 4)
+    expected = round(delivery.total_cost(sell_notional, "SELL") + adjustment, 4)
+    assert sell.statutory == pytest.approx(expected)
+    # delivery STT on sell is 0.1% vs intraday 0.025% → strictly higher
+    assert sell.statutory > model.total_cost(sell_notional, "SELL")
+
+
+def test_same_day_round_trip_stays_intraday():
+    k = _kernel()
+    ts = datetime(2026, 1, 1, 9, 15)
+    k.router.submit(_intent(side="BUY", qty=10, price=100.0, ts=ts))
+    k.router.submit(_intent(side="SELL", qty=10, price=110.0, ts=ts))
+    fills = [e for e in k.bus.history if isinstance(e, OrderFilledEvent)]
+    sell = fills[1]
+    assert sell.statutory == pytest.approx(
+        round(IndianStatutoryCosts().total_cost(1100.0, "SELL"), 4))
+
+
+def test_delivery_detection_opt_out():
+    """delivery_detection=False keeps intraday pricing even on overnight exits."""
+    from ntrade.execution.simulator import SimulatedExecution
+    from ntrade.kernel.context import TradingContext
+    from ntrade.kernel.event_bus import EventBus
+
+    ctx = TradingContext(EventBus(), ReplayClock(), mode="replay")
+    ctx.register(Equity("RELIANCE", exchange="NSE"))
+    exec_ = SimulatedExecution(ctx, delivery_detection=False)
+    exec_.submit(_intent(side="BUY", qty=10, price=100.0, ts=datetime(2026, 1, 1, 9, 15)))
+    exec_.submit(_intent(side="SELL", qty=10, price=110.0, ts=datetime(2026, 1, 2, 9, 15)))
+    fills = [e for e in ctx.bus.history if isinstance(e, OrderFilledEvent)]
+    assert fills[1].statutory == pytest.approx(
+        round(IndianStatutoryCosts().total_cost(1100.0, "SELL"), 4))

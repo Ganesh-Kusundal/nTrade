@@ -18,7 +18,7 @@ from ntrade.domain.instruments.cash import Equity
 from ntrade.events.market import QuoteEvent, TickEvent
 from ntrade.events.order import OrderFilledEvent
 from ntrade.execution.costs import (
-    CommissionModel, SlippageModel, STATUTORY_DEFAULT,
+    CommissionModel, FuturesCarryCosts, SlippageModel, STATUTORY_DEFAULT,
 )
 from ntrade.execution.router import ExecutionRouter
 from ntrade.execution.simulator import SimulatedExecution
@@ -30,7 +30,7 @@ class BacktestResult:
     def __init__(self, final_equity: float, total_return_pct: float, trades: list,
                  equity_curve: pd.DataFrame, n_trades: int,
                  commissions_total: float = 0.0, statutory_total: float = 0.0,
-                 max_drawdown_pct: float = 0.0):
+                 max_drawdown_pct: float = 0.0, futures_costs_total: float = 0.0):
         self.final_equity = final_equity
         self.total_return_pct = total_return_pct
         self.trades = trades
@@ -39,17 +39,19 @@ class BacktestResult:
         self.commissions_total = commissions_total
         self.statutory_total = statutory_total
         self.max_drawdown_pct = max_drawdown_pct
+        self.futures_costs_total = futures_costs_total
 
     @property
     def costs_total(self) -> float:
-        """All charges deducted from PnL: commission + statutory (H6)."""
-        return round(self.commissions_total + self.statutory_total, 4)
+        """All charges deducted from PnL: commission + statutory + futures costs."""
+        return round(self.commissions_total + self.statutory_total + self.futures_costs_total, 4)
 
     def __repr__(self) -> str:
         return (f"BacktestResult(final_equity={self.final_equity:,.2f}, "
                 f"return={self.total_return_pct:.2f}%, trades={self.n_trades}, "
                 f"commission={self.commissions_total:.2f}, "
                 f"statutory={self.statutory_total:.2f}, "
+                f"futures={self.futures_costs_total:.2f}, "
                 f"max_dd={self.max_drawdown_pct:.2f}%)")
 
 
@@ -59,9 +61,12 @@ class BacktestSimulator:
                  slippage: SlippageModel | None = None,
                  commission: CommissionModel | None = None,
                  statutory=STATUTORY_DEFAULT,
+                 futures_costs: "FuturesCarryCosts | None" = None,
                  fill_policy: FillPolicy | None = None,
                  clock: SimulationClock | None = None,
-                 kernel: TradingKernel | None = None):
+                 kernel: TradingKernel | None = None,
+                 instrument=None,
+                 delivery_detection: bool = True):
         self.symbol = symbol
         self.exchange = exchange
         self.timeframe = timeframe
@@ -69,27 +74,34 @@ class BacktestSimulator:
         self.slippage = slippage
         self.commission = commission
         self.statutory = statutory
+        self.futures_costs = futures_costs
+        self.delivery_detection = delivery_detection
         self.fill_policy = fill_policy
         self.clock = clock or SimulationClock()
         self._curve_rows: list[tuple] = []
         self._current_bar = None
+        self._last_carry_date = None
+        self._rolled: set[str] = set()
+        self._futures_costs_total = 0.0
         if kernel is None:
             kernel = TradingKernel(
                 mode="backtest", clock=self.clock, timeframe=timeframe,
                 initial_cash=initial_cash,
             )
-            kernel.register(Equity(symbol, exchange=exchange))
+            kernel.register(instrument or Equity(symbol, exchange=exchange))
             router = ExecutionRouter(kernel.ctx)
             if fill_policy is not None:
                 execution = BarAwareExecution(
                     kernel.ctx, policy=fill_policy,
                     bar_provider=lambda: self._current_bar,
                     slippage=slippage, commission=commission, statutory=statutory,
+                    delivery_detection=delivery_detection,
                 )
             else:
                 execution = SimulatedExecution(
                     kernel.ctx, slippage=slippage, commission=commission,
-                    statutory=statutory,)
+                    statutory=statutory, delivery_detection=delivery_detection,
+                )
             router.add("default", execution)
             router.default("default")
             kernel.router = router
@@ -106,6 +118,9 @@ class BacktestSimulator:
         if data is None or data.empty:
             raise ValueError("data must be a non-empty OHLCV frame")
         self._curve_rows = []
+        self._last_carry_date = None
+        self._rolled = set()
+        self._futures_costs_total = 0.0
         for _, row in data.iterrows():
             ts = row["timestamp"]
             self._current_bar = row  # for bar-aware limit fills
@@ -120,9 +135,55 @@ class BacktestSimulator:
                 symbol=self.symbol, exchange=self.exchange, price=close,
                 quantity=int(row.get("volume", 0) or 0), ts=ts,
             ))
+            # Futures holding-period costs accrue after the bar's state is in
+            # place (positions updated by the fills this bar published).
+            self._apply_futures_costs(ts)
             self._curve_rows.append((ts, self._mark_to_market(close)))
         self.kernel.stop(reason="backtest complete")
         return self.results()
+
+    def _apply_futures_costs(self, ts) -> None:
+        """Accrue daily carry and expiry roll slippage on open futures positions.
+
+        Opt-in via ``futures_costs``. Carry (contango drag) accrues on the
+        holding notional between session dates; a held contract that crosses
+        its expiry pays the one-off roll cost (charged once per contract).
+        Charges are deducted from the account balance so the equity curve and
+        reported totals stay consistent with the fills pipeline. Notional uses
+        the position's recorded price (entry/fill, since ``Position.ltp`` only
+        updates on fills), so carry/roll are charged on entry notional — a
+        deterministic approximation of the holding-period contract value.
+        """
+        if self.futures_costs is None:
+            return
+        from ntrade.domain.instruments.derivatives import Future
+
+        today = ts.date()
+        for pos in list(self.kernel.ctx.portfolio.positions):
+            inst = self.kernel.ctx.instrument(pos.symbol)
+            if inst is None or not isinstance(inst, Future):
+                continue
+            notional = (pos.ltp or pos.avg_price) * abs(pos.quantity)
+            # 1. expiry rollover slippage — once per contract, when held past expiry
+            if inst.expiry is not None and today > inst.expiry and pos.symbol not in self._rolled:
+                self._rolled.add(pos.symbol)
+                self._deduct_futures(self.futures_costs.roll_cost(notional))
+            # 2. daily carry (roll yield) — longs pay, shorts receive
+            if self._last_carry_date is not None and today > self._last_carry_date:
+                days = (today - self._last_carry_date).days
+                if self.futures_costs.within_window(inst.expiry, today):
+                    carry = self.futures_costs.daily_carry(notional, days)
+                    if pos.quantity < 0:
+                        carry = -carry
+                    self._deduct_futures(carry)
+        self._last_carry_date = today
+
+    def _deduct_futures(self, amount: float) -> None:
+        if not amount:
+            return
+        self._futures_costs_total = round(self._futures_costs_total + abs(amount), 4)
+        self.kernel.ctx.account.balance = round(
+            self.kernel.ctx.account.balance - amount, 4)
 
     def _mark_to_market(self, close: float) -> float:
         position = self.kernel.ctx.portfolio.position(self.symbol)
@@ -141,6 +202,7 @@ class BacktestSimulator:
         final = float(curve["equity"].iloc[-1]) if len(curve) else self.initial_cash
         commissions_total = round(sum(float(f.commission or 0.0) for f in fills), 4)
         statutory_total = round(sum(float(getattr(f, "statutory", 0.0) or 0.0) for f in fills), 4)
+        futures_costs_total = self._futures_costs_total
         if len(curve):
             peak = curve["equity"].cummax()
             drawdown = (curve["equity"] - peak) / peak
@@ -153,5 +215,5 @@ class BacktestSimulator:
             total_return_pct=round((final - self.initial_cash) / self.initial_cash * 100, 2),
             trades=trades, equity_curve=curve, n_trades=len(trades),
             commissions_total=commissions_total, statutory_total=statutory_total,
-            max_drawdown_pct=max_drawdown_pct,
+            futures_costs_total=futures_costs_total, max_drawdown_pct=max_drawdown_pct,
         )

@@ -173,29 +173,88 @@ class IndianStatutoryCosts:
             + self.gst(notional, brokerage=brokerage)
         )
 
-    def for_instrument(self, instrument) -> "IndianStatutoryCosts":
+    def for_instrument(
+        self, instrument, *, delivery: bool | None = None,
+    ) -> "IndianStatutoryCosts":
         """Product/delivery-adjusted model for an instrument's class.
 
         Futures and Options use the F&O STT/stamp/exchange schedule; everything
         else keeps the configured product (default equity-intraday). Custom
         rates (``stt``/``exchange_charge``/``stamp_duty``/…) are preserved — only
-        the schedule keys change. Returns ``self`` when no adjustment applies.
+        the schedule keys change. ``delivery`` overrides the delivery flag
+        (overnight equity holds switch to the delivery schedule). Returns
+        ``self`` when no adjustment applies.
         """
         from ntrade.domain.instruments.derivatives import Future, Option
 
-        product, delivery = self.product, self.delivery
+        product, d = self.product, self.delivery
         if isinstance(instrument, Option):
-            product, delivery = "options", False
+            product, d = "options", False
         elif isinstance(instrument, Future):
-            product, delivery = "futures", False
-        if product == self.product and delivery == self.delivery:
+            product, d = "futures", False
+        if delivery is not None:
+            d = bool(delivery)
+        if product == self.product and d == self.delivery:
             return self
         return IndianStatutoryCosts(
-            product=product, delivery=delivery, brokerage=self.brokerage,
+            product=product, delivery=d, brokerage=self.brokerage,
             stt=self._stt_rates, exchange_charge=self._exchange_rates,
             sebi_fee=self.sebi_fee, gst_rate=self.gst_rate,
             stamp_duty=self._stamp_rates,
         )
+
+
+class FuturesCarryCosts:
+    """Futures holding-period costs: daily carry (roll yield) + expiry roll.
+
+    A backtest that holds a futures contract across bars and into expiry pays
+    the carry drag live (contango) and pays spread/slippage when rolling to the
+    next contract. Modelling these makes a futures backtest's PnL converge on
+    live roll behavior:
+
+      - ``daily_carry(notional, days)`` — the cost-of-carry drag on the
+        contract value: ``notional * (risk_free - dividend_yield) * days/365``.
+        A long position pays it (contango); a short position receives it.
+      - ``roll_cost(notional)`` — one-off slippage charged when a held contract
+        crosses its expiry and must be rolled to the next month.
+
+    ``carry_window_days`` limits carry accrual to the run-up to expiry (the
+    roll window); outside it, prices already embed the term structure and
+    charging again would double-count.
+    """
+
+    def __init__(
+        self,
+        *,
+        risk_free: float = 0.065,
+        dividend_yield: float = 0.0,
+        roll_pct: float = 0.0002,
+        carry_window_days: int = 5,
+    ):
+        self.risk_free = risk_free
+        self.dividend_yield = dividend_yield
+        self.roll_pct = roll_pct
+        self.carry_window_days = carry_window_days
+
+    def daily_carry(self, notional: float, days: int) -> float:
+        """Cost-of-carry drag on ``notional`` over ``days`` (contango)."""
+        if days <= 0:
+            return 0.0
+        return notional * (self.risk_free - self.dividend_yield) * days / 365.0
+
+    def roll_cost(self, notional: float) -> float:
+        """One-off slippage paid when rolling a held contract past expiry."""
+        return notional * self.roll_pct
+
+    def within_window(self, expiry, now) -> bool:
+        """True while ``now`` is inside the carry/roll window before expiry."""
+        from datetime import date
+
+        if expiry is None:
+            return False
+        days_to = (expiry - now).days if isinstance(now, date) else \
+            (expiry - now.date()).days
+        return 0 <= days_to <= self.carry_window_days
 
 
 class _StatutoryDefault:

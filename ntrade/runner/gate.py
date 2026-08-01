@@ -38,7 +38,9 @@ def build_paper_report(kernel, *, initial_cash: float = 100_000.0) -> dict:
     fills = [e for e in kernel.bus.history if isinstance(e, OrderFilledEvent)]
     trades = [{
         "order_id": f.order_id, "symbol": f.symbol, "side": f.side,
-        "quantity": f.quantity, "fill_price": f.fill_price, "ts": f.ts.isoformat(),
+        "quantity": f.quantity, "fill_price": f.fill_price,
+        "commission": f.commission, "statutory": f.statutory,
+        "ts": f.ts.isoformat(),
     } for f in fills]
     n_trades = len(fills)
     balance = getattr(kernel.ctx.account, "balance", initial_cash)
@@ -48,6 +50,9 @@ def build_paper_report(kernel, *, initial_cash: float = 100_000.0) -> dict:
     drawdown = 0.0
     for peak, eq in _equity_trace(kernel, initial_cash=initial_cash):
         drawdown = max(drawdown, (peak - eq) / peak * 100)
+    # Cost drag the live account will actually pay — surfaces the gap between
+    # a zero-cost paper run and live PnL (H6 statutory charges per fill).
+    total_charges = round(sum(f.commission + f.statutory for f in fills), 2)
     return {
         "n_trades": n_trades,
         "fills": trades,
@@ -58,5 +63,6 @@ def build_paper_report(kernel, *, initial_cash: float = 100_000.0) -> dict:
             "no_unexplained_rejections": True,
             "kill_switch_armed": False,  # set True by the operator at live go-time
             "forward_test_period_met": False,  # set True after the paper window
+            "total_charges": total_charges,  # ₹ paid in commission + statutory
         },
     }

@@ -12,6 +12,14 @@ charges (STT / exchange / SEBI / GST / stamp, H6) default to the real
 GST is charged on the actual per-fill commission; pass a custom
 ``IndianStatutoryCosts(product=..., delivery=True)`` to override (e.g.
 delivery-equity backtests).
+
+Delivery detection: an equity SELL whose position was entered on a previous
+session date is re-priced on the delivery schedule (0.1% STT + delivery
+stamp) instead of intraday — the same uplift is applied to the entry leg, so
+overnight round trips are fully delivery-priced. Disable with
+``delivery_detection=False``. Shorts (SELL-first) are not delivery-detected:
+a short opened intraday and covered next session stays intraday-priced on
+both legs.
 """
 
 from __future__ import annotations
@@ -42,7 +50,10 @@ class SimulatedExecution:
         slippage: SlippageModel | None = None,
         commission: CommissionModel | None = None,
         statutory=STATUTORY_DEFAULT,
+        delivery_detection: bool = True,
     ):
+        from datetime import date
+
         from ntrade.execution.costs import FixedSlippage
 
         self.ctx = context
@@ -50,6 +61,11 @@ class SimulatedExecution:
         self.commission = commission or FlatCommission(0.0)
         # None → zero-cost opt-out; STATUTORY_DEFAULT → IndianStatutoryCosts().
         self.statutory: IndianStatutoryCosts | None = resolve_statutory(statutory)
+        self.delivery_detection = delivery_detection
+        # Entry session-date + notional per symbol, for overnight (delivery)
+        # detection on the closing sell (feature: delivery-equity costs).
+        self._entry_date: dict[str, date] = {}
+        self._entry_notional: dict[str, float] = {}
         self._seq = 0
         self.fills: list[OrderFilledEvent] = []
 
@@ -86,12 +102,38 @@ class SimulatedExecution:
         ))
         notional = fill_price * intent.quantity
         commission = round(self.commission.apply(notional), 4)
+        # --- delivery (overnight) detection ---------------------------------
+        held_overnight = False
+        delivery_adjustment = 0.0
+        if intent.side == "BUY":
+            if self.delivery_detection:
+                self._entry_date[intent.symbol] = intent.ts.date()
+                self._entry_notional[intent.symbol] = notional
+        elif self.delivery_detection and self.statutory is not None:
+            entry = self._entry_date.get(intent.symbol)
+            if entry is not None and intent.ts.date() > entry:
+                # Position entered on a previous session date → the round trip
+                # is delivery: sell leg on the delivery schedule plus the
+                # buy-leg uplift (delivery buy STT + stamp vs intraday).
+                held_overnight = True
+                intraday = self.statutory.for_instrument(instrument)
+                delivery = self.statutory.for_instrument(instrument, delivery=True)
+                entry_notional = self._entry_notional.get(intent.symbol, 0.0)
+                delivery_adjustment = round(
+                    delivery.stt(entry_notional, "BUY")
+                    + delivery.stamp(entry_notional, "BUY")
+                    - intraday.stt(entry_notional, "BUY")
+                    - intraday.stamp(entry_notional, "BUY"), 4)
+        # --- statutory charges ----------------------------------------------
         if self.statutory is not None:
-            # Product schedule from the instrument class (F&O vs equity) and
-            # GST on the actual per-fill commission — the two details that
-            # would otherwise make simulated charges diverge from live.
-            model = self.statutory.for_instrument(instrument)
-            statutory = round(model.total_cost(notional, intent.side, brokerage=commission), 4)
+            # Product schedule from the instrument class (F&O vs equity), GST
+            # on the actual per-fill commission, and the delivery schedule for
+            # overnight equity exits — the details that would otherwise make
+            # simulated charges diverge from live.
+            model = self.statutory.for_instrument(instrument, delivery=held_overnight)
+            statutory = round(
+                model.total_cost(notional, intent.side, brokerage=commission)
+                + delivery_adjustment, 4)
         else:
             statutory = 0.0
         filled = OrderFilledEvent(

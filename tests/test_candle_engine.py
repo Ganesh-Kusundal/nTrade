@@ -61,6 +61,48 @@ def test_backtest_indicators_populated_with_real_candles():
     assert indicators["atr_14"] == pytest.approx(3.0, abs=0.5)
 
 
+def test_scanners_tolerate_real_indicator_bundles():
+    """Scanners must not crash on real indicator bundles and must only emit
+    numeric indicator_values.
+
+    stx_10_3 from compute_bundle is the supertrend DIRECTION string
+    ('up'/'down'), not a price level — BreakoutScanner must fall through to the
+    high/low breakout path instead of doing a string > int comparison
+    (final review round regression).
+    """
+    from ntrade.kernel.trading_session import TradingSession
+    from ntrade.scanners.builtin import (
+        BreakoutScanner, MomentumScanner, VolumeSpikeScanner,
+    )
+
+    sim = _backtest()
+    # Append a bar that closes through the prior high so the high/low
+    # breakout fallback actually fires and emits indicator_values.
+    df = _ohlcv(bars=20)
+    last = {
+        "timestamp": df["timestamp"].iloc[-1] + timedelta(minutes=5),
+        "open": 121.0, "high": 124.0, "low": 120.0, "close": 130.0, "volume": 1000,
+    }
+    sim.run(pd.concat([df, pd.DataFrame([last])], ignore_index=True))
+
+    inst = sim.kernel.ctx.instrument("NIFTY")
+    assert "stx_10_3" in inst._indicators
+    assert isinstance(inst._indicators["stx_10_3"], str)
+    assert inst._quote.ltp == 130.0
+
+    session = TradingSession(kernel=sim.kernel, mode="backtest")
+    for scanner in (BreakoutScanner(), VolumeSpikeScanner(), MomentumScanner()):
+        results = scanner.scan(session)
+        for r in results:
+            assert all(isinstance(v, (int, float))
+                       for v in r.indicator_values.values())
+
+    breakout = BreakoutScanner().scan(session)
+    assert breakout, "high/low fallback should fire above the range"
+    assert all(isinstance(v, (int, float)) for v in breakout[0].indicator_values.values())
+    assert "stx_10_3" not in breakout[0].indicator_values
+
+
 def test_candle_engine_ignores_live_quote_events():
     """Live/replay QuoteEvents carry day-session OHLCV and must not mint bars."""
     k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="5m")

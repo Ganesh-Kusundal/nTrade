@@ -14,7 +14,10 @@ def _equity_trace(kernel, *, initial_cash: float):
     BalanceChangedEvent (cash) — the canonical stream published by the
     PortfolioEngine on every fill — so the trace's mark-to-market basis is
     exactly ``RiskEngine.equity`` (account.balance + Σ Position.market_value).
-    Yields (peak_equity, current_equity) after each state change.
+    Starts at initial_cash; updates the per-symbol (quantity, ltp) map on
+    PositionUpdatedEvent; yields (peak, eq) on each settled BalanceChangedEvent
+    (post-fill state, matching RiskEngine.equity). No yields for position-only
+    updates.
     """
     cash = float(initial_cash)
     positions: dict[str, tuple[int, float]] = {}
@@ -55,7 +58,8 @@ def build_paper_report(kernel, *, initial_cash: float = 100_000.0) -> dict:
         equity += p.quantity * (p.ltp or p.avg_price)
     drawdown = 0.0
     for peak, eq in _equity_trace(kernel, initial_cash=initial_cash):
-        drawdown = max(drawdown, (peak - eq) / peak * 100)
+        if peak > 0:
+            drawdown = max(drawdown, (peak - eq) / peak * 100)
     # Cost drag the live account will actually pay — surfaces the gap between
     # a zero-cost paper run and live PnL (H6 statutory charges per fill).
     total_charges = round(sum(f.commission + f.statutory for f in fills), 2)

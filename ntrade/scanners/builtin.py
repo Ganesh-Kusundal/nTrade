@@ -158,8 +158,11 @@ class MomentumScanner(Scanner):
 class BreakoutScanner(Scanner):
     """Detect instruments breaking above recent highs or below recent lows.
 
-    Uses ``stx_10_3`` (supertrend) or ``atr_14`` indicators if available;
-    otherwise compares LTP against a simple high/low range from the quote.
+    Uses a numeric ``stx_10_3`` (supertrend) level if available; otherwise
+    compares LTP against a simple high/low range from the quote.  Because the
+    indicator pipeline emits ``stx_10_3`` as the supertrend direction string
+    ("up"/"down"), the numeric branch is dormant today and the high/low range
+    is the working path.
     """
 
     name = "breakout"
@@ -176,13 +179,16 @@ class BreakoutScanner(Scanner):
             low = inst._quote.low or 0
             conditions: list[str] = []
             score = 0.0
-            # Supertrend-based breakout
-            if stx is not None and stx > 0:
+            # Supertrend-based breakout — stx_10_3 is only a price band when it
+            # is actually numeric; the pipeline emits the direction string
+            # ("up"/"down"), so a non-numeric stx falls through to the
+            # high/low path below instead of raising a type error.
+            if isinstance(stx, (int, float)) and stx > 0:
                 if ltp > stx:
                     conditions.append("above_supertrend")
                     score = (ltp - stx) / stx * 100
             # High/low breakout
-            elif high > 0 and low > 0:
+            if not conditions and high > 0 and low > 0:
                 range_ = high - low
                 if range_ > 0:
                     if ltp >= high:
@@ -194,11 +200,18 @@ class BreakoutScanner(Scanner):
             if not conditions:
                 continue
             signal = "BUY" if "low_breakout" not in conditions else "SELL"
+            # indicator_values is dict[str, float] — only include numeric
+            # indicators (stx_10_3 is a direction string from the pipeline).
+            indicator_values: dict[str, float] = {}
+            for k in ("stx_10_3", "atr_14"):
+                v = indicators.get(k)
+                if isinstance(v, (int, float)):
+                    indicator_values[k] = v
             results.append(ScannerResult(
                 instrument=inst, scanner_name=self.name,
                 score=round(score, 4), signal=signal,
                 matched_conditions=tuple(conditions),
-                indicator_values={k: indicators.get(k, 0) for k in ("stx_10_3", "atr_14") if indicators.get(k)},
+                indicator_values=indicator_values,
                 timestamp=now or datetime.now(),
             ))
         return results

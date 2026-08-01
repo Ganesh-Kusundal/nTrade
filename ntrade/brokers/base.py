@@ -27,9 +27,34 @@ class BrokerAdapter(ABC):
 
     name = "base"
 
-    def __init__(self):
+    def __init__(self, clock=None):
         self._subscriptions: dict[str, "Instrument"] = {}
         self._connected = False
+        self._clock = clock  # optional TradingClock — zero-parity timestamp source
+
+    # ------------------------------------------------------------ time source
+    def set_clock(self, clock) -> "BrokerAdapter":
+        """Inject a TradingClock so broker-produced timestamps follow replay
+        time instead of the wall clock (zero-parity invariant).
+
+        Callers may also pass ``now``/``asof`` per-call; when both are absent
+        the injected clock is used, and only as a last resort the wall clock.
+        """
+        self._clock = clock
+        return self
+
+    def _ts(self, now=None):
+        """Resolve a timestamp: explicit ``now`` > injected clock > wall clock.
+
+        Uses ``getattr`` so brokers constructed via ``__new__`` (common in
+        tests) degrade gracefully to the wall clock instead of raising.
+        """
+        if now is not None:
+            return now
+        clock = getattr(self, "_clock", None)
+        if clock is not None:
+            return clock.now()
+        return datetime.now()
 
     # ------------------------------------------------------------ connection
     @abstractmethod

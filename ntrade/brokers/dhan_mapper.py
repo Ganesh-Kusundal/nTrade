@@ -75,7 +75,11 @@ class DhanMapper:
 
     @staticmethod
     def normalize_quote(ltp: float, quote_data: dict | None = None, *, now: datetime | None = None) -> Quote:
-        """Build a Quote from a raw LTP float and optional quote-data dict."""
+        """Build a Quote from a raw LTP float and optional quote-data dict.
+
+        ``now`` must be supplied by broker callers (kernel clock for replay
+        parity); the wall-clock fallback exists only for legacy direct calls.
+        """
         q = Quote(ltp=ltp, bid=ltp, ask=ltp, timestamp=now or datetime.now())
         if quote_data:
             q = q.with_update(
@@ -268,7 +272,8 @@ def to_records(value) -> list[dict]:
 # ---- option chain builder --------------------------------------------------
 
 def chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float,
-                       expiry: date | None = None) -> "OptionChain":
+                       expiry: date | None = None,
+                       asof: datetime | None = None) -> "OptionChain":
     """Build an OptionChain from a Dhan-style chain dataframe."""
     from ntrade.domain.analytics.greeks import Greeks
     from ntrade.domain.instruments.chain import OptionChain
@@ -286,7 +291,7 @@ def chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float,
                 symbol=f"{underlying.symbol} {strike_label} {leg}",
                 exchange="NFO",
                 strike=strike,
-                expiry=expiry or date.today(),
+                expiry=expiry or (asof or datetime.now()).date(),
                 option_type=otype,
                 underlying_symbol=underlying.symbol,
                 broker=underlying._broker,

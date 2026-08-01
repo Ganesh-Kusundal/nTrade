@@ -87,6 +87,10 @@ class EventStore:
         return self._fh
 
     def append(self, event: Event) -> "EventStore":
+        # Append order IS the causal sequence: same-ts derived events (a fill
+        # caused by a tick) must replay in append order, so recovery_events()
+        # uses the in-memory index as the seq tiebreak, never ts alone (H5) —
+        # ts ties would otherwise invert causality.
         self._events.append(event)
         fh = self._ensure_fh()
         if fh is not None:
@@ -150,9 +154,13 @@ class EventStore:
 
         market_types = (TickEvent, QuoteEvent, DepthEvent)
         types = market_types + (OrderFilledEvent,)
+        # Append order is causal order (the record handler runs after the
+        # effects a tick triggers), so the in-memory index IS the seq. ts-only
+        # ties would invert causality; use the recorded order as the tiebreak.
         events = [e for e in self._events if isinstance(e, types)]
         return sorted(
-            events, key=lambda e: (e.ts, 0 if isinstance(e, market_types) else 1)
+            events,
+            key=lambda e: (e.ts, self._events.index(e)),
         )
 
     def replay(self):

@@ -207,14 +207,15 @@ class TestDhanTransportRetryIntegration:
         assert result == 2500.0
         assert tsl.get_ltp_data.call_count == 3
 
-    def test_get_ltp_returns_zero_on_exhaustion(self):
-        """When all retries fail, get_ltp returns 0.0 (preserves existing behaviour)."""
-        from ntrade.brokers.dhan_transport import DhanTransport
+    def test_get_ltp_raises_on_exhaustion(self):
+        """When all retries fail, get_ltp raises BrokerDataError (never 0.0)."""
+        from ntrade.brokers.dhan_transport import BrokerDataError, DhanTransport
         tsl = MagicMock()
         tsl.get_ltp_data.side_effect = Exception("network down")
         policy = RetryPolicy(max_retries=3, base_delay=0.0, jitter=0.0)
         transport = DhanTransport(tsl, retry_policy=policy)
-        assert transport.get_ltp("REL") == 0.0
+        with pytest.raises(BrokerDataError):
+            transport.get_ltp("REL")
         assert tsl.get_ltp_data.call_count == 3
 
     def test_get_ltp_success_first_try(self):

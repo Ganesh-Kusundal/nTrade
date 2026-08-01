@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -14,7 +15,13 @@ if TYPE_CHECKING:
 
 
 class TradingContext:
-    """Holds the bus, clock, instruments, portfolio and account for a session."""
+    """Holds the bus, clock, instruments, portfolio and account for a session.
+
+    Thread safety: a reentrant lock (``ctx.lock``) protects instrument
+    registration and iteration.  Engines that mutate shared state from
+    different threads (WebSocket feed vs. order thread) should acquire
+    ``ctx.lock`` around the critical section.
+    """
 
     def __init__(
         self,
@@ -36,14 +43,36 @@ class TradingContext:
         self.account = account or Account()
         self.session_id = session_id
         self.metadata = metadata
+        self.lock = threading.RLock()
 
     def now(self) -> datetime:
         return self.clock.now()
 
     def register(self, instrument: "Instrument") -> "Instrument":
         """Register an instrument so engines can project state into it."""
-        self.instruments[instrument.symbol] = instrument
+        with self.lock:
+            self.instruments[instrument.symbol] = instrument
         return instrument
 
     def instrument(self, symbol: str) -> "Instrument | None":
-        return self.instruments.get(symbol)
+        with self.lock:
+            return self.instruments.get(symbol)
+
+    def instruments_snapshot(self) -> list["Instrument"]:
+        """Thread-safe list copy of all registered instruments.
+
+        Shallow: the Instrument read-models inside are still mutated by the
+        feed thread (``apply_quote``) — use :meth:`instruments_deep_snapshot`
+        when serializing/iterating state that must be internally consistent.
+        """
+        with self.lock:
+            return list(self.instruments.values())
+
+    def instruments_deep_snapshot(self) -> dict[str, dict]:
+        """Thread-safe deep snapshot: symbol -> ``instrument.snapshot()``.
+
+        Each entry is captured under the context lock, so concurrent feed
+        updates cannot tear a single instrument's snapshot.
+        """
+        with self.lock:
+            return {s: i.snapshot() for s, i in self.instruments.items()}

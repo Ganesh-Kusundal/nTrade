@@ -116,11 +116,12 @@ class ResilientKernel(TradingKernel):
 
     def snapshot(self) -> dict:
         """Recovered state summary: balance, positions, instruments."""
+        instruments = self.ctx.instruments_snapshot()
         return {
             "mode": self.mode,
             "recovered_events": self.recovered_events,
             "recovered_at": self.recovered_at,
             "balance": self.ctx.account.balance,
             "positions": [p.as_dict() for p in self.ctx.portfolio.positions],
-            "instruments": {s: i.snapshot() for s, i in self.ctx.instruments.items()},
+            "instruments": {i.symbol: i.snapshot() for i in instruments},
         }

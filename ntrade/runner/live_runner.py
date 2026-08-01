@@ -143,27 +143,34 @@ class LiveRunner:
     def _emit_heartbeat_if_due(self) -> None:
         t = self._timer()
         if t - self._last_heartbeat >= self._heartbeat_interval:
+            instruments = self.kernel.ctx.instruments_snapshot()
             self.kernel.bus.publish(HeartbeatEvent(
-                tick_count=sum(inst._stream.tick_count for inst in self.kernel.ctx.instruments.values()),
+                tick_count=sum(inst._stream.tick_count for inst in instruments),
                 open_orders=len(self.kernel.open_orders()),
                 ts=self.kernel.clock.now(),
             ))
             self._last_heartbeat = t
 
     def _check_feed_watchdog(self) -> None:
+        instruments = self.kernel.ctx.instruments_snapshot()
         total_ticks = sum(
             inst._stream.tick_count
-            for inst in self.kernel.ctx.instruments.values()
+            for inst in instruments
         )
         if total_ticks > self._last_tick_count:
             self._watchdog_missed = 0
         else:
             self._watchdog_missed += 1
             if self._watchdog_missed >= self._watchdog_max_missed:
-                self.logger.warning(
-                    "feed watchdog: no new ticks for %d checks",
+                self.logger.error(
+                    "feed watchdog: no new ticks for %d checks — "
+                    "publishing RiskHaltedEvent (frozen feed)",
                     self._watchdog_missed,
                 )
+                self.kernel.bus.publish(RiskHaltedEvent(
+                    reason="feed watchdog: frozen feed (no new ticks)",
+                    ts=self.kernel.clock.now(),
+                ))
         self._last_tick_count = total_ticks
 
     # ------------------------------------------------------------------ risk
@@ -174,7 +181,7 @@ class LiveRunner:
     def _on_risk_halted(self, event: RiskHaltedEvent) -> None:
         """Risk circuit breaker tripped -> emergency broker kill switch."""
         self.halted = True
-        for instrument in self.kernel.ctx.instruments.values():
+        for instrument in self.kernel.ctx.instruments_snapshot():
             if instrument.broker_adapter is not None:
                 try:
                     instrument.broker.kill_switch(action="ACTIVATE")

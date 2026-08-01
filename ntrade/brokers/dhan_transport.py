@@ -37,6 +37,14 @@ if TYPE_CHECKING:
     from ntrade.domain.orders.order import Order
 
 
+class BrokerDataError(RuntimeError):
+    """A market-data read failed or returned a degenerate value after retries.
+
+    Raised (never collapsed to a silent zero) so a dead broker or a zero LTP
+    cannot feed corrupt prices into PnL / risk computation (B-005 contract).
+    """
+
+
 class DhanTransport:
     """Wraps Tradehull API calls with retry and normalization.
 
@@ -44,10 +52,20 @@ class DhanTransport:
     composes this alongside DhanAuthProvider and DhanMapper.
     """
 
-    def __init__(self, tsl: Any, retry_policy: RetryPolicy | None = None):
+    def __init__(self, tsl: Any, retry_policy: RetryPolicy | None = None,
+                 clock=None):
         self._tsl = tsl
         self._mapper = DhanMapper()
         self._retry_policy = retry_policy or RetryPolicy()
+        self._clock = clock  # optional TradingClock — zero-parity timestamps
+
+    def _ts(self, now=None):
+        """Resolve a timestamp: explicit ``now`` > injected clock > wall clock."""
+        if now is not None:
+            return now
+        if self._clock is not None:
+            return self._clock.now()
+        return datetime.now()
 
     @property
     def tsl(self) -> Any:
@@ -60,7 +78,12 @@ class DhanTransport:
     # ---- market data -------------------------------------------------------
 
     def get_ltp(self, symbol: str) -> float:
-        """Fetch LTP with retry (Dhan's endpoint is flaky ~50% of calls)."""
+        """Fetch LTP with retry (Dhan's endpoint is flaky ~50% of calls).
+
+        Raises :class:`BrokerDataError` when every retry fails or the broker
+        returns a zero price — a 0.0 LTP is indistinguishable from "no data"
+        and would silently corrupt downstream PnL/risk (B-005 contract).
+        """
         names = [symbol]
 
         def _try_ltp() -> float:
@@ -72,13 +95,15 @@ class DhanTransport:
 
         try:
             return self._retry_policy.execute(_try_ltp)
-        except Exception:
-            return 0.0
+        except Exception as exc:
+            raise BrokerDataError(
+                f"LTP fetch failed for {symbol} after retries: {exc}"
+            ) from exc
 
     def get_quote(self, symbol: str) -> Quote:
         """Fetch full quote with LTP retry + optional quote-data enrichment."""
         ltp = self.get_ltp(symbol)
-        quote = DhanMapper.normalize_quote(ltp)
+        quote = DhanMapper.normalize_quote(ltp, now=self._ts())
         try:
             qd = self._tsl.get_quote_data(names=[symbol]).get(symbol, {})
             quote = quote.with_update(
@@ -155,7 +180,7 @@ class DhanTransport:
         days: int | None = None, start: str | None = None, end: str | None = None,
     ) -> pd.DataFrame:
         """Daily candles via Dhan's daily endpoint (for FUT-type contracts)."""
-        to_date = end if end is not None else datetime.now().date()
+        to_date = end if end is not None else self._ts().date()
         from_date = start if start is not None else (to_date - timedelta(days=days or 365))
         try:
             df = self._tsl.get_long_term_historical_data(

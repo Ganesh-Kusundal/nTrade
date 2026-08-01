@@ -46,6 +46,18 @@ def main() -> int:
 
     report = build_paper_report(k, initial_cash=args.initial_cash)
     print(json.dumps(report, indent=2))
+    # Fail closed: a gate that only prints a checklist does not prevent a bad
+    # go-live. Exit non-zero when the report shows no fills or an unhealthy
+    # drawdown, so CI / humans actually notice.
+    fills = int(report.get("fills", 0) or 0)
+    max_dd = float(report.get("max_drawdown_pct", 0.0) or 0.0)
+    if fills == 0:
+        print("PAPER GATE FAIL: 0 fills produced — strategy did not trade")
+        return 1
+    if max_dd > 30.0:
+        print(f"PAPER GATE FAIL: max drawdown {max_dd:.1f}% exceeds 30% safety cap")
+        return 1
+    print("PAPER GATE PASS")
     return 0
 
 

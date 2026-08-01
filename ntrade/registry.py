@@ -13,10 +13,16 @@ from ntrade.domain.instruments.base import Instrument
 
 
 class SymbolMaster:
-    """Flyweight: shared instrument instances keyed by (kind, symbol, exchange)."""
+    """Flyweight: shared instrument instances keyed by (kind, symbol, exchange).
+
+    The cache is guarded by a reentrant lock so multi-threaded factories (feed
+    thread vs. strategy thread) never race dict mutation (D-007 class).
+    """
 
     def __init__(self):
+        import threading
         self._cache: dict[tuple, Instrument] = {}
+        self._lock = threading.RLock()
 
     def get(
         self,
@@ -29,22 +35,26 @@ class SymbolMaster:
     ) -> Instrument:
         kind = getattr(cls, "KIND", cls.__name__.lower())
         key = (kind, symbol, exchange or getattr(cls, "DEFAULT_EXCHANGE", "NSE"))
-        if force_new or key not in self._cache:
-            inst = cls(symbol, exchange=exchange, **specs)
-            self._cache[key] = inst
-        return self._cache[key]
+        with self._lock:
+            if force_new or key not in self._cache:
+                inst = cls(symbol, exchange=exchange, **specs)
+                self._cache[key] = inst
+            return self._cache[key]
 
     def invalidate(self, symbol: str, exchange: str | None = None) -> None:
-        for key in list(self._cache.keys()):
-            if key[1] == symbol and (exchange is None or key[2] == exchange):
-                del self._cache[key]
+        with self._lock:
+            for key in list(self._cache.keys()):
+                if key[1] == symbol and (exchange is None or key[2] == exchange):
+                    del self._cache[key]
 
     def clear(self) -> None:
-        self._cache.clear()
+        with self._lock:
+            self._cache.clear()
 
     @property
     def size(self) -> int:
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
 
 
 class BrokerRegistry:
@@ -70,7 +80,11 @@ class BrokerRegistry:
 
     @classmethod
     def unregister_all(cls) -> None:
+        """Clear all registered brokers and reset the default-broker flag so a
+        later ``get()`` re-registers the defaults (test isolation)."""
+        global _DEFAULT_BROKERS_REGISTERED
         cls._factories.clear()
+        _DEFAULT_BROKERS_REGISTERED = False
 
 
 _DEFAULT_BROKERS_REGISTERED = False

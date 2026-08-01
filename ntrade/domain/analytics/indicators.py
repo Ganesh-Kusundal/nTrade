@@ -5,7 +5,11 @@ No external TA library required; keeps the domain layer dependency-free.
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
+
+logger = logging.getLogger("ntrade.indicators")
 
 
 def rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -153,46 +157,37 @@ def compute_bundle(df: pd.DataFrame, **params) -> dict[str, float]:
     ema_periods = params.get("ema_periods", (9, 21))
     sma_periods = params.get("sma_periods", ())
     result: dict[str, float] = {}
-    try:
-        r = rsi(df, rsi_period)
-        value = r.iloc[-1]
-        if value is not None and not pd.isna(value):
-            result[f"rsi_{rsi_period}"] = float(value)
-    except Exception:
-        pass
-    try:
-        a = atr(df, atr_period)
-        value = a.iloc[-1]
-        if value is not None and not pd.isna(value):
-            result[f"atr_{atr_period}"] = float(value)
-    except Exception:
-        pass
-    try:
-        v = vwap(df)
-        value = v.iloc[-1]
-        if value is not None and not pd.isna(value):
-            result["vwap"] = float(value)
-    except Exception:
-        pass
-    try:
+    def _capture(name: str, fn, *, store_key: str | None = None):
+        """Compute one indicator; log+skip instead of silently swallowing so a
+        data-dependent failure is visible (L1) rather than a quiet missing key."""
+        try:
+            value = fn()
+            if value is not None and not pd.isna(value):
+                result[store_key or name] = value
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("indicator %s failed on %d rows: %s",
+                           name, len(df), exc)
+
+    def _series_last(name: str, series_fn, *, store_key: str | None = None):
+        def _run():
+            s = series_fn()
+            v = s.iloc[-1]
+            return float(v)
+        _capture(name, _run, store_key=store_key)
+
+    _series_last("rsi", lambda: rsi(df, rsi_period), store_key=f"rsi_{rsi_period}")
+    _series_last("atr", lambda: atr(df, atr_period), store_key=f"atr_{atr_period}")
+    _series_last("vwap", lambda: vwap(df), store_key="vwap")
+
+    def _supertrend_last():
         st = supertrend(df, st_period, st_mult)
-        value = st[f"STX_{st_period}_{st_mult}"].iloc[-1]
-        if value is not None and not pd.isna(value):
-            result[f"stx_{st_period}_{st_key_mult}"] = value
-    except Exception:
-        pass
+        return st[f"STX_{st_period}_{st_mult}"].iloc[-1]
+    _capture("supertrend", _supertrend_last, store_key=f"stx_{st_period}_{st_key_mult}")
+
     for period in ema_periods:
-        try:
-            value = ema(df, int(period)).iloc[-1]
-            if value is not None and not pd.isna(value):
-                result[f"ema_{int(period)}"] = float(value)
-        except Exception:
-            pass
+        _series_last(f"ema{int(period)}", lambda p=period: ema(df, int(p)),
+                     store_key=f"ema_{int(period)}")
     for period in sma_periods:
-        try:
-            value = sma(df, int(period)).iloc[-1]
-            if value is not None and not pd.isna(value):
-                result[f"sma_{int(period)}"] = float(value)
-        except Exception:
-            pass
+        _series_last(f"sma{int(period)}", lambda p=period: sma(df, int(p)),
+                     store_key=f"sma_{int(period)}")
     return result

@@ -54,8 +54,9 @@ dhan_symbol = DhanMapper.to_trading_symbol
 class DhanBroker(BrokerAdapter):
     name = "dhan"
 
-    def __init__(self, env_path: str = ".env", env: dict | None = None, connect: bool = True):
-        super().__init__()
+    def __init__(self, env_path: str = ".env", env: dict | None = None,
+                 connect: bool = True, clock=None):
+        super().__init__(clock=clock)
         self.env_path = env_path
         self.env = env
         self._auth = DhanAuthProvider(env_path=env_path, env=env)
@@ -67,8 +68,18 @@ class DhanBroker(BrokerAdapter):
 
     def connect(self) -> "DhanBroker":
         self.tsl = self._auth.authenticate()
-        self._transport = DhanTransport(self.tsl)
+        self._transport = DhanTransport(self.tsl, clock=getattr(self, "_clock", None))
         self._connected = True
+        return self
+
+    def set_clock(self, clock) -> "DhanBroker":
+        """Inject a TradingClock, propagating it to the transport too so the
+        parity-critical paths (transport.get_quote / get_daily_historical)
+        follow replay time rather than the wall clock."""
+        self._clock = clock
+        transport = getattr(self, "_transport", None)
+        if transport is not None:
+            transport._clock = clock
         return self
 
     # ------------------------------------------------------------ market data
@@ -94,7 +105,7 @@ class DhanBroker(BrokerAdapter):
                 f"get_quote failed for {instrument.symbol}: "
                 f"LTP is 0 after 3 retries"
             )
-        quote = Quote(ltp=ltp, bid=ltp, ask=ltp, timestamp=now or datetime.now())
+        quote = Quote(ltp=ltp, bid=ltp, ask=ltp, timestamp=self._ts(now))
         try:
             qd = self.tsl.get_quote_data(names=names).get(names[0], {})
             quote = quote.with_update(
@@ -149,7 +160,7 @@ class DhanBroker(BrokerAdapter):
             asks = tuple(DepthLevel(price=_f(r.get("ask_price") or r.get("price")),
                                     quantity=int(r.get("ask_qty") or r.get("quantity") or 0))
                          for _, r in ask_df.iterrows())
-            return MarketDepth(symbol=instrument.symbol, bids=bids, asks=asks, timestamp=now or datetime.now())
+            return MarketDepth(symbol=instrument.symbol, bids=bids, asks=asks, timestamp=self._ts(now))
         except Exception:
             return None
 
@@ -171,7 +182,8 @@ class DhanBroker(BrokerAdapter):
         except Exception:
             return CandleSeries(pd.DataFrame(), symbol=instrument.symbol, timeframe=timeframe)
         df = _normalize_history(df)
-        return CandleSeries(_filter_history(df, days=days, start=start, end=end), symbol=instrument.symbol, timeframe=timeframe)
+        return CandleSeries(_filter_history(df, days=days, start=start, end=end, asof=self._ts()),
+                            symbol=instrument.symbol, timeframe=timeframe)
 
     def _dhan_blocks_day(self, instrument) -> bool:
         """True when Dhan-Tradehull's intraday wrapper rejects DAY for a script.
@@ -210,7 +222,7 @@ class DhanBroker(BrokerAdapter):
         an empty frame if the range has no data (weekend/holiday) or the request
         fails.
         """
-        to_date = end if end is not None else datetime.now().date()
+        to_date = end if end is not None else self._ts().date()
         from_date = start if start is not None else (to_date - timedelta(days=days or 365))
         try:
             df = self.tsl.get_long_term_historical_data(
@@ -219,7 +231,8 @@ class DhanBroker(BrokerAdapter):
             )
         except Exception:
             return CandleSeries(pd.DataFrame(), symbol=instrument.symbol, timeframe="1d")
-        return CandleSeries(_filter_history(_normalize_history(df), days=days, start=start, end=end), symbol=instrument.symbol, timeframe="1d")
+        return CandleSeries(_filter_history(_normalize_history(df), days=days, start=start, end=end, asof=self._ts()),
+                            symbol=instrument.symbol, timeframe="1d")
 
     def get_option_chain(self, underlying: "Instrument", expiry: int = 0, num_strikes: int = 10, **kwargs):
         """Fetch an option chain, falling back to the next expiry on failure.
@@ -249,7 +262,7 @@ class DhanBroker(BrokerAdapter):
             if chain_df is None or chain_df.empty:
                 last_error = RuntimeError(f"Dhan returned an empty option chain for {underlying.symbol} (expiry={attempt})")
                 continue
-            chain = _chain_from_dhan_df(underlying, chain_df, float(atm))
+            chain = _chain_from_dhan_df(underlying, chain_df, float(atm), asof=self._ts())
             # Expose which contract was actually used so callers can verify
             # (the library does not return the real expiry date).
             chain.expiry_index_used = attempt
@@ -414,7 +427,7 @@ class DhanBroker(BrokerAdapter):
                 )
                 for r in records
             )
-            return OrderBook(entries=entries, timestamp=now or datetime.now())
+            return OrderBook(entries=entries, timestamp=self._ts(now))
         except Exception:
             return OrderBook()
 
@@ -433,7 +446,7 @@ class DhanBroker(BrokerAdapter):
                 )
                 for r in records
             )
-            return TradeBook(entries=entries, timestamp=now or datetime.now())
+            return TradeBook(entries=entries, timestamp=self._ts(now))
         except Exception:
             return TradeBook()
 
@@ -594,7 +607,7 @@ class DhanBroker(BrokerAdapter):
 
 
 # ------------------------------------------------------------------ helpers
-def _chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float, expiry: date | None = None) -> "OptionChain":
+def _chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float, expiry: date | None = None, asof: datetime | None = None) -> "OptionChain":
     """Build an OptionChain from a Dhan-style chain dataframe.
 
     Lives in the Dhan adapter (not the domain) so the domain layer stays
@@ -617,7 +630,7 @@ def _chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float, expiry: date |
                 symbol=f"{underlying.symbol} {strike_label} {leg}",
                 exchange="NFO",
                 strike=strike,
-                expiry=expiry or date.today(),
+                expiry=expiry or (asof or datetime.now()).date(),
                 option_type=otype,
                 underlying_symbol=underlying.symbol,
                 broker=underlying._broker,
@@ -794,11 +807,12 @@ def _normalize_history(df: pd.DataFrame) -> pd.DataFrame:
     return df[keep].reset_index(drop=True)
 
 
-def _filter_history(df: pd.DataFrame, days=None, start=None, end=None) -> pd.DataFrame:
+def _filter_history(df: pd.DataFrame, days=None, start=None, end=None, asof=None) -> pd.DataFrame:
     """Apply days/start/end filters the Dhan library does not support itself.
 
-    Dhan returns tz-aware timestamps (IST), so the wall-clock cutoffs are
-    localized to the series' own timezone before comparing.
+    Dhan returns tz-aware timestamps (IST), so the cutoffs are localized to the
+    series' own timezone before comparing. ``asof`` anchors the ``days`` cutoff
+    (injected clock for replay determinism; wall clock when not given).
     """
     if df.empty or "timestamp" not in df:
         return df
@@ -817,7 +831,8 @@ def _filter_history(df: pd.DataFrame, days=None, start=None, end=None) -> pd.Dat
     if end is not None:
         mask &= ts <= _cutoff(end)
     if days is not None:
-        mask &= ts >= _cutoff(datetime.now() - timedelta(days=days))
+        anchor = asof if asof is not None else datetime.now()
+        mask &= ts >= _cutoff(anchor - timedelta(days=days))
     return df[mask].reset_index(drop=True)
 
 

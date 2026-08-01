@@ -191,10 +191,12 @@ class TestDhanTransport:
         assert tsl.get_ltp_data.call_count == 2
 
     def test_get_ltp_all_fail(self):
+        from ntrade.brokers.dhan_transport import BrokerDataError
         tsl = MagicMock()
         tsl.get_ltp_data.side_effect = Exception("fail")
         transport = DhanTransport(tsl)
-        assert transport.get_ltp("RELIANCE") == 0.0
+        with pytest.raises(BrokerDataError):
+            transport.get_ltp("RELIANCE")
 
     def test_get_balance(self):
         tsl = MagicMock()

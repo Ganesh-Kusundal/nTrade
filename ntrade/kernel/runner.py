@@ -125,6 +125,15 @@ class StrategyRunner:
         return rows
 
     # ------------------------------------------------------------------ lifecycle
+    def __enter__(self) -> "StrategyRunner":
+        """Context-manager ownership: release() runs even if add() raises,
+        so the global RiskEngine is never left paused by an abandoned runner
+        (D-009 / refcount-leak guard)."""
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.release()
+
     def start(self) -> "StrategyRunner":
         self.kernel.start()
         return self

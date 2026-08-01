@@ -271,4 +271,5 @@ class TradingSession:
 
     def __repr__(self) -> str:
         broker_name = self._broker.name if self._broker else "none"
-        return f"TradingSession(mode={self._mode!r}, broker={broker_name!r}, instruments={len(self._kernel.ctx.instruments)})"
+        count = len(self._kernel.ctx.instruments_snapshot())
+        return f"TradingSession(mode={self._mode!r}, broker={broker_name!r}, instruments={count})"

@@ -61,6 +61,10 @@ class TradingKernel:
             instruments=instruments or {}, session_id=session_id,
         )
         self.ctx.account.balance = initial_cash
+        # Inject the kernel clock into the broker so its timestamps (quotes,
+        # depth, books) follow replay time, not the wall clock (zero parity).
+        if broker is not None and hasattr(broker, "set_clock"):
+            broker.set_clock(self.clock)
 
         # --- optional full event recording (EventStore) ----------------------
         # Subscribing to the base Event class records every published event

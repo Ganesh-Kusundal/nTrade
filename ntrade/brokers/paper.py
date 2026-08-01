@@ -23,10 +23,11 @@ from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
 class PaperBroker(BrokerAdapter):
     name = "paper"
 
-    def __init__(self, seed: int = 42, **kwargs):
+    def __init__(self, seed: int = 42, clock=None, **kwargs):
         # Accept (and ignore) broker-generic kwargs like env_path/env so the
-        # BrokerRegistry can construct any broker uniformly.
-        super().__init__()
+        # BrokerRegistry can construct any broker uniformly. ``clock`` lets
+        # replay/backtest pin paper timestamps to the kernel clock.
+        super().__init__(clock=clock)
         self._random = random.Random(seed)
         self._quotes: dict[str, Quote] = {}
         self._history: dict[str, pd.DataFrame] = {}
@@ -36,13 +37,13 @@ class PaperBroker(BrokerAdapter):
 
     # ------------------------------------------------------------- seeding
     def seed_quote(self, symbol: str, ltp: float, **kw) -> Quote:
-        q = Quote(ltp=ltp, bid=ltp - 0.05, ask=ltp + 0.05, prev_close=ltp, timestamp=datetime.now(), **kw)
+        q = Quote(ltp=ltp, bid=ltp - 0.05, ask=ltp + 0.05, prev_close=ltp, timestamp=self._ts(), **kw)
         self._quotes[symbol] = q
         return q
 
     def seed_history(self, symbol: str, rows: int = 200, timeframe: str = "5m",
                      start_price: float = 100.0) -> pd.DataFrame:
-        end = datetime.now()
+        end = self._ts()
         start = end - timedelta(minutes=5 * rows)
         ts = [start + timedelta(minutes=5 * i) for i in range(rows)]
         close = [start_price]
@@ -72,7 +73,7 @@ class PaperBroker(BrokerAdapter):
         q = self.get_quote(instrument)
         bids = tuple(DepthLevel(price=q.ltp - i * 0.05, quantity=self._random.randint(100, 999)) for i in range(1, 6))
         asks = tuple(DepthLevel(price=q.ltp + i * 0.05, quantity=self._random.randint(100, 999)) for i in range(1, 6))
-        return MarketDepth(symbol=instrument.symbol, bids=bids, asks=asks, timestamp=datetime.now())
+        return MarketDepth(symbol=instrument.symbol, bids=bids, asks=asks, timestamp=self._ts())
 
     def get_historical(self, instrument, timeframe="5m", days=None, start=None, end=None) -> CandleSeries:
         key = f"{instrument.symbol}:{timeframe}"
@@ -96,7 +97,7 @@ class PaperBroker(BrokerAdapter):
             for otype in ("CE", "PE"):
                 opt = Option(
                     symbol=f"{underlying.symbol} {s} {otype}", exchange="NFO",
-                    strike=s, expiry=datetime.now().date(), option_type=otype,
+                    strike=s, expiry=self._ts().date(), option_type=otype,
                     underlying_symbol=underlying.symbol, broker=self,
                 )
                 opt._quote = opt._quote.with_update(ltp=5.0, oi=self._random.randint(1000, 50000))
@@ -169,7 +170,7 @@ class PaperBroker(BrokerAdapter):
             )
             for o in self._orders
         )
-        return OrderBook(entries=entries, timestamp=datetime.now())
+        return OrderBook(entries=entries, timestamp=self._ts())
 
     def get_trade_book(self) -> TradeBook:
         entries = tuple(
@@ -184,7 +185,7 @@ class PaperBroker(BrokerAdapter):
             for o in self._orders
             if o.status == OrderStatus.COMPLETED
         )
-        return TradeBook(entries=entries, timestamp=datetime.now())
+        return TradeBook(entries=entries, timestamp=self._ts())
 
     def order_report(self):
         return {
@@ -210,5 +211,5 @@ class PaperBroker(BrokerAdapter):
         return []
 
     def push_tick(self, instrument, price: float, side: str = "") -> None:
-        tick = Tick(symbol=instrument.symbol, price=price, side=side, timestamp=datetime.now(), kind="quote")
+        tick = Tick(symbol=instrument.symbol, price=price, side=side, timestamp=self._ts(), kind="quote")
         self._dispatch_tick(instrument, tick)

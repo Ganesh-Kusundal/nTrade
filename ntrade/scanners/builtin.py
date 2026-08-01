@@ -18,8 +18,12 @@ if TYPE_CHECKING:
 
 
 def _instruments(session: "TradingSession") -> list:
-    """All instruments registered in the session's kernel."""
-    return list(session.kernel.ctx.instruments.values())
+    """All instruments registered in the session's kernel.
+
+    Uses the lock-guarded snapshot so scanning never races a concurrent
+    register() from the feed thread (D-007).
+    """
+    return session.kernel.ctx.instruments_snapshot()
 
 
 def _safe_ltp(inst) -> float | None:

@@ -79,6 +79,11 @@ class VolumeSpikeScanner(Scanner):
     Compares the current volume to a threshold multiplier of the average
     volume (if available via indicators).  Falls back to absolute
     ``min_volume`` if no average is computed.
+
+    Note: ``avg_volume`` is a per-candle mean over the rolling window, so
+    this ratio is meaningful in backtest.  In live mode ``quote.volume`` is
+    day-cumulative, which dwarfs the spike ratio — the absolute
+    ``min_volume`` fallback is the reliable live signal.
     """
 
     name = "volume_spike"

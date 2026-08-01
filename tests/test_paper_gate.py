@@ -1,11 +1,13 @@
 """Paper->live gate report builder (G2-E2)."""
 from datetime import datetime
 
+import pytest
+
 from ntrade.domain.instruments.cash import Equity
 from ntrade.events.order import OrderFilledEvent, OrderIntentEvent
 from ntrade.kernel.clock import ReplayClock
 from ntrade.kernel.session import TradingKernel
-from ntrade.runner.gate import build_paper_report
+from ntrade.runner.gate import _equity_trace, build_paper_report
 
 
 def test_report_summary_from_kernel_history():
@@ -37,3 +39,19 @@ def test_report_surfaces_per_fill_charges_and_total():
     assert fills[0].statutory > 0.0  # default statutory wiring on the sim target
     expected = round(fills[0].commission + fills[0].statutory, 2)
     assert report["checklist"]["total_charges"] == expected
+
+
+def test_equity_trace_converges_on_portfolio_read_model():
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m",
+                      initial_cash=100_000.0)
+    k.register(Equity("RELIANCE", exchange="NSE"))
+    ts = datetime(2026, 1, 1, 9, 15)
+    k.router.submit(OrderIntentEvent(
+        symbol="RELIANCE", exchange="NSE", side="BUY", quantity=10,
+        order_type="LIMIT", price=100.0, strategy="g", ts=ts))
+    report = build_paper_report(k, initial_cash=100_000.0)
+    # The gate's equity must converge on the portfolio read model
+    # (RiskEngine.equity = account.balance + Σ Position.market_value).
+    assert report["final_equity"] == pytest.approx(k.risk_engine.equity(), abs=0.01)
+    _, final_eq = list(_equity_trace(k, initial_cash=100_000.0))[-1]
+    assert final_eq == pytest.approx(k.risk_engine.equity(), abs=0.01)

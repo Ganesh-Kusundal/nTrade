@@ -3,32 +3,32 @@ evidence checklist that must pass before a strategy is switched to live."""
 
 from __future__ import annotations
 
-from ntrade.events.market import QuoteEvent, TickEvent
 from ntrade.events.order import OrderFilledEvent
+from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
 
 
 def _equity_trace(kernel, *, initial_cash: float):
-    """Reconstruct the equity path from fills + market events.
+    """Reconstruct the equity path from the portfolio read-model events.
 
-    Order-independent: cash is derived from fills (not BalanceChangedEvent, so a
-    fill's balance dip is never confused with a drawdown) and open positions are
-    marked to the last observed price. Yields (peak_equity, current_equity) as
-    the history advances.
+    Consumes PositionUpdatedEvent (position quantity/ltp) and
+    BalanceChangedEvent (cash) — the canonical stream published by the
+    PortfolioEngine on every fill — so the trace's mark-to-market basis is
+    exactly ``RiskEngine.equity`` (account.balance + Σ Position.market_value).
+    Yields (peak_equity, current_equity) after each state change.
     """
     cash = float(initial_cash)
-    positions: dict[str, int] = {}
-    ltp: dict[str, float] = {}
+    positions: dict[str, tuple[int, float]] = {}
     peak = cash
     for e in kernel.bus.history:
-        if isinstance(e, OrderFilledEvent):
-            direction = 1 if e.side == "BUY" else -1
-            cash -= e.quantity * e.fill_price * direction + e.commission + e.statutory
-            positions[e.symbol] = positions.get(e.symbol, 0) + e.quantity * direction
-        elif isinstance(e, TickEvent):
-            ltp[e.symbol] = e.price
-        elif isinstance(e, QuoteEvent):
-            ltp[e.symbol] = e.ltp
-        eq = cash + sum(q * ltp.get(sym, 0) for sym, q in positions.items())
+        if isinstance(e, PositionUpdatedEvent):
+            positions[e.symbol] = (e.quantity, e.ltp)
+            if e.quantity == 0:
+                positions.pop(e.symbol, None)
+        elif isinstance(e, BalanceChangedEvent):
+            cash = e.balance
+        else:
+            continue
+        eq = cash + sum(q * ltp for q, ltp in positions.values())
         peak = max(peak, eq)
         if peak:
             yield peak, eq

@@ -1,0 +1,80 @@
+"""EventBus — a tiny synchronous publish/subscribe bus.
+
+No subsystem talks directly to another; everything publishes to the bus and
+listens on it. Subscribing to a base event type (e.g. ``Event``) receives all
+subclasses; handler exceptions are swallowed so one bad handler can never take
+down the kernel. Publishes are serialized (reentrant lock held across dispatch):
+live mode has multiple producer threads (the dhanhq websocket callback vs the
+LiveRunner loop), and the shared read-models they touch must never observe a
+torn mid-dispatch state.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict, deque
+from threading import RLock
+from typing import Callable
+
+from ntrade.events.base import Event
+
+import logging
+_logger = logging.getLogger("ntrade.bus")
+
+
+class EventBus:
+    def __init__(self, *, max_history: int = 10_000) -> None:
+        self._subscribers: dict[type, list[Callable[[Event], None]]] = defaultdict(list)
+        self._history: deque[Event] = deque(maxlen=max_history)
+        self._lock = RLock()
+
+    def subscribe(
+        self, event_type: type, handler: Callable[[Event], None]
+    ) -> Callable[[Event], None]:
+        """Register a handler for an event type (and its subclasses via MRO)."""
+        if not isinstance(event_type, type):
+            raise TypeError(f"event_type must be a class, got {event_type!r}")
+        with self._lock:
+            self._subscribers[event_type].append(handler)
+        return handler
+
+    def unsubscribe(self, event_type: type, handler: Callable[[Event], None]) -> None:
+        with self._lock:
+            try:
+                self._subscribers[event_type].remove(handler)
+            except ValueError:
+                pass
+
+    def publish(self, event: Event) -> None:
+        """Dispatch an event to matching handlers, most-derived first.
+
+        Handlers registered on a base class receive subclass events (dispatch
+        walks the MRO). Handler exceptions are swallowed — one bad subscriber
+        never kills the bus. Every event is recorded in history for replay.
+        """
+        with self._lock:
+            self._history.append(event)
+            for klass in type(event).__mro__:
+                for handler in list(self._subscribers.get(klass, ())):
+                    try:
+                        handler(event)
+                    except Exception:
+                        _logger.error(
+                            "handler %s raised on %s",
+                            handler, type(event).__name__,
+                            exc_info=True,
+                        )
+                        continue
+
+    @property
+    def history(self) -> list[Event]:
+        with self._lock:
+            return list(self._history)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._subscribers.clear()
+            self._history.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._history)

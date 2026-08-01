@@ -1,0 +1,214 @@
+"""PaperBroker — an in-memory broker used by tests, backtests and replays.
+
+Implements the same BrokerAdapter contract as live brokers, so domain code is
+identical across paper and live trading (consistent APIs principle).
+"""
+
+from __future__ import annotations
+
+import math
+import random
+from datetime import datetime, timedelta
+
+import pandas as pd
+
+from ntrade.brokers.base import BrokerAdapter
+from ntrade.domain.market.candles import CandleSeries
+from ntrade.domain.market.depth import DepthLevel, MarketDepth
+from ntrade.domain.market.quote import Quote, Tick
+from ntrade.domain.orders.book import OrderBook, OrderBookEntry, TradeBook, TradeBookEntry
+from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
+
+
+class PaperBroker(BrokerAdapter):
+    name = "paper"
+
+    def __init__(self, seed: int = 42, **kwargs):
+        # Accept (and ignore) broker-generic kwargs like env_path/env so the
+        # BrokerRegistry can construct any broker uniformly.
+        super().__init__()
+        self._random = random.Random(seed)
+        self._quotes: dict[str, Quote] = {}
+        self._history: dict[str, pd.DataFrame] = {}
+        self._orders: list[Order] = []
+        self._balance = 100_000.0
+        self._connected = True  # always available
+
+    # ------------------------------------------------------------- seeding
+    def seed_quote(self, symbol: str, ltp: float, **kw) -> Quote:
+        q = Quote(ltp=ltp, bid=ltp - 0.05, ask=ltp + 0.05, prev_close=ltp, timestamp=datetime.now(), **kw)
+        self._quotes[symbol] = q
+        return q
+
+    def seed_history(self, symbol: str, rows: int = 200, timeframe: str = "5m",
+                     start_price: float = 100.0) -> pd.DataFrame:
+        end = datetime.now()
+        start = end - timedelta(minutes=5 * rows)
+        ts = [start + timedelta(minutes=5 * i) for i in range(rows)]
+        close = [start_price]
+        for _ in range(rows - 1):
+            close.append(close[-1] * (1 + self._random.uniform(-0.01, 0.01)))
+        df = pd.DataFrame({
+            "timestamp": ts,
+            "open": close, "high": [c * 1.005 for c in close],
+            "low": [c * 0.995 for c in close], "close": close,
+            "volume": [self._random.randint(100, 5000) for _ in range(rows)],
+        })
+        self._history[f"{symbol}:{timeframe}"] = df
+        return df
+
+    # ------------------------------------------------------------- market data
+    def connect(self):
+        self._connected = True
+        return self
+
+    def get_quote(self, instrument) -> Quote:
+        q = self._quotes.get(instrument.symbol)
+        if q is None:
+            q = self.seed_quote(instrument.symbol, 100.0)
+        return q
+
+    def get_depth(self, instrument) -> MarketDepth:
+        q = self.get_quote(instrument)
+        bids = tuple(DepthLevel(price=q.ltp - i * 0.05, quantity=self._random.randint(100, 999)) for i in range(1, 6))
+        asks = tuple(DepthLevel(price=q.ltp + i * 0.05, quantity=self._random.randint(100, 999)) for i in range(1, 6))
+        return MarketDepth(symbol=instrument.symbol, bids=bids, asks=asks, timestamp=datetime.now())
+
+    def get_historical(self, instrument, timeframe="5m", days=None, start=None, end=None) -> CandleSeries:
+        key = f"{instrument.symbol}:{timeframe}"
+        if key not in self._history:
+            self.seed_history(instrument.symbol, timeframe=timeframe)
+        df = self._history[key]
+        if start is not None:
+            df = df[df["timestamp"] >= start]
+        if end is not None:
+            df = df[df["timestamp"] <= end]
+        return CandleSeries(df.reset_index(drop=True), symbol=instrument.symbol, timeframe=timeframe)
+
+    def get_option_chain(self, underlying, expiry=0, num_strikes=10, **kwargs):
+        from ntrade.domain.instruments.chain import OptionChain
+        from ntrade.domain.instruments.derivatives import Option
+        spot = underlying._quote.ltp or 100.0
+        atm = round(spot / 50) * 50
+        strikes = [atm + (i - num_strikes // 2) * 50 for i in range(num_strikes)]
+        options = []
+        for s in strikes:
+            for otype in ("CE", "PE"):
+                opt = Option(
+                    symbol=f"{underlying.symbol} {s} {otype}", exchange="NFO",
+                    strike=s, expiry=datetime.now().date(), option_type=otype,
+                    underlying_symbol=underlying.symbol, broker=self,
+                )
+                opt._quote = opt._quote.with_update(ltp=5.0, oi=self._random.randint(1000, 50000))
+                options.append(opt)
+        return OptionChain(underlying, options, atm_strike=atm)
+
+    # ------------------------------------------------------------- orders
+    def place_order(self, order: Order) -> Order:
+        if order.order_type.value == "MARKET":
+            fill_price = self.get_quote(order.instrument).ltp
+        else:
+            fill_price = order.price or self.get_quote(order.instrument).ltp
+        order.order_id = f"PAPER-{len(self._orders) + 1}"
+        order.status = OrderStatus.COMPLETED
+        order.filled_qty = order.quantity
+        order.avg_price = round(fill_price, 2)
+        self._orders.append(order)
+        return order
+
+    # ------------------------------------------------- order lifecycle
+    def cancel_order(self, order: Order) -> Order:
+        if order.order_id is not None:
+            for stored in self._orders:
+                if stored.order_id == order.order_id and stored.status in (OrderStatus.PENDING, OrderStatus.PARTIALLY_FILLED):
+                    stored.status = OrderStatus.CANCELLED
+                    order.status = OrderStatus.CANCELLED
+                    return order
+        order.status = OrderStatus.CANCELLED
+        return order
+
+    def modify_order(self, order: Order, *, price=None, quantity=None, order_type=None, trigger_price=None) -> Order:
+        if price is not None:
+            order.price = price
+        if quantity is not None:
+            order.quantity = quantity
+        if trigger_price is not None:
+            order.trigger_price = trigger_price
+        if order_type is not None:
+            order.order_type = order_type if isinstance(order_type, OrderType) else OrderType(str(order_type).upper())
+        for stored in self._orders:
+            if stored.order_id == order.order_id:
+                stored.price, stored.quantity = order.price, order.quantity
+                stored.trigger_price, stored.order_type = order.trigger_price, order.order_type
+        return order
+
+    def get_order_status(self, order: Order) -> Order:
+        if order.order_id is not None:
+            for stored in self._orders:
+                if stored.order_id == order.order_id:
+                    order.status = stored.status
+                    order.filled_qty = stored.filled_qty
+                    order.avg_price = stored.avg_price
+        return order
+
+    def get_order_detail(self, order_id: str) -> dict:
+        for stored in self._orders:
+            if stored.order_id == order_id:
+                return stored.as_dict()
+        return {}
+
+    def get_orderbook(self) -> OrderBook:
+        entries = tuple(
+            OrderBookEntry(
+                symbol=o.instrument.symbol,
+                order_id=o.order_id or "",
+                side=o.side.value if o.side else "",
+                quantity=o.quantity,
+                price=o.price or 0.0,
+                status=o.status.value if o.status else "",
+            )
+            for o in self._orders
+        )
+        return OrderBook(entries=entries, timestamp=datetime.now())
+
+    def get_trade_book(self) -> TradeBook:
+        entries = tuple(
+            TradeBookEntry(
+                symbol=o.instrument.symbol,
+                trade_id=o.order_id or "",
+                order_id=o.order_id or "",
+                side=o.side.value if o.side else "",
+                quantity=o.filled_qty or o.quantity,
+                price=o.avg_price or 0.0,
+            )
+            for o in self._orders
+            if o.status == OrderStatus.COMPLETED
+        )
+        return TradeBook(entries=entries, timestamp=datetime.now())
+
+    def order_report(self):
+        return {
+            "orders": len(self._orders),
+            "orderbook": self.get_orderbook(),
+            "tradebook": self.get_trade_book(),
+        }
+
+    @property
+    def orders(self) -> list[Order]:
+        return list(self._orders)
+
+    def get_live_pnl(self) -> float:
+        return 0.0
+
+    def get_balance(self) -> float:
+        return self._balance
+
+    def get_positions(self):
+        return []
+
+    def get_holdings(self):
+        return []
+
+    def push_tick(self, instrument, price: float, side: str = "") -> None:
+        tick = Tick(symbol=instrument.symbol, price=price, side=side, timestamp=datetime.now(), kind="quote")
+        self._dispatch_tick(instrument, tick)

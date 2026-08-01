@@ -1,0 +1,5 @@
+Task F1: complete (M1 partial-exit avg_price fix, review clean, 351 passing)
+Task F2: complete (H2 check() + per-step evaluation, review clean, 353 passing)
+Task F3: complete (H1 EventBus RLock, review clean, 355 passing)
+Task F4: complete (M2 UTC-pinned candle bucketing, review clean, 357 passing)
+Task F5: complete (M3 unverifiable-price rejection, review clean, 358 passing)

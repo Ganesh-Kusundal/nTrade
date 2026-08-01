@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "dhan-tradehull": {
+      "source": "Imran-Tradehull/tradehull-dhan-live-algo-skills",
+      "sourceType": "github",
+      "skillPath": "skills/dhan-tradehull/SKILL.md",
+      "computedHash": "c0ff65001d56748589cec34e61acea0f8f9bcaa8a77c40d0307798c2675a8235"
+    }
+  }
+}

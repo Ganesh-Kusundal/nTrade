@@ -1,0 +1,24 @@
+# Secrets — never commit
+.env
+
+# Virtualenv
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Dhan-Tradehull library artifacts (logs + cached tokens)
+Dependencies/
+
+# App state / caches
+.freebuff/
+.pytest_cache/
+.benchmarks/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+
+# Generated graph output
+graphify-out/
+

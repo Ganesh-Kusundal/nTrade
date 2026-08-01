@@ -1,0 +1,789 @@
+{
+  "version": 1,
+  "timestamp": "2026-08-01T07:14:26Z",
+  "index": {
+    "skills-lock.json": [
+      1785493445.547,
+      307
+    ],
+    "ARCHITECTURE.md": [
+      1785522613.318,
+      24293
+    ],
+    "Dependencies\\all_instrument 2026-07-31.csv": [
+      1785522534.155,
+      25038959
+    ],
+    "pyproject.toml": [
+      1785508875.613,
+      554
+    ],
+    ".gitignore": [
+      1785493845.159,
+      151
+    ],
+    ".env": [
+      1785493712.623,
+      672
+    ],
+    "check_connection.py": [
+      1785508932.455,
+      1320
+    ],
+    "Dependencies/token_1106251237_2026-07-31.txt": [
+      1785518335.314,
+      315
+    ],
+    "Dependencies/log_files/logs2026-07-31.log": [
+      1785522531.348,
+      78320
+    ],
+    "docs/superpowers/plans/2026-07-31-g2-live-harness.md": [
+      1785526147.205,
+      118867
+    ],
+    "ntrade/facade.py": [
+      1785560717.964,
+      3187
+    ],
+    "ntrade/registry.py": [
+      1785566789.98,
+      2936
+    ],
+    "ntrade/__init__.py": [
+      1785568293.425,
+      5029
+    ],
+    "ntrade/factories.py": [
+      1785508866.822,
+      3610
+    ],
+    "ntrade/backtest/__init__.py": [
+      1785511201.071,
+      263
+    ],
+    "ntrade/backtest/simulator.py": [
+      1785512127.572,
+      6620
+    ],
+    "ntrade/backtest/fills.py": [
+      1785512012.461,
+      2916
+    ],
+    "ntrade/brokers/dhan_auth.py": [
+      1785566818.774,
+      5326
+    ],
+    "ntrade/brokers/dhan.py": [
+      1785568237.41,
+      49531
+    ],
+    "ntrade/brokers/paper.py": [
+      1785568263.498,
+      8840
+    ],
+    "ntrade/brokers/__init__.py": [
+      1785494654.029,
+      248
+    ],
+    "ntrade/brokers/dhan_auth_provider.py": [
+      1785561138.586,
+      1443
+    ],
+    "ntrade/brokers/capabilities.py": [
+      1785494654.03,
+      2538
+    ],
+    "ntrade/brokers/dhan_transport.py": [
+      1785568249.815,
+      13915
+    ],
+    "ntrade/brokers/base.py": [
+      1785568186.495,
+      5671
+    ],
+    "ntrade/brokers/dhan_mapper.py": [
+      1785565387.159,
+      13717
+    ],
+    "ntrade/domain/scanner.py": [
+      1785561569.234,
+      4652
+    ],
+    "ntrade/domain/session.py": [
+      1785565343.543,
+      1318
+    ],
+    "ntrade/domain/__init__.py": [
+      1785494522.156,
+      85
+    ],
+    "ntrade/domain/portfolio.py": [
+      1785501799.063,
+      5450
+    ],
+    "ntrade/domain/analytics/__init__.py": [
+      1785494643.077,
+      102
+    ],
+    "ntrade/domain/analytics/indicators.py": [
+      1785519460.901,
+      7563
+    ],
+    "ntrade/domain/analytics/surface.py": [
+      1785529366.569,
+      2677
+    ],
+    "ntrade/domain/analytics/greeks.py": [
+      1785494618.642,
+      4235
+    ],
+    "ntrade/domain/instruments/cash.py": [
+      1785508975.938,
+      846
+    ],
+    "ntrade/domain/instruments/chain.py": [
+      1785560586.261,
+      7781
+    ],
+    "ntrade/domain/instruments/__init__.py": [
+      1785560449.894,
+      940
+    ],
+    "ntrade/domain/instruments/expiry.py": [
+      1785560562.44,
+      6492
+    ],
+    "ntrade/domain/instruments/capabilities.py": [
+      1785564591.13,
+      13390
+    ],
+    "ntrade/domain/instruments/base.py": [
+      1785565348.255,
+      11590
+    ],
+    "ntrade/domain/instruments/derivatives.py": [
+      1785560161.746,
+      9329
+    ],
+    "ntrade/domain/market/candles.py": [
+      1785568178.119,
+      2125
+    ],
+    "ntrade/domain/market/quote.py": [
+      1785564594.036,
+      2786
+    ],
+    "ntrade/domain/market/__init__.py": [
+      1785568293.425,
+      425
+    ],
+    "ntrade/domain/market/stream.py": [
+      1785565364.55,
+      4757
+    ],
+    "ntrade/domain/market/depth.py": [
+      1785494535.444,
+      1417
+    ],
+    "ntrade/domain/market/history.py": [
+      1785568279.722,
+      6598
+    ],
+    "ntrade/domain/orders/order.py": [
+      1785565339.322,
+      7197
+    ],
+    "ntrade/domain/orders/__init__.py": [
+      1785494631.162,
+      194
+    ],
+    "ntrade/domain/orders/book.py": [
+      1785529152.58,
+      3499
+    ],
+    "ntrade/engines/candle_engine.py": [
+      1785565352.932,
+      3585
+    ],
+    "ntrade/engines/strategies.py": [
+      1785560258.996,
+      3055
+    ],
+    "ntrade/engines/__init__.py": [
+      1785517458.839,
+      697
+    ],
+    "ntrade/engines/indicator_engine.py": [
+      1785565352.932,
+      2018
+    ],
+    "ntrade/engines/risk_engine.py": [
+      1785560204.453,
+      6490
+    ],
+    "ntrade/engines/strategy_engine.py": [
+      1785514669.815,
+      3756
+    ],
+    "ntrade/engines/portfolio_engine.py": [
+      1785525474.042,
+      2856
+    ],
+    "ntrade/engines/order_engine.py": [
+      1785511150.687,
+      1277
+    ],
+    "ntrade/engines/market_engine.py": [
+      1785529694.668,
+      2514
+    ],
+    "ntrade/engines/position_sync.py": [
+      1785517928.132,
+      4561
+    ],
+    "ntrade/events/market.py": [
+      1785510445.639,
+      1889
+    ],
+    "ntrade/events/order.py": [
+      1785566866.96,
+      1906
+    ],
+    "ntrade/events/__init__.py": [
+      1785510617.19,
+      1354
+    ],
+    "ntrade/events/lifecycle.py": [
+      1785566786.145,
+      1352
+    ],
+    "ntrade/events/risk.py": [
+      1785522144.198,
+      1198
+    ],
+    "ntrade/events/portfolio.py": [
+      1785510445.64,
+      635
+    ],
+    "ntrade/events/base.py": [
+      1785510445.638,
+      715
+    ],
+    "ntrade/execution/__init__.py": [
+      1785568235.024,
+      697
+    ],
+    "ntrade/execution/retry.py": [
+      1785568191.3,
+      3392
+    ],
+    "ntrade/execution/costs.py": [
+      1785511071.328,
+      1603
+    ],
+    "ntrade/execution/simulator.py": [
+      1785529694.668,
+      3073
+    ],
+    "ntrade/execution/router.py": [
+      1785517933.537,
+      1706
+    ],
+    "ntrade/execution/broker_executor.py": [
+      1785566845.139,
+      9491
+    ],
+    "ntrade/kernel/runner.py": [
+      1785516977.77,
+      6201
+    ],
+    "ntrade/kernel/clock.py": [
+      1785511071.326,
+      1604
+    ],
+    "ntrade/kernel/session.py": [
+      1785522409.994,
+      7742
+    ],
+    "ntrade/kernel/__init__.py": [
+      1785560771.746,
+      651
+    ],
+    "ntrade/kernel/event_bus.py": [
+      1785566324.669,
+      2966
+    ],
+    "ntrade/kernel/context.py": [
+      1785511071.328,
+      1590
+    ],
+    "ntrade/kernel/trading_session.py": [
+      1785561549.919,
+      8962
+    ],
+    "ntrade/kernel/resilient.py": [
+      1785516946.012,
+      5302
+    ],
+    "ntrade/replay/__init__.py": [
+      1785511201.074,
+      153
+    ],
+    "ntrade/replay/replay_engine.py": [
+      1785511503.154,
+      980
+    ],
+    "ntrade/runner/live_runner.py": [
+      1785566819.186,
+      7646
+    ],
+    "ntrade/runner/feeds.py": [
+      1785522225.303,
+      878
+    ],
+    "ntrade/runner/__init__.py": [
+      1785522587.402,
+      291
+    ],
+    "ntrade/runner/bench.py": [
+      1785522554.134,
+      899
+    ],
+    "ntrade/runner/gate.py": [
+      1785522526.934,
+      2555
+    ],
+    "ntrade/scanners/__init__.py": [
+      1785561400.098,
+      295
+    ],
+    "ntrade/scanners/builtin.py": [
+      1785566799.768,
+      9717
+    ],
+    "ntrade/sim/__init__.py": [
+      1785522037.307,
+      113
+    ],
+    "ntrade/sim/tick_simulator.py": [
+      1785522043.448,
+      2870
+    ],
+    "ntrade/sources/market_feed.py": [
+      1785511991.122,
+      3726
+    ],
+    "ntrade/sources/dhan_feed.py": [
+      1785566815.037,
+      9052
+    ],
+    "ntrade/sources/__init__.py": [
+      1785522089.546,
+      443
+    ],
+    "ntrade/sources/synthetic_feed.py": [
+      1785522082.467,
+      3080
+    ],
+    "ntrade/storage/__init__.py": [
+      1785511201.073,
+      148
+    ],
+    "ntrade/storage/event_store.py": [
+      1785565352.932,
+      6169
+    ],
+    "scripts/live_smoke.py": [
+      1785560834.423,
+      2435
+    ],
+    "scripts/paper_gate_run.py": [
+      1785560819.113,
+      2029
+    ],
+    "scripts/live_runner_run.py": [
+      1785560819.111,
+      2960
+    ],
+    "scripts/live_read_check.py": [
+      1785560874.648,
+      8588
+    ],
+    "scripts/ema_cross_run.py": [
+      1785560819.111,
+      3634
+    ],
+    "scripts/benchmark_latency.py": [
+      1785522558.79,
+      1109
+    ],
+    "tests/test_retry.py": [
+      1785568315.882,
+      9024
+    ],
+    "tests/test_registry.py": [
+      1785566803.614,
+      1280
+    ],
+    "tests/test_replay_backtest.py": [
+      1785565401.98,
+      10507
+    ],
+    "tests/test_gap_closure.py": [
+      1785560604.792,
+      20515
+    ],
+    "tests/test_ema_cross_strategy.py": [
+      1785560175.038,
+      3427
+    ],
+    "tests/test_paper_gate.py": [
+      1785522466.611,
+      594
+    ],
+    "tests/test_brokers.py": [
+      1785560006.934,
+      3291
+    ],
+    "tests/test_portfolio_exit_cost.py": [
+      1785525468.798,
+      1644
+    ],
+    "tests/test_dhan_broker.py": [
+      1785564642.123,
+      19551
+    ],
+    "tests/test_kernel_engines.py": [
+      1785560054.082,
+      3709
+    ],
+    "tests/test_synthetic_feed.py": [
+      1785560074.889,
+      2032
+    ],
+    "tests/test_event_bus_clock.py": [
+      1785566830.398,
+      3980
+    ],
+    "tests/test_integration_pipeline.py": [
+      1785566883.767,
+      4860
+    ],
+    "tests/test_scanner.py": [
+      1785566818.121,
+      14711
+    ],
+    "tests/test_trading_session.py": [
+      1785560993.103,
+      7131
+    ],
+    "tests/test_runner_feeds.py": [
+      1785522219.471,
+      1401
+    ],
+    "tests/test_kernel_resilient.py": [
+      1785517022.412,
+      9247
+    ],
+    "tests/test_mission_gaps.py": [
+      1785560074.898,
+      8988
+    ],
+    "tests/test_session.py": [
+      1785565464.128,
+      608
+    ],
+    "tests/test_domain_types.py": [
+      1785529344.187,
+      8811
+    ],
+    "tests/test_broker_executor.py": [
+      1785566890.566,
+      1310
+    ],
+    "tests/test_risk_breakers.py": [
+      1785525948.665,
+      5041
+    ],
+    "tests/test_observability.py": [
+      1785522435.655,
+      2097
+    ],
+    "tests/test_kernel_order_passthrough.py": [
+      1785522403.821,
+      2196
+    ],
+    "tests/test_factories_facade.py": [
+      1785560093.891,
+      2496
+    ],
+    "tests/test_tick_simulator.py": [
+      1785522030.416,
+      2125
+    ],
+    "tests/test_kill_switch_wiring.py": [
+      1785566428.722,
+      4215
+    ],
+    "tests/test_live_runner.py": [
+      1785525582.358,
+      3471
+    ],
+    "tests/test_chain_navigation.py": [
+      1785560528.393,
+      10308
+    ],
+    "tests/test_kernel_recording.py": [
+      1785512198.616,
+      3298
+    ],
+    "tests/test_live_execution.py": [
+      1785518007.498,
+      18869
+    ],
+    "tests/test_event_bus_threads.py": [
+      1785525680.69,
+      1671
+    ],
+    "tests/test_engine_pipeline.py": [
+      1785511309.094,
+      4790
+    ],
+    "tests/test_history_stream.py": [
+      1785560054.082,
+      3926
+    ],
+    "tests/test_benchmark.py": [
+      1785522546.862,
+      489
+    ],
+    "tests/test_strategy_runner.py": [
+      1785517052.542,
+      8493
+    ],
+    "tests/test_dhan_providers.py": [
+      1785565455.241,
+      8531
+    ],
+    "tests/test_indicators.py": [
+      1785565395.004,
+      4750
+    ],
+    "tests/test_sources.py": [
+      1785560204.458,
+      1895
+    ],
+    "tests/test_dhan_feed_source.py": [
+      1785560074.889,
+      11019
+    ],
+    "tests/test_quote.py": [
+      1785565421.998,
+      2018
+    ],
+    "tests/test_options_analytics.py": [
+      1785560434.302,
+      5143
+    ],
+    "tests/test_candle_timezone.py": [
+      1785565386.537,
+      2815
+    ],
+    "tests/test_instruments.py": [
+      1785559995.57,
+      5330
+    ],
+    "tests/test_order_state_events.py": [
+      1785522372.739,
+      3768
+    ],
+    "tests/test_mission_behaviors.py": [
+      1785560054.082,
+      4106
+    ],
+    "tests/test_dhan_feed.py": [
+      1785566829.58,
+      1041
+    ],
+    "tests/test_orders.py": [
+      1785565450.207,
+      3075
+    ],
+    "tests/test_portfolio_account.py": [
+      1785495769.616,
+      1647
+    ],
+    "tests/test_candle_series.py": [
+      1785568354.992,
+      3001
+    ],
+    "tests/test_dhan_auth_unit.py": [
+      1785566871.826,
+      5324
+    ],
+    "tests/test_feed_warmup.py": [
+      1785526198.813,
+      2158
+    ]
+  },
+  "drift": {
+    "first_scan": false,
+    "added": [
+      "ntrade/domain/market/candles.py",
+      "ntrade/execution/retry.py",
+      "tests/test_candle_series.py",
+      "tests/test_retry.py"
+    ],
+    "removed": [],
+    "modified": [
+      "ntrade/__init__.py",
+      "ntrade/brokers/base.py",
+      "ntrade/brokers/dhan.py",
+      "ntrade/brokers/dhan_transport.py",
+      "ntrade/brokers/paper.py",
+      "ntrade/domain/market/__init__.py",
+      "ntrade/domain/market/history.py",
+      "ntrade/execution/__init__.py"
+    ]
+  },
+  "git": {
+    "available": false,
+    "commits": [],
+    "uncommitted": 0
+  },
+  "tests": {
+    "available": true,
+    "failing": 1,
+    "tests": [
+      "tests/test_indicators.py::test_vwap_between_low_and_high"
+    ],
+    "as_of": "2026-08-01T07:12:46Z",
+    "phantom_filtered": 0
+  },
+  "imports": {},
+  "deps": {
+    "runtime": [
+      "pandas>=2.0",
+      "numpy>=1.24",
+      "python-dotenv>=1.0",
+      "Dhan-Tradehull>=3.3.2"
+    ],
+    "dev": [
+      "pytest>=8.0"
+    ],
+    "frontend": []
+  },
+  "components": {
+    "ntrade/backtest/": {
+      "files": 0,
+      "description": "Backtest simulator: uses TradingKernel in replay mode with SimulatedExecution. Zero parity with live"
+    },
+    "ntrade/brokers/": {
+      "files": 0,
+      "description": "Broker adapter layer: BrokerAdapter (abstract), DhanBroker (Dhan-Tradehull wrapper, 1095 LOC), PaperBroker (deterministic offline), capabilities (dynamic broker-specific extensions via BrokerExtensionFacade)"
+    },
+    "ntrade/domain/instruments/": {
+      "files": 0,
+      "description": "Instrument hierarchy: Instrument (ABC) → Equity, Index, ETF, Currency, Commodity, Bond, Crypto, Spot, Future, Option, SyntheticInstrument. Each owns quote, depth, history, stream, indicators, broker wiring"
+    },
+    "ntrade/domain/market/": {
+      "files": 0,
+      "description": "Market value objects: Quote (frozen), Tick (frozen), MarketDepth (frozen), HistoricalSeries (DataFrame wrapper with cache/fetch/resample), LiveStream (subscription lifecycle + callbacks)"
+    },
+    "ntrade/domain/orders/": {
+      "files": 0,
+      "description": "Order model: Order (mutable dataclass), OrderFacade (fluent API: instrument.order.buy()), OrderSide/OrderType/TradeType/OrderStatus enums"
+    },
+    "ntrade/engines/": {
+      "files": 0,
+      "description": "Engine pipeline: MarketEngine, CandleEngine, IndicatorEngine, StrategyEngine, RiskEngine, PortfolioEngine, PositionSyncEngine, OrderEngine"
+    },
+    "ntrade/events/": {
+      "files": 0,
+      "description": "Typed event hierarchy: Event (base), QuoteUpdatedEvent, TickEvent, OrderPlacedEvent, FillEvent, SignalEvent, RiskHaltedEvent, lifecycle events"
+    },
+    "ntrade/execution/": {
+      "files": 0,
+      "description": "Execution layer: ExecutionRouter (multi-target), BrokerExecution (live), SimulatedExecution (paper), costs module"
+    },
+    "ntrade/facade.py": {
+      "files": 1,
+      "description": "Public entry point: Market class — wraps BrokerRegistry + InstrumentFactory. m.equity('TCS'), m.index('NIFTY'), m.portfolio(), m.account()"
+    },
+    "ntrade/factories.py": {
+      "files": 1,
+      "description": "InstrumentFactory — creates all instrument types with SymbolMaster flyweight cache. OptionFactory for synthetic analytics"
+    },
+    "ntrade/kernel/": {
+      "files": 0,
+      "description": "Core runtime: TradingKernel (engine stack coordinator), EventBus (typed pub/sub), TradingClock (Live/Replay), TradingContext, ResilientKernel (crash recovery + EventStore rebuild)"
+    },
+    "ntrade/registry.py": {
+      "files": 1,
+      "description": "SymbolMaster (flyweight: shared instrument instances), BrokerRegistry (name → factory: dhan, paper)"
+    },
+    "ntrade/replay/": {
+      "files": 0,
+      "description": "Replay engine: feeds recorded events through EventBus with ReplayClock"
+    },
+    "ntrade/runner/": {
+      "files": 0,
+      "description": "Live runner: wraps TradingKernel + MarketFeedSource, closes audit gaps (position sync, order polling, kill switch)"
+    },
+    "ntrade/sources/": {
+      "files": 0,
+      "description": "Market data feeds: DhanFeedSource (WebSocket), MarketFeedSource (kernel feed), SyntheticFeedSource (tick simulation)"
+    }
+  },
+  "graphify": {
+    "available": true,
+    "built": "2026-07-31T19:32:56Z",
+    "nodes": 2160,
+    "edges": 5034,
+    "communities": 104,
+    "hubs": [],
+    "fresh": false,
+    "stale": {
+      "modified": [
+        "ntrade/__init__.py",
+        "ntrade/brokers/base.py",
+        "ntrade/brokers/dhan.py",
+        "ntrade/brokers/dhan_auth.py",
+        "ntrade/brokers/paper.py",
+        "ntrade/domain/instruments/__init__.py",
+        "ntrade/domain/instruments/base.py",
+        "ntrade/domain/instruments/chain.py",
+        "ntrade/domain/instruments/derivatives.py",
+        "ntrade/domain/market/__init__.py"
+      ],
+      "modified_total": 59,
+      "deleted": [
+        ".agents/skills/dhan-tradehull/SKILL.md",
+        ".agents/skills/dhan-tradehull/examples/intraday_options_algo.py",
+        ".agents/skills/dhan-tradehull/examples/nifty50_scanner_algo.py",
+        ".agents/skills/dhan-tradehull/examples/positional_spread_algo.py",
+        ".agents/skills/dhan-tradehull/references/algo-dev-workflow.md",
+        ".agents/skills/dhan-tradehull/references/algo-intraday-options.md",
+        ".agents/skills/dhan-tradehull/references/algo-positional-spread.md",
+        ".agents/skills/dhan-tradehull/references/algo-scanner.md",
+        ".agents/skills/dhan-tradehull/references/answer-patterns.md",
+        ".agents/skills/dhan-tradehull/references/auth.md"
+      ],
+      "deleted_total": 25,
+      "new": [
+        "ntrade/brokers/dhan_auth_provider.py",
+        "ntrade/brokers/dhan_mapper.py",
+        "ntrade/brokers/dhan_transport.py",
+        "ntrade/domain/analytics/surface.py",
+        "ntrade/domain/instruments/capabilities.py",
+        "ntrade/domain/instruments/expiry.py",
+        "ntrade/domain/market/candles.py",
+        "ntrade/domain/orders/book.py",
+        "ntrade/domain/scanner.py",
+        "ntrade/execution/retry.py"
+      ],
+      "new_total": 25
+    }
+  }
+}

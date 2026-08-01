@@ -481,3 +481,14 @@ def test_position_quantity_buy_sell_fallback():
     by_symbol = {p.symbol: p.quantity for p in positions}
     assert by_symbol["TCS"] == 5   # 10 - 5, the restored fallback
     assert by_symbol["INFY"] == 3  # explicit netQty wins
+
+
+def test_no_fake_streaming_capabilities():
+    import ntrade.brokers.dhan as dhan_mod
+    from ntrade.brokers.capabilities import registered_capabilities
+
+    assert not hasattr(dhan_mod, "_market_feed")
+    assert not hasattr(dhan_mod, "_order_update_stream")
+    caps = registered_capabilities()
+    assert "market_feed" not in caps
+    assert "order_update_stream" not in caps

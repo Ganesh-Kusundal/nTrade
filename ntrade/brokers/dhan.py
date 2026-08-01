@@ -880,24 +880,6 @@ def _depth20(instrument, levels: int = 20) -> MarketDepth:
     )
 
 
-@capability("market_feed", brokers=("dhan",))
-def _market_feed(instrument):
-    """Subscribe to the Dhan market feed for this instrument (multiplexed)."""
-    broker = instrument.broker_adapter
-    broker.subscribe(instrument)
-    return instrument.stream
-
-
-@capability("order_update_stream", brokers=("dhan",))
-def _order_update_stream(instrument):
-    """Hook into the Dhan order-update stream for this instrument's orders."""
-    broker = instrument.broker_adapter
-    broker.subscribe(instrument)
-    # The library pushes order updates over the same websocket session; expose
-    # the instrument stream so users can on_tick/on_quote against order updates.
-    return instrument.stream
-
-
 @capability("margin_calculator", brokers=("dhan",))
 def _margin_calculator(instrument, quantity: int, transaction_type: str, trade_type: str = "MIS",
                        price: float = 0, trigger_price: float = 0, exchange: str | None = None):

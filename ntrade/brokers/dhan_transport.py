@@ -345,11 +345,17 @@ class DhanTransport:
     def get_balance(self) -> float:
         return float(self._tsl.get_balance())
 
-    def get_positions(self) -> pd.DataFrame:
-        return self._tsl.get_positions()
+    def get_positions(self) -> list:
+        """Position domain objects — no pandas leaks past the transport
+        boundary (M8). The raw DataFrame from Tradehull is normalised into
+        ``Position`` objects exactly like the broker adapter path, so callers
+        of the transport never see a DataFrame."""
+        return DhanMapper.positions_from_df(self._tsl.get_positions())
 
-    def get_holdings(self) -> pd.DataFrame:
-        return self._tsl.get_holdings()
+    def get_holdings(self) -> list:
+        """Holding domain objects — no pandas leaks past the transport
+        boundary (M8)."""
+        return DhanMapper.holdings_from_df(self._tsl.get_holdings())
 
     # ---- instrument metadata -----------------------------------------------
 

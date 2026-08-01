@@ -5,21 +5,34 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+#: Sentinel for "no value was computed". Distinct from a genuine 0.0 so a
+#: not-computed IV/delta can never be mistaken for a real zero (L5).
+NOT_COMPUTED: float | None = None
+
 
 @dataclass(frozen=True)
 class Greeks:
-    delta: float = 0.0
-    gamma: float = 0.0
-    theta: float = 0.0
-    vega: float = 0.0
-    rho: float = 0.0
-    iv: float = 0.0
+    delta: float | None = 0.0
+    gamma: float | None = 0.0
+    theta: float | None = 0.0
+    vega: float | None = 0.0
+    rho: float | None = 0.0
+    iv: float | None = NOT_COMPUTED
 
     def as_dict(self) -> dict:
         return {
             "delta": self.delta, "gamma": self.gamma, "theta": self.theta,
             "vega": self.vega, "rho": self.rho, "iv": self.iv,
         }
+
+    @property
+    def computed(self) -> bool:
+        """True when at least one greek was actually computed (not the
+        zero-filled default), so callers can distinguish "0.0" from
+        "not computed" (L5)."""
+        return self.delta not in (None, 0.0) or self.gamma not in (None, 0.0) \
+            or self.theta not in (None, 0.0) or self.vega not in (None, 0.0) \
+            or self.rho not in (None, 0.0) or self.iv not in (None, 0.0)
 
 
 def _norm_cdf(x: float) -> float:
@@ -83,16 +96,17 @@ class BlackScholes:
         market_price: float, spot: float, strike: float, years: float,
         risk_free: float, option_type: str = "CE", dividend: float = 0.0,
         tol: float = 1e-6, max_iter: int = 100,
-    ) -> float:
-        """Bisection IV solver. Returns 0.0 if no solution within bounds."""
+    ) -> float | None:
+        """Bisection IV solver. Returns ``NOT_COMPUTED`` (None) when no
+        solution exists within bounds — never a misleading 0.0 (L5)."""
         if years <= 0 or market_price <= 0:
-            return 0.0
+            return NOT_COMPUTED
         intrinsic = max(spot - strike, 0.0) if option_type == "CE" else max(strike - spot, 0.0)
         if market_price < intrinsic:
-            return 0.0
+            return NOT_COMPUTED
         lo, hi = 0.0001, 5.0
         if BlackScholes.price(spot, strike, years, risk_free, hi, option_type, dividend) < market_price:
-            return 0.0
+            return NOT_COMPUTED
         for _ in range(max_iter):
             mid = (lo + hi) / 2.0
             price = BlackScholes.price(spot, strike, years, risk_free, mid, option_type, dividend)

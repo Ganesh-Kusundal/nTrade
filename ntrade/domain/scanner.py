@@ -52,6 +52,9 @@ class Scanner(ABC):
     """
 
     name: str = "base"
+    #: Minimum seconds between actual re-scans when driven through the facade
+    #: (M6). 0 = always re-scan (default, backward compatible).
+    rate_limit_seconds: float = 0.0
 
     @abstractmethod
     def scan(self, session: "TradingSession", **kw: Any) -> list[ScannerResult]:
@@ -76,6 +79,8 @@ class ScannerFacade:
     def __init__(self, session: "TradingSession"):
         self._session = session
         self._scanners: dict[str, Scanner] = {}
+        self._last_run: dict[str, datetime] = {}
+        self._cached: dict[str, list[ScannerResult]] = {}
         self._register_builtins()
 
     def _register_builtins(self) -> None:
@@ -129,8 +134,27 @@ class ScannerFacade:
     # ---- internal ----------------------------------------------------------
 
     def _run(self, scanner: Scanner, **kw: Any) -> list[ScannerResult]:
+        """Run a scanner, honouring its ``rate_limit_seconds`` throttle (M6).
+
+        Within the rate-limit window the previous results are served from
+        cache (a hot loop must not re-scan the whole universe every tick);
+        an explicit ``now=`` keeps the throttle deterministic for tests.
+        """
+        limit = kw.pop("rate_limit_seconds", getattr(scanner, "rate_limit_seconds", 0.0)) or 0.0
+        now = kw.get("now") or datetime.now()
+        # Cache is keyed by the scanner *instance*, not its name — two distinct
+        # scanners sharing a name (e.g. repeated ``custom()`` calls) must never
+        # serve each other's stale results (M6).
+        key = id(scanner)
+        if limit > 0:
+            last = self._last_run.get(key)
+            if last is not None and (now - last).total_seconds() < limit:
+                return list(self._cached.get(key, []))
         results = scanner.scan(self._session, **kw)
         results.sort(key=lambda r: r.score, reverse=True)
         for i, r in enumerate(results):
             object.__setattr__(r, "rank", i + 1)
+        if limit > 0:
+            self._last_run[key] = now
+            self._cached[key] = list(results)
         return results

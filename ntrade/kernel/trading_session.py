@@ -195,6 +195,31 @@ class TradingSession:
             return self._broker.get_positions()
         return self._kernel.ctx.portfolio.positions
 
+    def live_pnl(self) -> float:
+        if self._broker is not None:
+            return self._broker.get_live_pnl()
+        return 0.0
+
+    def orderbook(self):
+        if self._broker is not None:
+            return self._broker.get_orderbook()
+        return None
+
+    def tradebook(self):
+        if self._broker is not None:
+            return self._broker.get_trade_book()
+        return None
+
+    def order_report(self):
+        if self._broker is not None:
+            return self._broker.order_report()
+        return {}
+
+    def chain(self, underlying: "Instrument", expiry: int = 0,
+              num_strikes: int = 10, **kw):
+        """Fetch an option chain for an underlying (delegates to the domain)."""
+        return underlying.derivatives.option_chain(expiry=expiry, num_strikes=num_strikes, **kw)
+
     # ============================================================ engine stack
 
     def register(self, instrument: "Instrument") -> "TradingSession":
@@ -238,6 +263,11 @@ class TradingSession:
     def kernel(self) -> TradingKernel:
         """The underlying TradingKernel (escape hatch for advanced usage)."""
         return self._kernel
+
+    @property
+    def factory(self) -> InstrumentFactory:
+        """The shared instrument factory (T-004: single implementation)."""
+        return self._factory
 
     @property
     def broker(self) -> "BrokerAdapter | None":

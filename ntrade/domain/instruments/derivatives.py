@@ -134,7 +134,8 @@ class Option(Instrument):
         self.settlement = settlement.upper()          # "CASH" | "PHYSICAL"
         self._underlying: Instrument | None = None
         self._greeks: "Greeks | None" = None
-        self.iv: float = 0.0
+        # ``None`` means "no IV computed yet" — distinct from a real 0.0 (L5).
+        self.iv: float | None = None
 
     def set_underlying(self, instrument: Instrument) -> "Option":
         self._underlying = instrument
@@ -155,7 +156,7 @@ class Option(Instrument):
 
     def set_greeks(self, greeks: "Greeks") -> "Option":
         self._greeks = greeks
-        if greeks.iv:
+        if greeks.iv is not None:
             self.iv = greeks.iv
         return self
 

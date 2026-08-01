@@ -7,6 +7,7 @@ BrokerRegistry maps broker names to factory callables.
 
 from __future__ import annotations
 
+import threading
 from typing import Callable, Type
 
 from ntrade.domain.instruments.base import Instrument
@@ -58,33 +59,43 @@ class SymbolMaster:
 
 
 class BrokerRegistry:
-    """Registry of broker factories: BrokerRegistry.get("dhan") -> DhanBroker."""
+    """Registry of broker factories: BrokerRegistry.get("dhan") -> DhanBroker.
+
+    The factory map and the default-broker flag are shared class state, so
+    all mutation is guarded by a class-level RLock — concurrent factories
+    (feed thread vs. strategy thread) cannot race dict writes (L4)."""
 
     _factories: dict[str, Callable] = {}
+    _lock = threading.RLock()
 
     @classmethod
     def register(cls, name: str, factory: Callable) -> None:
-        cls._factories[name] = factory
+        with cls._lock:
+            cls._factories[name] = factory
 
     @classmethod
     def get(cls, name: str, **kwargs):
-        _ensure_default_brokers()
-        if name not in cls._factories:
-            raise KeyError(f"No broker registered under {name!r}; available: {sorted(cls._factories)}")
-        return cls._factories[name](**kwargs)
+        with cls._lock:
+            _ensure_default_brokers()
+            if name not in cls._factories:
+                raise KeyError(f"No broker registered under {name!r}; available: {sorted(cls._factories)}")
+            factory = cls._factories[name]
+        return factory(**kwargs)
 
     @classmethod
     def available(cls) -> list[str]:
-        _ensure_default_brokers()
-        return sorted(cls._factories)
+        with cls._lock:
+            _ensure_default_brokers()
+            return sorted(cls._factories)
 
     @classmethod
     def unregister_all(cls) -> None:
         """Clear all registered brokers and reset the default-broker flag so a
         later ``get()`` re-registers the defaults (test isolation)."""
         global _DEFAULT_BROKERS_REGISTERED
-        cls._factories.clear()
-        _DEFAULT_BROKERS_REGISTERED = False
+        with cls._lock:
+            cls._factories.clear()
+            _DEFAULT_BROKERS_REGISTERED = False
 
 
 _DEFAULT_BROKERS_REGISTERED = False
@@ -92,19 +103,20 @@ _DEFAULT_BROKERS_REGISTERED = False
 
 def _ensure_default_brokers() -> None:
     global _DEFAULT_BROKERS_REGISTERED
-    if _DEFAULT_BROKERS_REGISTERED:
-        return
-    _DEFAULT_BROKERS_REGISTERED = True
-    try:
-        from ntrade.brokers.dhan import DhanBroker
-        BrokerRegistry.register("dhan", lambda **kw: DhanBroker(**kw))
-    except ImportError:
-        pass  # Dhan-Tradehull not installed — skip
-    try:
-        from ntrade.brokers.paper import PaperBroker
-        BrokerRegistry.register("paper", lambda **kw: PaperBroker(**kw))
-    except ImportError:
-        pass
+    with BrokerRegistry._lock:
+        if _DEFAULT_BROKERS_REGISTERED:
+            return
+        _DEFAULT_BROKERS_REGISTERED = True
+        try:
+            from ntrade.brokers.dhan import DhanBroker
+            BrokerRegistry.register("dhan", lambda **kw: DhanBroker(**kw))
+        except ImportError:
+            pass  # Dhan-Tradehull not installed — skip
+        try:
+            from ntrade.brokers.paper import PaperBroker
+            BrokerRegistry.register("paper", lambda **kw: PaperBroker(**kw))
+        except ImportError:
+            pass
 
 
 def register_default_brokers() -> None:

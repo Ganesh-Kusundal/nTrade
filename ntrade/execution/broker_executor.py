@@ -76,10 +76,12 @@ class BrokerExecution:
                 quantity=intent.quantity, reason=str(exc),
                 strategy=intent.strategy, ts=intent.ts,
             )
-        self._seq += 1
-        order_id = order.order_id or f"BRK-{self._seq:06d}"
-        if order_id == "None":  # some brokers turn a missing id into the string "None"
-            order_id = f"BRK-{self._seq:06d}"
+        order_id = str(order.order_id) if order.order_id else ""
+        if not order_id or order_id == "None":
+            # Some brokers turn a missing id into the string "None"; allocate a
+            # fresh BRK- id that never collides with an existing open order, so
+            # two orders can never merge under one key (M2).
+            order_id = self._next_brk_id()
         order.order_id = order_id  # the tracked order must carry its key for poll()
         self.ctx.bus.publish(OrderAcceptedEvent(
             order_id=order_id, symbol=intent.symbol, exchange=intent.exchange,
@@ -91,6 +93,14 @@ class BrokerExecution:
             self._open[order_id] = {"intent": intent, "order": order, "filled": 0,
                                     "status": order.status, "placed_at": self.ctx.now()}
         return None
+
+    def _next_brk_id(self) -> str:
+        """A unique ``BRK-`` fallback id (never collides with open orders)."""
+        while True:
+            self._seq += 1
+            candidate = f"BRK-{self._seq:06d}"
+            if candidate not in self._open:
+                return candidate
 
     # --------------------------------------------------------- lifecycle poll
     def poll(self) -> list:
@@ -161,6 +171,52 @@ class BrokerExecution:
     def open_orders(self) -> list[str]:
         """Order ids still open (accepted, awaiting broker lifecycle)."""
         return list(self._open)
+
+    # ------------------------------------------------------- crash recovery
+    def restore_open(self, deltas: dict) -> int:
+        """Rehydrate the open-order tracker from a recovered delta map (H3).
+
+        ``deltas`` comes from ``EventStore.open_order_deltas()``: per-order
+        filled/remaining state for orders still open when the session crashed.
+        Rebuilds the in-memory ``_open`` records so ``poll()`` resumes
+        emitting only the *remaining* fill (never re-emitting the
+        already-filled quantity) and status/timeout tracking continues. Also
+        bumps ``_seq`` past any recovered ``BRK-`` ids so new orders cannot
+        collide. Returns the number of orders restored.
+        """
+        from ntrade.domain.orders.order import Order, OrderSide, OrderStatus
+
+        restored = 0
+        for order_id, delta in deltas.items():
+            if order_id in self._open:
+                continue
+            instrument = self.ctx.instrument(delta["symbol"])
+            if instrument is None:
+                continue
+            intent = OrderIntentEvent(
+                symbol=delta["symbol"], exchange=delta["exchange"],
+                side=delta["side"], quantity=delta["quantity"],
+                strategy=delta["strategy"], ts=delta["placed_at"],
+            )
+            order = Order(
+                instrument=instrument,
+                side=OrderSide(delta["side"].upper()),
+                quantity=delta["quantity"],
+                order_id=order_id,
+                status=OrderStatus(delta["status"]),
+                filled_qty=delta["filled"],
+                created_at=delta["placed_at"],
+            )
+            self._open[order_id] = {
+                "intent": intent, "order": order, "filled": delta["filled"],
+                "status": order.status, "placed_at": delta["placed_at"],
+            }
+            # bump seq past recovered BRK- ids so new orders cannot collide
+            for token in str(order_id).split("-")[-1:]:
+                if token.isdigit() and int(token) > self._seq:
+                    self._seq = int(token)
+            restored += 1
+        return restored
 
     # -------------------------------------------------------- OMS operations
     def modify(self, order_id: str, *, price: float | None = None,

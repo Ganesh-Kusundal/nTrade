@@ -135,4 +135,8 @@ nifty.stream.is_live
 
 ---
 
+Deeper on chains and option orders: [Options Trading](08-options-trading.md).
+Dhan-only order types and depth: [Broker Capabilities](07-broker-capabilities.md).
+How these pieces connect end-to-end: [Trading Flows](09-trading-flows.md).
+
 Next: [Writing Strategies](03-strategies.md) · Back: [Install & Brokers](01-install-brokers.md) · [Index](index.md)

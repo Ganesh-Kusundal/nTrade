@@ -9,7 +9,8 @@ extending it.
 
 Start with install and brokers, then walk the core journey (quotes → history →
 orders). Strategies, scanners and risk build on that session. Simulation shows
-how to prove a strategy offline before going live. Every example uses
+how to prove a strategy offline before going live. Deep dives cover Dhan-only
+broker capabilities, options trading, and end-to-end flows. Every example uses
 `TradingSession.paper()` unless a live Dhan credential is required.
 
 ## Sections
@@ -20,6 +21,9 @@ how to prove a strategy offline before going live. Every example uses
 4. [Scanners](04-scanners.md)
 5. [Risk & Circuit Breakers](05-risk.md)
 6. [Backtest, Replay & Simulation](06-simulation.md)
+7. [Broker Capabilities (Dhan extras)](07-broker-capabilities.md)
+8. [Options Trading](08-options-trading.md)
+9. [Trading Flows](09-trading-flows.md)
 
 ## Quick start (paper — no credentials needed)
 
@@ -38,12 +42,13 @@ print(nifty.market.ltp())
 flowchart LR
   install[Install] --> broker[Connect_broker]
   broker --> session[Build_session]
-  session --> data[Quotes_History]
+  session --> data[Quotes_History_Options]
   data --> decide[Strategy_or_Scanner]
   decide --> risk[Risk_screen]
   risk --> exec[Execute_paper_or_live]
-  exec --> sim[Backtest_Replay]
+  exec --> sim[Backtest_Replay_Gate]
 ```
 
 Work left to right. Prove everything on paper first; go live only after the
-paper gate passes.
+paper gate passes. For Dhan extras, options, and full flow diagrams see
+sections 7–9.

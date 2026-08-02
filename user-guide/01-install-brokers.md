@@ -132,4 +132,8 @@ m.balance()
 
 ---
 
+Dhan-only extras (depth, super orders, kill switch, GTT, …): see
+[Broker Capabilities](07-broker-capabilities.md). End-to-end paths: see
+[Trading Flows](09-trading-flows.md).
+
 Next: [Core Journey](02-core-journey.md) · Back: [Index](index.md)

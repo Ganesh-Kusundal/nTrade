@@ -186,11 +186,16 @@ class LiveRunner:
         self.logger.info("heartbeat tick_count=%d open_orders=%d",
                          event.tick_count, event.open_orders)
 
+    # Observed feed-drop -> RiskHaltedEvent -> kill switch; independent of the
+    # order-timeout consumer below (they never cross-trigger: see
+    # tests/test_contract_live_consumers.py)
     def _on_feed_disconnected(self, event) -> None:
         self.logger.warning("feed disconnected: %s — halting", event.reason)
         self.kernel.bus.publish(RiskHaltedEvent(
             reason=f"feed disconnected: {event.reason}", ts=self.kernel.clock.now()))
 
+    # Order-timeout only cancels the stale order; it must NOT trip the risk halt
+    # / kill-switch (see tests/test_contract_live_consumers.py)
     def _on_order_timeout(self, event) -> None:
         self.logger.warning("order timeout: %s %s x%d aged %.0fs — cancelling",
                             event.side, event.symbol, event.quantity, event.age_seconds)

@@ -126,6 +126,7 @@ class DhanMarketFeedSource(MarketFeedSource):
         self._timer = time.monotonic
         self._sleep = time.sleep
         self._reconnect_limiter = RateLimiter(calls_per_second=0.5)
+        self._reconnect_called = False
 
     # ------------------------------------------------------------------ wiring
     def _mode_code(self) -> int:
@@ -216,7 +217,26 @@ class DhanMarketFeedSource(MarketFeedSource):
         self.payloads_ingested += 1
 
     def _on_error(self, instance, error) -> None:
-        _logger.error("feed error: %s", error, exc_info=True)
+        _logger.error("feed error: %s", error)
+        if self.kernel is not None:
+            self.bus.publish(FeedDisconnectedEvent(
+                reason=str(error), ts=self.kernel.clock.now()))
+        self._reconnect()
+
+    def _reconnect(self) -> None:
+        self._reconnect_limiter.wait()
+        try:
+            self.stop()          # tear down the dead socket
+            self.start()         # re-attach + re-subscribe (fresh MarketFeed)
+            self._reconnect_called = True
+            # Re-arm every instrument stream so consumers see them as live again.
+            if self.kernel is not None:
+                for instrument in self.kernel.ctx.instruments_snapshot():
+                    stream = getattr(instrument, "_stream", None)
+                    if stream is not None:
+                        stream.notify_reconnect()
+        except Exception as exc:
+            _logger.error("reconnect failed — feed remains down: %s", exc)
 
     def _on_close(self, instance) -> None:
         _logger.warning("feed closed")

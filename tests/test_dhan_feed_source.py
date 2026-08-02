@@ -292,3 +292,31 @@ def test_source_non_dict_payload_does_not_crash_kernel():
     src._on_message(src._feed or FakeFeed([]), None)  # disconnect packet
     assert src.payloads_ingested == 2
     assert len(k.bus.history) == 0  # no events published, no crash
+
+
+# ------------------------------------------------------------------ reconnect
+def test_feed_reconnects_after_disconnect():
+    k = _kernel()
+    builds = []
+    src = DhanMarketFeedSource(k, symbols=[(1, 2885)], symbol_map=SYMBOL_MAP,
+                               feed_factory=lambda subs: builds.append(subs) or FakeFeed(subs))
+    src.start()
+    before = len(builds)
+    src._on_error(None, RuntimeError("ws dropped"))  # dhanhq 2-arg signature
+    assert src._reconnect_called
+    assert len(builds) > before      # the feed was actually rebuilt
+    assert src.running                # and is running again
+
+
+def test_reconnect_publishes_disconnect_and_resubscribes():
+    from ntrade.events.lifecycle import FeedDisconnectedEvent
+    from ntrade.domain.market.stream import SubscriptionState
+    k = _kernel()
+    src = DhanMarketFeedSource(k, symbols=[(1, 2885)], symbol_map=SYMBOL_MAP,
+                               feed_factory=lambda subs: FakeFeed(subs))
+    src.start()
+    inst = k.ctx.instrument("RELIANCE")
+    src._on_error(None, RuntimeError("ws closed"))
+    assert any(isinstance(e, FeedDisconnectedEvent) for e in k.bus.history)
+    assert inst._stream.state is SubscriptionState.SUBSCRIBED
+    assert inst._stream.is_subscribed is True

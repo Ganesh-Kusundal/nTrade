@@ -205,6 +205,8 @@ class DhanMarketFeedSource(MarketFeedSource):
                 reason=str(error), ts=self.kernel.clock.now()))
         self._reconnect()
 
+    # Reconnect re-uses start()/stop(), so code-21 + version v2 are always
+    # reapplied at re-arm (see tests/test_contract_feed_reconnect_subscription.py)
     def _reconnect(self) -> None:
         self._reconnect_limiter.wait()
         try:

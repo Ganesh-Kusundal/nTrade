@@ -167,3 +167,52 @@ class TestIsRateLimited:
         assert exc.retry_after == 3.5
         assert "slow down" in str(exc)
         assert str(RateLimited(Quota.QUOTE)) == "rate limited on quote"
+
+
+# ---------------------------------------------------------------- telemetry (T-036)
+
+
+class TestGateStatus:
+    def test_status_reports_empty_windows(self):
+        clock = FakeClock()
+        gate = BrokerRateGate(clock=clock, sleep=clock.sleep)
+        snap = gate.status()
+        assert set(snap) == {"quote", "data", "order", "non_trading"}
+        for info in snap.values():
+            assert not info["blocked"]
+            assert info["cooldown_remaining"] == 0
+        # order class has 4 windows (1s/60s/1h/1d), quote has 1
+        assert len(snap["order"]["windows"]) == 4
+        assert len(snap["quote"]["windows"]) == 1
+
+    def test_status_reflects_used_tokens(self):
+        clock = FakeClock()
+        gate = BrokerRateGate(clock=clock, sleep=clock.sleep)
+        gate.acquire(Quota.QUOTE)
+        gate.acquire(Quota.DATA)
+        gate.acquire(Quota.DATA)
+        snap = gate.status()
+        assert snap["quote"]["windows"][0]["used"] == 1
+        assert snap["quote"]["windows"][0]["limit"] == 1
+        assert snap["quote"]["blocked"] is True      # 1/1 full
+        assert snap["data"]["windows"][0]["used"] == 2
+        assert snap["data"]["blocked"] is False      # 2/5 still free
+
+    def test_status_reflects_penalty_cooldown(self):
+        clock = FakeClock()
+        gate = BrokerRateGate(clock=clock, sleep=clock.sleep)
+        gate.penalize(Quota.DATA, 3.0)
+        snap = gate.status()
+        assert snap["data"]["cooldown_remaining"] == 3.0
+        assert snap["data"]["blocked"] is True
+        assert snap["quote"]["blocked"] is False     # class-scoped
+
+    def test_status_is_read_only(self):
+        """status() must never mutate gate state (no token accounting drift)."""
+        clock = FakeClock()
+        gate = BrokerRateGate(clock=clock, sleep=clock.sleep)
+        gate.acquire(Quota.QUOTE)
+        before = len(gate._history[Quota.QUOTE][0])
+        gate.status()
+        gate.status()
+        assert len(gate._history[Quota.QUOTE][0]) == before

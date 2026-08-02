@@ -129,6 +129,33 @@ class BrokerRateGate:
             now = self._clock()
             self._cooldown_until[quota] = max(self._cooldown_until[quota], now + seconds)
 
+    # ------------------------------------------------------------------ telemetry
+    def status(self) -> dict:
+        """Read-only snapshot of every quota class (T-036).
+
+        Returns ``{quota.value: {"windows": [{span_s, limit, used}],
+        "cooldown_remaining": float, "blocked": bool}}`` — used for the
+        pre-deploy quota-headroom report and operator dashboards. Never blocks
+        and never mutates gate state (windows are not pruned here).
+        """
+        now = self._clock()
+        out: dict = {}
+        with self._lock:
+            for quota in Quota:
+                windows = []
+                for (span, limit), window in zip(self._windows[quota], self._history[quota]):
+                    # count entries still inside this window (no pruning)
+                    used = sum(1 for t in window if t > now - span)
+                    windows.append({"span_s": span, "limit": limit, "used": used})
+                cooldown = max(0.0, self._cooldown_until[quota] - now)
+                blocked = cooldown > 0 or any(w["used"] >= w["limit"] for w in windows)
+                out[quota.value] = {
+                    "windows": windows,
+                    "cooldown_remaining": round(cooldown, 3),
+                    "blocked": blocked,
+                }
+        return out
+
     # ------------------------------------------------------------------ internals
     def _compute_wait(self, quota: Quota) -> float:
         """Longest wait (seconds) before *quota* can fire, under the lock."""

@@ -132,6 +132,34 @@ def test_main_token_failure_fails_closed(tmp_path):
     assert code == 1  # token near expiry -> fail closed even though fakes pass
 
 
+# ------------------------------------------------- T-036: quota headroom row
+def test_quota_status_row_pass_when_clear():
+    from ntrade.execution.rate_limit import BrokerRateGate
+    gate = BrokerRateGate()
+    name, status, summary = live_read.quota_status_row(gate)
+    assert name == "rate_gate"
+    assert status == "PASS"
+    assert "quote=" in summary and "order=" in summary
+
+
+def test_quota_status_row_degraded_when_blocked():
+    from ntrade.execution.rate_limit import BrokerRateGate, Quota
+    gate = BrokerRateGate()
+    gate.acquire(Quota.QUOTE)  # 1/1 — quote window is now full
+    name, status, summary = live_read.quota_status_row(gate)
+    assert status == "DEGRADED"
+    assert "quote=1/1" in summary
+
+
+def test_quota_status_row_reflects_cooldown():
+    from ntrade.execution.rate_limit import BrokerRateGate, Quota
+    gate = BrokerRateGate()
+    gate.penalize(Quota.DATA, 3.0)
+    name, status, summary = live_read.quota_status_row(gate)
+    assert status == "DEGRADED"
+    assert "data=" in summary and "cd" in summary
+
+
 # ------------------------------------------------------------ T-034: exit policy
 def test_exit_code_fail_always_fails():
     assert live_read.exit_code([("x", "FAIL", "boom")], strict=False) == 1

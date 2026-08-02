@@ -16,6 +16,37 @@ from ntrade.kernel.trading_session import TradingSession  # noqa: E402
 RESULTS: list[tuple[str, str, str]] = []
 
 
+def quota_status_row(gate) -> tuple[str, str, str]:
+    """Render a live quota-headroom row from a session BrokerRateGate (T-036).
+
+    Reports each quota class's current window usage plus any active cooldown
+    (e.g. after a DH-904) so an operator can see headroom at a glance. A gate
+    that is already blocked is DEGRADED — go-live should not proceed into an
+    exhausted quota window.
+    """
+    try:
+        snap = gate.status()
+    except Exception as exc:  # noqa: BLE001
+        return ("rate_gate", "FAIL", f"{type(exc).__name__}: {exc}")
+    parts = []
+    blocked = False
+    for cls in ("quote", "data", "order", "non_trading"):
+        info = snap.get(cls)
+        if info is None:
+            continue
+        # Report the TIGHTEST window (shortest span) per class — that is the
+        # binding one for burst shaping. Summing across overlapping windows
+        # (1s/60s/1h/1d) would double-count the same tokens.
+        tightest = min(info["windows"], key=lambda w: w["span_s"])
+        label = f"{cls}={tightest['used']}/{tightest['limit']}"
+        if info["cooldown_remaining"] > 0:
+            label += f"-cd{info['cooldown_remaining']}s"
+        parts.append(label)
+        blocked = blocked or info["blocked"]
+    summary = "; ".join(parts) or "no gate"
+    return ("rate_gate", "DEGRADED" if blocked else "PASS", summary)
+
+
 def exit_code(results, strict: bool = False) -> int:
     """Exit decision for a live-read run (T-034).
 
@@ -73,6 +104,10 @@ def main(argv: list[str] | None = None) -> int:
         RESULTS.append(("connect", "PASS" if ok else "FAIL",
                         f"broker={session.broker.name} connected={session.connected}"))
         _tsl = session.broker.tsl
+        # T-036: report quota headroom from the session's shared rate gate.
+        gate = getattr(session.broker, "_gate", None)
+        if gate is not None:
+            RESULTS.append(quota_status_row(gate))
     except Exception as exc:  # noqa: BLE001
         RESULTS.append(("connect", "FAIL", f"{type(exc).__name__}: {exc}"))
         print("connection failed; aborting endpoint checks")

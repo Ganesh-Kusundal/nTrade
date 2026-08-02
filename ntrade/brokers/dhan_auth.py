@@ -39,6 +39,8 @@ except ImportError:  # pragma: no cover - import guard for non-Dhan installs
     Tradehull = None  # type: ignore[assignment]
 
 
+# auth lifetime is independent of observability — stopping auth never emits
+# heartbeat/feed/order events (see tests/test_contract_auth_observability.py)
 def load_env(env_path: str = ".env") -> None:
     from dotenv import load_dotenv
     load_dotenv(Path(env_path).absolute())

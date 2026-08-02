@@ -106,46 +106,16 @@ def test_runner_per_strategy_risk_limits_are_isolated():
     assert status["emit_once#2"]["approved"] == 1
 
 
-def test_runner_hot_detach_stops_dispatch():
-    k = _kernel()
-    runner = StrategyRunner(k)
-    strat = EmitEveryTick(quantity=1)
-    name = runner.add(strat)
-    k.bus.publish(_tick(minute=0))
-    k.bus.publish(_tick(minute=1))
-    assert strat.ticks_seen == 2
-    assert len(_fills(k)) == 2
+def test_runner_surface_is_minimal():
+    import inspect
 
-    # hot detach while the kernel is live
-    assert runner.remove(name) is True
-    assert name not in runner.names()
-    k.bus.publish(_tick(minute=2))
-    k.bus.publish(_tick(minute=3))
-    assert strat.ticks_seen == 2  # strategy no longer receives events
-    assert len(_fills(k)) == 2  # no new fills
-    assert runner.remove("nope") is False
+    from ntrade.kernel.runner import StrategyRunner
 
-
-def test_runner_enable_disable_toggle():
-    k = _kernel()
-    runner = StrategyRunner(k)
-    strat = EmitEveryTick(quantity=1)
-    name = runner.add(strat)
-    k.bus.publish(_tick(minute=0))
-    k.bus.publish(_tick(minute=1))
-    assert strat.ticks_seen == 2
-
-    assert runner.disable(name) is True
-    assert runner.running(name) is False
-    k.bus.publish(_tick(minute=2))
-    k.bus.publish(_tick(minute=3))
-    assert strat.ticks_seen == 2  # dispatch skipped while disabled
-
-    assert runner.enable(name) is True
-    assert runner.running(name) is True
-    k.bus.publish(_tick(minute=4))
-    assert strat.ticks_seen == 3
-    assert runner.disable("missing") is False
+    members = {m for m, _ in inspect.getmembers(StrategyRunner) if not m.startswith("_")}
+    assert "remove" not in members
+    assert "enable" not in members
+    assert "disable" not in members
+    assert {"add", "release"} <= members
 
 
 def test_runner_global_risk_paused_while_managing():

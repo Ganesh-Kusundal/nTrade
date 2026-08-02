@@ -124,9 +124,10 @@ checks the current broker supports it, and fails fast otherwise — no giant
 `if/else`, open/closed against new brokers.
 
 Broker adapters also normalize broker-specific wire formats INTO domain objects
-at the adapter boundary: Dhan's chain-frame parsing lives in `DhanBroker`
-(`_chain_from_dhan_df` → `OptionChain.from_rows`), so the domain layer stays
-broker-agnostic. Bracket (BO) orders route through the adapter to Dhan's
+at the adapter boundary: Dhan's chain-frame parsing lives in `dhan_mapper.py`
+(`chain_from_dhan_df` → `OptionChain`), called from `DhanBroker.get_option_chain`,
+so the domain layer stays broker-agnostic. Bracket (BO) orders route through the
+adapter to Dhan's
 `place_super_order` API; `get_instrument_metadata()` hydrates tick/lot/freeze
 qty into instruments via `Instrument.hydrate()`.
 
@@ -304,7 +305,7 @@ OHLCV    ──► BacktestSimulator ──► TickEvent ──► EventBus
 - `SymbolMaster` (flyweight) — same `(kind, symbol, exchange)` resolves to the
   same instance: shared metadata, subscriptions, caches.
 - `InstrumentFactory` — one creation entry point bound to a broker.
-- `OptionFactory` / `OrderFactory` — synthetic/analytic construction.
+- `OptionFactory` — synthetic/analytic option construction.
 - `BrokerRegistry` — name → factory; `Market(broker="dhan")` / `"paper"`.
 
 ## 8. Design patterns used (with justification)
@@ -330,29 +331,37 @@ OHLCV    ──► BacktestSimulator ──► TickEvent ──► EventBus
 ntrade/
   __init__.py          # public API surface
   facade.py            # Market
-  factories.py         # InstrumentFactory, OptionFactory, OrderFactory
+  factories.py         # InstrumentFactory, OptionFactory
   registry.py          # SymbolMaster (flyweight), BrokerRegistry
   domain/
     session.py         # MarketState, TradingSession
-    instruments/       # base, cash, derivatives, chain
-    market/            # quote, depth, history, stream
-    analytics/         # greeks, indicators
-    orders/            # order
+    scanner.py         # Scanner base
+    portfolio.py       # Portfolio / account read model
+    instruments/       # base, cash, derivatives, chain, capabilities
+    market/            # quote, depth, history, stream, candles
+    analytics/         # greeks, indicators, surface
+    orders/            # order, book
   brokers/
     base.py            # BrokerAdapter ABC
     capabilities.py    # capability registry + facade
     paper.py           # PaperBroker (tests/backtest/replay)
     dhan.py            # DhanBroker + capabilities
     dhan_auth.py       # token store, cooldown, PIN+TOTP fallback
+    dhan_auth_provider.py  # credential provider / refresh
+    dhan_mapper.py     # Dhan wire→domain mapping (chain_from_dhan_df, DhanMapper)
+    dhan_transport.py  # transport wrapper over Tradehull client
   events/              # canonical event model (market/order/portfolio/risk/lifecycle)
-  kernel/              # TradingKernel, ResilientKernel, StrategyRunner, EventBus, TradingClock, TradingContext
-  engines/             # market, candle, indicator, strategy, risk, order, portfolio, position-sync
-  execution/           # ExecutionRouter, SimulatedExecution, BrokerExecution, costs
+  kernel/              # TradingKernel, ResilientKernel, StrategyRunner, EventBus, TradingClock, TradingContext, session, trading_session
+  engines/             # market, candle, indicator, strategy(+strategy_engine), risk, order, portfolio, position-sync
+    execution/           # ExecutionRouter, SimulatedExecution, BrokerExecution, costs, retry
   storage/             # EventStore
   replay/              # ReplayEngine
   backtest/            # BacktestSimulator, fills (BarAwareExecution)
-  sources/             # MarketFeedSource, SimulatedFeedSource, DhanMarketFeedSource
-tests/                 # 348 offline tests + kernel/backtest/replay/source/live suites
+  sources/             # MarketFeedSource, SimulatedFeedSource, SyntheticMarketFeedSource, DhanMarketFeedSource
+  sim/                 # tick_simulator (synthesize_1m_ticks)
+  runner/              # LiveRunner, paper gate, bench, feeds
+  scanners/            # builtin scanners
+tests/                 # ~638 offline test functions across 63 files (kernel/backtest/replay/source/live/contract suites)
 ```
 
 ## 10. Extensibility guidelines (open/closed)

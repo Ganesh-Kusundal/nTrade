@@ -70,3 +70,39 @@ def test_invalid_range_raises():
     ts = datetime(2026, 7, 30, 9, 15)
     with pytest.raises(ValueError):
         synthesize_1m_ticks(ts, 100.0, 90.0, 95.0, 100.0, 100)
+
+
+def test_no_full_range_jump_in_one_second():
+    """Non-adjacent anchors prevent full bar-range jumps for n >= 6."""
+    ts, o, h, l, c, v = _bar()
+    bar_range = h - l
+    for seed in range(200):
+        ticks = synthesize_1m_ticks(ts, o, h, l, c, v, seed=seed)
+        prices = [t.price for t in ticks]
+        max_jump = max(abs(prices[i] - prices[i - 1]) for i in range(1, len(prices)))
+        assert max_jump < bar_range, (
+            f"seed={seed}: 1s jump {max_jump:.2f} >= bar range {bar_range:.2f}"
+        )
+
+
+def test_heg_no_adjacent_spike():
+    """Regression: HEG seed=99 previously had a 36-point spike in 1 second."""
+    ts = datetime(2026, 7, 30, 9, 15)
+    ticks = synthesize_1m_ticks(ts, 1620.50, 1648.75, 1612.30, 1635.00, 10000, seed=99)
+    prices = [t.price for t in ticks]
+    bar_range = 1648.75 - 1612.30
+    max_jump = max(abs(prices[i] - prices[i - 1]) for i in range(1, len(prices)))
+    assert max_jump < bar_range / 3
+
+
+@pytest.mark.parametrize("seconds", [4, 5, 6, 7, 10])
+def test_small_seconds_invariants(seconds):
+    ts, o, h, l, c, v = _bar()
+    ticks = synthesize_1m_ticks(ts, o, h, l, c, v, seconds=seconds)
+    assert len(ticks) == seconds
+    assert ticks[0].price == o
+    assert ticks[-1].price == c
+    prices = [t.price for t in ticks]
+    assert max(prices) == h
+    assert min(prices) == l
+    assert sum(t.quantity for t in ticks) == v

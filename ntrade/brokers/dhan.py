@@ -543,7 +543,8 @@ def _depth20(instrument, levels: int = 20) -> MarketDepth:
 
 
 @capability("margin_calculator", brokers=("dhan",))
-def _margin_calculator(instrument, quantity: int, transaction_type: str, trade_type: str = "MIS",
+def _margin_calculator(instrument, quantity: int = 1, transaction_type: str = "BUY",
+                       trade_type: str = "MIS",
                        price: float = 0, trigger_price: float = 0, exchange: str | None = None):
     """Estimate margin required for a potential order on this instrument."""
     broker = instrument.broker_adapter

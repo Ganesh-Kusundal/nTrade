@@ -7,6 +7,11 @@ bars), the clock (SimulationClock) and cost models (slippage/commission).
 Each bar is published as a QuoteEvent (full market state) plus a TickEvent at
 the close, so the market/candle/indicator/strategy engines behave exactly as
 in live trading.
+
+LIMIT fills are bar-aware by default: a limit order only fills when a bar
+trades through it (FillPolicy), mirroring live behaviour — it never fills at
+its limit price against a bar that never reached it. Pass ``fill_policy`` to
+override the default policy.
 """
 
 from __future__ import annotations
@@ -21,7 +26,6 @@ from ntrade.execution.costs import (
     CommissionModel, FuturesCarryCosts, SlippageModel, STATUTORY_DEFAULT,
 )
 from ntrade.execution.router import ExecutionRouter
-from ntrade.execution.simulator import SimulatedExecution
 from ntrade.kernel.clock import SimulationClock
 from ntrade.kernel.session import TradingKernel
 
@@ -76,7 +80,8 @@ class BacktestSimulator:
         self.statutory = statutory
         self.futures_costs = futures_costs
         self.delivery_detection = delivery_detection
-        self.fill_policy = fill_policy
+        # Effective policy: None means the default bar-aware FillPolicy.
+        self.fill_policy = fill_policy or FillPolicy()
         self.clock = clock or SimulationClock()
         self._curve_rows: list[tuple] = []
         self._current_bar = None
@@ -90,18 +95,14 @@ class BacktestSimulator:
             )
             kernel.register(instrument or Equity(symbol, exchange=exchange))
             router = ExecutionRouter(kernel.ctx)
-            if fill_policy is not None:
-                execution = BarAwareExecution(
-                    kernel.ctx, policy=fill_policy,
-                    bar_provider=lambda: self._current_bar,
-                    slippage=slippage, commission=commission, statutory=statutory,
-                    delivery_detection=delivery_detection,
-                )
-            else:
-                execution = SimulatedExecution(
-                    kernel.ctx, slippage=slippage, commission=commission,
-                    statutory=statutory, delivery_detection=delivery_detection,
-                )
+            # Bar-aware LIMIT fills are the default (a limit only fills when a
+            # bar trades through it); pass fill_policy for a custom policy.
+            execution = BarAwareExecution(
+                kernel.ctx, policy=self.fill_policy,
+                bar_provider=lambda: self._current_bar,
+                slippage=slippage, commission=commission, statutory=statutory,
+                delivery_detection=delivery_detection,
+            )
             router.add("default", execution)
             router.default("default")
             kernel.router = router

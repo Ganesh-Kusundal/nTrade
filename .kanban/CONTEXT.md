@@ -1,4 +1,4 @@
-# nTrade — kanban digest (2026-08-02T04:12:41Z)
+# nTrade — kanban digest (2026-08-02T17:17:05Z)
 
 nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). It provides an instrument-centric API where every market entity (Equity, Future, Option, Index, Commodity) owns its own state (quote, depth, history, stream) and broker transport is hidden behind a BrokerAdapter. Currently integrated with Dhan via Dhan-Tradehull. Architecture: event-driven kernel with engine pipeline (Market→Candle→Indicator→Strategy→Risk→Portfolio), typed EventBus, execution router supporting live/paper/replay modes. 75 source files, 7269 LOC, 40 test files, 361 passing tests.
 
@@ -12,54 +12,44 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - none
 
 ## Recently completed
-- T-021 [task/done] StrategyRunner full surface or trim to documented API (completed 2026-08-02)
-- T-013 [task/done] Wire capability layer into production reads — finish T-002/D-001 (use .market/.history/.stream instead of inst._quote) (completed 2026-08-02)
-- T-017 [task/done] Arm ScannerFacade M6 throttle on a built-in scanner (completed 2026-08-02)
-- T-019 [task/done] Wire DhanFeed mode matrix (ticker/quote/depth) for the live streaming plan (completed 2026-08-02)
-- T-018 [task/done] Wire feed watchdog reconnection (LiveStream reconnect events) — finish R-004 (completed 2026-08-02)
-- T-014 [task/done] Attach consumers for R-006 observability events (Heartbeat/FeedDisconnected/OrderTimeout) — watchdog + alerting (completed 2026-08-02)
-- T-015 [task/done] Wire DhanAuthProvider.stop() into LiveRunner shutdown path — finish T-011 token refresh (completed 2026-08-02)
-- T-016 [task/done] Arm RateLimiter/RetryPolicy in hot paths — finish D-006 resilience infrastructure (completed 2026-08-02)
-- T-012 [task/done] Route DhanBroker data calls through DhanTransport — finish T-005/D-005 provider decomposition (completed 2026-08-02)
-- T-020 [task/done] Remove fake streaming no-ops (market_feed/order_update_stream stubs) from capability surface (completed 2026-08-01)
+- T-035 [task/done] Gate DhanMarketFeedSource login probe (_context_from_env -> get_tradehull) through session BrokerRateGate (completed 2026-08-02)
+- T-036 [task/done] Expose BrokerRateGate.status() telemetry + quota headroom row in live_read_check.py (completed 2026-08-02)
+- T-037 [task/done] Regression test: PositionSyncEngine sync pays NON_TRADING quota via transport gate (completed 2026-08-02)
+- T-026 [task/done] Route every DhanTransport _tsl call through _invoke(quota, fn); drop 10/s LTP-only limiter (completed 2026-08-02)
+- B-010 [bug/done] Move DhanBroker self.tsl order/status paths onto throttled transport (completed 2026-08-02)
+- T-027 [task/done] Integration tests: Quote 1/s, shared gate, order path, penalize on DH-904 (completed 2026-08-02)
+- T-028 [task/done] Route capability advanced-order placement through ORDER gate (place_super/slice/forever/conditional_trigger, cancel_all) (completed 2026-08-02)
+- T-029 [task/done] Route capability order queries/modify/cancel through ORDER gate (get/modify/cancel super & forever, exchange_time) (completed 2026-08-02)
+- T-030 [task/done] Route conditional-trigger lifecycle through ORDER gate (get_all/get_by_id/delete_conditional_trigger) (completed 2026-08-02)
+- T-031 [task/done] Route kill_switch + enable_pnl_based_exit + margin_calculator through NON_TRADING gate (completed 2026-08-02)
 
 ## Tests
 - last pytest run: 0 failing
 
 ## Drift since previous scan
-- added: Dependencies/token_1106251237_2026-08-02.txt
-- added: Dependencies\all_instrument 2026-08-02.csv
-- added: docs/backtest-replay-guide.md
-- added: docs/broker-guide.md
-- added: docs/how-to-write-a-strategy.md
-- added: docs/superpowers/plans/2026-08-02-integration-completeness-batch.md
-- modified: .gitignore
-- modified: Dependencies/log_files/logs2026-08-01.log
-- modified: Dependencies\all_instrument 2026-08-01.csv
-- modified: check_connection.py
-- modified: docs/superpowers/plans/2026-08-01-findings-hardening.md
-- modified: docs/superpowers/plans/2026-08-01-parity-complexity-batch.md
+- modified: Dependencies/log_files/logs2026-08-02.log
+- modified: Dependencies\all_instrument 2026-08-02.csv
 - modified: ntrade/brokers/dhan.py
-- modified: ntrade/brokers/dhan_auth.py
-- modified: ntrade/brokers/dhan_auth_provider.py
-- modified: ntrade/brokers/dhan_mapper.py
-- modified: ntrade/brokers/dhan_transport.py
-- modified: ntrade/domain/analytics/indicators.py
-- modified: ntrade/domain/instruments/__init__.py
-- modified: ntrade/domain/instruments/base.py
-- … +31 more
+- modified: ntrade/execution/rate_limit.py
+- modified: ntrade/sources/dhan_feed.py
+- modified: scripts/live_read_check.py
+- modified: test.ipynb
+- modified: tests/test_dhan_feed.py
+- modified: tests/test_pre_deploy_check.py
+- modified: tests/test_rate_gate_integration.py
+- modified: tests/test_rate_limit.py
 
 ## Recent commits
-- 66f1bb7 T-021 trim StrategyRunner to the documented add/release surface
-- 4aedfc7 T-013 route reads through canonical accessors; retire unused capability facades
-- 4c8c3e1 T-017 arm M6 scanner throttle; dedupe Scanner.top ranking
-- 362842d T-019 retire speculative feed mode codes; hardcode full data code 21
-- 614075f T-018 wire feed watchdog reconnect on disconnect
-- 9d899a5 T-014 attach consumers for heartbeat/feed-drop/order-timeout events
-- b2cf7df T-015 wire DhanAuthProvider.stop into LiveRunner shutdown
-- b2f8f11 T-016 arm RateLimiter in transport and feed hot paths
+- 4741c11 T-037 regression test: position sync pays NON_TRADING quota
+- 8eacfc9 T-036 expose BrokerRateGate.status() telemetry + quota headroom in live-read
+- dfe1b4e T-035 gate DhanMarketFeedSource login probe through BrokerRateGate
+- 8bd7b09 T-034 fail closed on DEGRADED live reads
+- 7ff8f90 T-033 add unified pre-deploy gate script
+- 9e284d0 B-012 gate auth probe reads through BrokerRateGate
+- 925ccea T-027 integration tests for broker rate gate
+- 4f58e25 B-010 route order paths through throttled transport; drop 10/s limiter
 
-(184 uncommitted changes in working tree)
+(178 uncommitted changes in working tree)
 
 ## Architecture & components
 - **ntrade/backtest/** (0 files): Backtest simulator: uses TradingKernel in replay mode with SimulatedExecution. Zero parity with live
@@ -82,19 +72,18 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - none
 
 ## Knowledge graph (graphify)
-- 2694 nodes · 7378 edges · 110 communities (built 2026-08-01T15:06:45Z)
-- hubs: Equity(245), TradingKernel(154), ReplayClock(150), PaperBroker(147), TickEvent(103), Option(102), TradingSession(95), Instrument(88)
-- STALE (25 modified, 3 deleted, 8 new since build) — refresh with `/graphify update`
+- 6520 nodes · 11043 edges · 391 communities (built 2026-08-02T10:05:57Z)
+- STALE (12 modified, 311 deleted, 8 new since build) — refresh with `/graphify update`
   - modified: ntrade/brokers/dhan.py
-  - modified: ntrade/brokers/dhan_mapper.py
+  - modified: ntrade/brokers/dhan_auth.py
+  - modified: ntrade/brokers/dhan_auth_provider.py
   - modified: ntrade/brokers/dhan_transport.py
-  - modified: ntrade/domain/instruments/__init__.py
-  - modified: ntrade/domain/instruments/base.py
-  - modified: ntrade/domain/instruments/capabilities.py
-  - modified: ntrade/domain/scanner.py
-  - modified: ntrade/engines/market_engine.py
-  - modified: ntrade/engines/risk_engine.py
-  - modified: ntrade/kernel/runner.py
+  - modified: ntrade/execution/__init__.py
+  - modified: ntrade/execution/retry.py
+  - modified: ntrade/sources/dhan_feed.py
+  - modified: scripts/live_read_check.py
+  - modified: tests/test_dhan_auth_unit.py
+  - modified: tests/test_dhan_broker.py
 - AUTO-REFRESH: run `/graphify update` now, then re-run `kanban.py update` to refresh this digest.
 
 ## Data / execution flows
@@ -105,8 +94,7 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - **replay**: EventStore → timestamped events → ReplayClock.setTime() → EventBus.publish() → identical engine pipeline as live (zero parity)
 
 ## Dependencies
-- runtime: pandas>=2.0, numpy>=1.24, python-dotenv>=1.0, Dhan-Tradehull>=3.3.2
-- dev: pytest>=8.0
+- unavailable
 
 ## Technical debt & risks
 - none

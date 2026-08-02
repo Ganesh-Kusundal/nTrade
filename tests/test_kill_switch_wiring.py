@@ -74,6 +74,66 @@ def test_kill_switch_failure_is_flagged_and_logged():
     runner.stop()
 
 
+def test_risk_resume_deactivates_kill_switch():
+    """RiskResumedEvent -> kill_switch DEACTIVATE re-arms the broker."""
+    from ntrade.events.risk import RiskResumedEvent
+
+    actions = []
+
+    def kill_switch(action="DEACTIVATE", **kw):
+        actions.append(action)
+        return {"action": action}
+
+    broker = DhanBroker.__new__(DhanBroker)
+    broker._connected = True
+    broker.tsl = types.SimpleNamespace(kill_switch=kill_switch)
+    k = TradingKernel(mode="live", clock=LiveClock(), timeframe="1m", broker=broker)
+    k.register(Equity("NIFTY"))
+    k.ctx.instruments["NIFTY"]._broker = broker
+    src = SyntheticMarketFeedSource(k, symbol="NIFTY", exchange="NSE", data=_frame())
+    runner = LiveRunner(k, src, poll_interval=0.05, sync_interval=0.05)
+    runner._sleep = lambda s: None
+    runner.start()
+
+    k.bus.publish(RiskHaltedEvent(reason="test halt", ts=k.clock.now()))
+    assert actions == ["ACTIVATE"]
+    assert runner.halted and runner.kill_switched
+
+    k.bus.publish(RiskResumedEvent(ts=k.clock.now()))
+    assert actions == ["ACTIVATE", "DEACTIVATE"]
+    assert runner.halted is False
+    assert runner.kill_switched is False
+    runner.stop()
+
+
+def test_risk_resume_deactivate_failure_keeps_kill_switched():
+    """If DEACTIVATE fails, kill_switched stays True (broker still halted)."""
+    from ntrade.events.risk import RiskResumedEvent
+
+    def kill_switch(action="DEACTIVATE", **kw):
+        if action == "DEACTIVATE":
+            raise RuntimeError("boom")
+        return {"action": action}
+
+    broker = DhanBroker.__new__(DhanBroker)
+    broker._connected = True
+    broker.tsl = types.SimpleNamespace(kill_switch=kill_switch)
+    k = TradingKernel(mode="live", clock=LiveClock(), timeframe="1m", broker=broker)
+    k.register(Equity("NIFTY"))
+    k.ctx.instruments["NIFTY"]._broker = broker
+    src = SyntheticMarketFeedSource(k, symbol="NIFTY", exchange="NSE", data=_frame())
+    runner = LiveRunner(k, src, poll_interval=0.05, sync_interval=0.05)
+    runner._sleep = lambda s: None
+    runner.start()
+
+    k.bus.publish(RiskHaltedEvent(reason="test halt", ts=k.clock.now()))
+    assert runner.kill_switched is True
+    k.bus.publish(RiskResumedEvent(ts=k.clock.now()))
+    assert runner.kill_switched is True   # broker still halted
+    assert runner.kill_switch_failed is True
+    runner.stop()
+
+
 def test_feed_watchdog_warns_on_stale_ticks():
     from ntrade.runner.live_runner import LiveRunner
     from ntrade.kernel.session import TradingKernel

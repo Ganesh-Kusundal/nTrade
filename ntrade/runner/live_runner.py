@@ -14,7 +14,7 @@ import signal
 
 from ntrade.events.lifecycle import (HeartbeatEvent, FeedDisconnectedEvent,
                                      RunnerStartedEvent, RunnerStoppedEvent)
-from ntrade.events.risk import RiskHaltedEvent
+from ntrade.events.risk import RiskHaltedEvent, RiskResumedEvent
 
 logger = logging.getLogger("ntrade.runner")
 
@@ -49,6 +49,7 @@ class LiveRunner:
         self._sleep = time.sleep
         self.logger = logger
         self.kernel.bus.subscribe(RiskHaltedEvent, self._on_risk_halted)
+        self.kernel.bus.subscribe(RiskResumedEvent, self._on_risk_resumed)
         from ntrade.events.order import OrderFilledEvent, OrderTimeoutEvent
         self.kernel.bus.subscribe(OrderFilledEvent, self._on_fill)
         self.kernel.bus.subscribe(HeartbeatEvent, self._on_heartbeat)
@@ -220,3 +221,32 @@ class LiveRunner:
                         "broker may still accept orders",
                         instrument.symbol,
                     )
+
+    def _on_risk_resumed(self, event: RiskResumedEvent) -> None:
+        """Risk engine resumed -> re-arm the broker kill switch (DEACTIVATE).
+
+        Symmetric to _on_risk_halted: a tripped breaker ACTIVATEs the kill
+        switch; an explicit resume() DEACTIVATEs it so live orders flow again.
+        """
+        self.halted = False
+        if not self.kill_switched:
+            return
+        ok = True
+        for instrument in self.kernel.ctx.instruments_snapshot():
+            if instrument.broker_adapter is not None:
+                try:
+                    instrument.broker.kill_switch(action="DEACTIVATE")
+                except Exception:
+                    ok = False
+                    self.kill_switch_failed = True
+                    self.logger.critical(
+                        "kill-switch DEACTIVATE failed for %s — "
+                        "broker stays halted",
+                        instrument.symbol,
+                    )
+        # Only report re-armed when EVERY broker deactivated — a single failure
+        # leaves a halted broker while the runner would otherwise believe
+        # trading is re-enabled.
+        if ok:
+            self.kill_switched = False
+            self.logger.info("kill switch DEACTIVATE after risk resume")

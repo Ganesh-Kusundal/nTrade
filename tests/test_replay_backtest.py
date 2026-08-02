@@ -240,6 +240,55 @@ def test_backtest_market_orders_ignore_policy():
     assert result.trades[0]["fill_price"] == pytest.approx(102.0)
 
 
+def test_event_store_tolerates_torn_final_line(tmp_path):
+    """A crash mid-append leaves a truncated final JSONL line; _load must
+    skip it rather than fail — ResilientKernel recovery reads exactly when
+    a crash happened."""
+    import json
+
+    path = tmp_path / "torn.jsonl"
+    valid = json.dumps({"__type__": "TickEvent", "ts": "2026-01-01T09:15:00",
+                        "symbol": "NIFTY", "exchange": "NSE", "price": 100.0})
+    torn = '{"__type__": "TickEvent", "ts": "2026-01-01T09:16:00", "symbol": "NIFTY'  # cut mid-append
+    path.write_text(valid + "\n" + torn)
+    store = EventStore(path=str(path))
+    assert len(store) == 1
+    assert store.events()[0].price == 100.0
+
+
+def test_backtest_limit_fills_bar_aware_by_default():
+    """The default backtest execution is bar-aware: a LIMIT order far below
+    every bar's low never fills (it used to fill at its limit price)."""
+    from ntrade.backtest.simulator import BacktestSimulator
+
+    class LimitBuy(Strategy):
+        name = "limit_buy_default"
+
+        def __init__(self, limit: float):
+            super().__init__()
+            self.limit = limit
+            self.done = False
+
+        def on_candle_closed(self, event):
+            if not self.done:
+                self.emit_signal(symbol=event.symbol, exchange=event.exchange,
+                                 side="BUY", quantity=10, price=self.limit)
+                self.done = True
+
+    # No explicit fill_policy — the default must still require trade-through.
+    sim = BacktestSimulator(timeframe="5m")
+    sim.register_strategy(LimitBuy(limit=1.0))  # far below every low
+    result = sim.run(_ohlcv())
+    assert result.n_trades == 0
+
+    # A limit within the first bar's range still fills.
+    sim2 = BacktestSimulator(timeframe="5m")
+    sim2.register_strategy(LimitBuy(limit=100.0))
+    result2 = sim2.run(_ohlcv())
+    assert result2.n_trades == 1
+    assert result2.trades[0]["fill_price"] == 100.0  # min(100, open 100)
+
+
 def test_event_store_skips_unknown_event_types(tmp_path):
     """A JSONL file with an unknown __type__ must not crash _load."""
     import json

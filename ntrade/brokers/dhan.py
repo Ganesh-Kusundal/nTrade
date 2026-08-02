@@ -94,6 +94,12 @@ class DhanBroker(BrokerAdapter):
                 self._transport.tsl = new_tsl
         return self.tsl
 
+    def stop(self) -> None:
+        """Cancel the auth provider's proactive refresh timer (shutdown hook)."""
+        auth = getattr(self, "_auth", None)
+        if auth is not None and hasattr(auth, "stop"):
+            auth.stop()
+
     def set_clock(self, clock) -> "DhanBroker":
         """Inject a TradingClock, propagating it to the transport too so the
         parity-critical paths (transport.get_quote / get_daily_historical)

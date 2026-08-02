@@ -494,3 +494,12 @@ def test_no_fake_streaming_capabilities():
     caps = registered_capabilities()
     assert "market_feed" not in caps
     assert "order_update_stream" not in caps
+
+
+def test_broker_stop_cancels_auth_timer():
+    from unittest.mock import Mock
+
+    broker = DhanBroker(connect=False)
+    broker._auth = Mock()
+    broker.stop()
+    broker._auth.stop.assert_called_once()

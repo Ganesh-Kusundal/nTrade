@@ -137,6 +137,10 @@ class LiveRunner:
             return
         self.feed.stop()
         self.kernel.stop(reason=reason)
+        for instrument in self.kernel.ctx.instruments_snapshot():
+            broker = getattr(instrument, "broker_adapter", None)
+            if broker is not None and hasattr(broker, "stop"):
+                broker.stop()
         self.kernel.bus.publish(RunnerStoppedEvent(reason=reason, ts=self.kernel.clock.now()))
         self.started = False
 

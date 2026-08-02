@@ -12,7 +12,8 @@ import logging
 import time
 import signal
 
-from ntrade.events.lifecycle import HeartbeatEvent, RunnerStartedEvent, RunnerStoppedEvent
+from ntrade.events.lifecycle import (HeartbeatEvent, FeedDisconnectedEvent,
+                                     RunnerStartedEvent, RunnerStoppedEvent)
 from ntrade.events.risk import RiskHaltedEvent
 
 logger = logging.getLogger("ntrade.runner")
@@ -48,8 +49,11 @@ class LiveRunner:
         self._sleep = time.sleep
         self.logger = logger
         self.kernel.bus.subscribe(RiskHaltedEvent, self._on_risk_halted)
-        from ntrade.events.order import OrderFilledEvent
+        from ntrade.events.order import OrderFilledEvent, OrderTimeoutEvent
         self.kernel.bus.subscribe(OrderFilledEvent, self._on_fill)
+        self.kernel.bus.subscribe(HeartbeatEvent, self._on_heartbeat)
+        self.kernel.bus.subscribe(FeedDisconnectedEvent, self._on_feed_disconnected)
+        self.kernel.bus.subscribe(OrderTimeoutEvent, self._on_order_timeout)
 
     # ------------------------------------------------------------------ loop
     def start(self) -> "LiveRunner":
@@ -178,6 +182,20 @@ class LiveRunner:
         self._last_tick_count = total_ticks
 
     # ------------------------------------------------------------------ risk
+    def _on_heartbeat(self, event) -> None:
+        self.logger.info("heartbeat tick_count=%d open_orders=%d",
+                         event.tick_count, event.open_orders)
+
+    def _on_feed_disconnected(self, event) -> None:
+        self.logger.warning("feed disconnected: %s — halting", event.reason)
+        self.kernel.bus.publish(RiskHaltedEvent(
+            reason=f"feed disconnected: {event.reason}", ts=self.kernel.clock.now()))
+
+    def _on_order_timeout(self, event) -> None:
+        self.logger.warning("order timeout: %s %s x%d aged %.0fs — cancelling",
+                            event.side, event.symbol, event.quantity, event.age_seconds)
+        self.kernel.cancel_order(event.order_id)
+
     def _on_fill(self, event) -> None:
         self.logger.info("FILL %s %s x%d @ %.2f", event.side, event.symbol,
                          event.quantity, event.fill_price)

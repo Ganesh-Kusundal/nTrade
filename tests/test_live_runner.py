@@ -95,3 +95,36 @@ def test_step_evaluates_risk_breakers_between_signals():
     assert runner.halted
     assert any(isinstance(e, RiskHaltedEvent) for e in k.bus.history)
     runner.stop()
+
+
+def test_feed_disconnected_halts_runner():
+    from ntrade.events.lifecycle import FeedDisconnectedEvent
+    from ntrade.events.risk import RiskHaltedEvent
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    runner.kernel.bus.publish(FeedDisconnectedEvent(
+        reason="ws drop", ts=runner.kernel.clock.now()))
+    assert runner.halted
+    assert any(isinstance(e, RiskHaltedEvent) for e in k.bus.history)
+
+
+def test_order_timeout_cancels_stale_order():
+    from ntrade.events.order import OrderTimeoutEvent
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    cancelled = []
+    runner.kernel.cancel_order = lambda oid: cancelled.append(oid)
+    runner.kernel.bus.publish(OrderTimeoutEvent(
+        order_id="O1", symbol="TCS", exchange="NSE", side="BUY",
+        quantity=10, age_seconds=120.0, ts=runner.kernel.clock.now()))
+    assert cancelled == ["O1"]
+
+
+def test_heartbeat_event_is_logged(caplog):
+    import logging
+    from ntrade.events.lifecycle import HeartbeatEvent
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    with caplog.at_level(logging.INFO, logger="ntrade.runner"):
+        k.bus.publish(HeartbeatEvent(tick_count=5, open_orders=2, ts=k.clock.now()))
+    assert "tick_count=5" in caplog.text and "open_orders=2" in caplog.text

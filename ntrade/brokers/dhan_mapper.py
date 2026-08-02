@@ -112,8 +112,14 @@ class DhanMapper:
         days: int | None = None,
         start: str | None = None,
         end: str | None = None,
+        *,
+        asof: datetime | None = None,
     ) -> pd.DataFrame:
-        """Apply days/start/end filters to a normalized history frame."""
+        """Apply days/start/end filters to a normalized history frame.
+
+        ``asof`` anchors the ``days`` cutoff (injected clock for replay
+        determinism); it falls back to the wall clock when not supplied.
+        """
         if df.empty or "timestamp" not in df:
             return df
         ts = pd.to_datetime(df["timestamp"], errors="coerce")
@@ -131,7 +137,8 @@ class DhanMapper:
         if end is not None:
             mask &= ts <= _cutoff(end)
         if days is not None:
-            mask &= ts >= _cutoff(datetime.now() - timedelta(days=days))
+            anchor = asof if asof is not None else datetime.now()
+            mask &= ts >= _cutoff(anchor - timedelta(days=days))
         return df[mask].reset_index(drop=True)
 
     # ---- order/trade book normalization ------------------------------------

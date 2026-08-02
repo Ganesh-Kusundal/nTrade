@@ -196,6 +196,7 @@ def test_refresh_hydrates_metadata_once():
 def test_dhan_get_instrument_metadata_from_file():
     import types
     from ntrade.brokers.dhan import DhanBroker
+    from ntrade.brokers.dhan_transport import DhanTransport
     idf = pd.DataFrame([{
         "SEM_TRADING_SYMBOL": "RELIANCE",
         "SEM_CUSTOM_SYMBOL": "RELIANCE",
@@ -205,6 +206,7 @@ def test_dhan_get_instrument_metadata_from_file():
     broker = DhanBroker.__new__(DhanBroker)
     broker._connected = True
     broker.tsl = types.SimpleNamespace(instrument_df=idf)
+    broker._transport = DhanTransport(broker.tsl)
     meta = broker.get_instrument_metadata(Equity("RELIANCE"))
     assert meta == {"tick_size": 0.05, "lot_size": 1, "freeze_qty": 5000}
 
@@ -212,11 +214,13 @@ def test_dhan_get_instrument_metadata_from_file():
 def test_dhan_get_instrument_metadata_empty_when_unknown():
     import types
     from ntrade.brokers.dhan import DhanBroker
+    from ntrade.brokers.dhan_transport import DhanTransport
     idf = pd.DataFrame({"SEM_TRADING_SYMBOL": ["SOMETHING"], "SEM_CUSTOM_SYMBOL": ["X"],
                         "SEM_EXM_EXCH_ID": ["NSE"]})
     broker = DhanBroker.__new__(DhanBroker)
     broker._connected = True
     broker.tsl = types.SimpleNamespace(instrument_df=idf)
+    broker._transport = DhanTransport(broker.tsl)
     assert broker.get_instrument_metadata(Equity("RELIANCE")) == {}
 
 

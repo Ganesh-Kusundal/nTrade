@@ -19,6 +19,7 @@ import pandas as pd
 
 from ntrade.execution.retry import RetryPolicy
 from ntrade.brokers.dhan_mapper import (
+    DAY_BLOCK_MAPPED_EXCHANGE,
     DhanMapper,
     chain_from_dhan_df,
     to_records,
@@ -115,7 +116,7 @@ class DhanTransport:
             pass
         return quote
 
-    def get_depth(self, symbol: str, exchange: str, timeout: float = 5.0) -> MarketDepth | None:
+    def get_depth(self, symbol: str, exchange: str, timeout: float = 5.0, *, now: datetime | None = None) -> MarketDepth | None:
         """20-level market depth via websocket snapshot (timeout-bounded)."""
         try:
             dc = self._tsl.full_market_depth_data([(symbol, exchange)])
@@ -139,7 +140,7 @@ class DhanTransport:
             bid_df, ask_df = result["frames"]
             if bid_df is None or bid_df.empty:
                 return None
-            return DhanMapper.normalize_depth(symbol, bid_df, ask_df)
+            return DhanMapper.normalize_depth(symbol, bid_df, ask_df, now=now or self._ts())
         except Exception:
             return None
 
@@ -156,7 +157,7 @@ class DhanTransport:
         except Exception:
             return CandleSeries(pd.DataFrame(), symbol=symbol, timeframe=timeframe)
         df = DhanMapper.normalize_history(df)
-        return CandleSeries(DhanMapper.filter_history(df, days=days, start=start, end=end), symbol=symbol, timeframe=timeframe)
+        return CandleSeries(DhanMapper.filter_history(df, days=days, start=start, end=end, asof=self._ts()), symbol=symbol, timeframe=timeframe)
 
     def get_long_term_historical(
         self, symbol: str, exchange: str, timeframe: str = "DAY",
@@ -173,6 +174,7 @@ class DhanTransport:
             return pd.DataFrame()
         return DhanMapper.filter_history(
             DhanMapper.normalize_history(df), start=from_date, end=to_date,
+            asof=self._ts(),
         )
 
     def get_daily_historical(
@@ -191,6 +193,7 @@ class DhanTransport:
             return pd.DataFrame()
         return DhanMapper.filter_history(
             DhanMapper.normalize_history(df), days=days, start=start, end=end,
+            asof=self._ts(),
         )
 
     # ---- option chain ------------------------------------------------------
@@ -366,7 +369,7 @@ class DhanTransport:
             idf = self.instrument_df
             if idf is None:
                 return {}
-            exch = DhanMapper.DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
+            exch = DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
             df = idf[
                 ((idf["SEM_TRADING_SYMBOL"] == symbol) | (idf["SEM_CUSTOM_SYMBOL"] == symbol))
                 & (idf["SEM_EXM_EXCH_ID"] == exch)
@@ -392,7 +395,7 @@ class DhanTransport:
             idf = self.instrument_df
             if idf is None:
                 return exchange in ("MCX", "NFO", "BFO")
-            exch = DhanMapper.DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
+            exch = DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
             df = idf[
                 ((idf["SEM_TRADING_SYMBOL"] == symbol) | (idf["SEM_CUSTOM_SYMBOL"] == symbol))
                 & (idf["SEM_EXM_EXCH_ID"] == exch)

@@ -14,7 +14,7 @@ from ntrade.domain.instruments.derivatives import Option
 
 # Dhan-specific chain parsing now lives in the Dhan adapter (domain stays
 # broker-agnostic); alias here so the test reads naturally.
-from ntrade.brokers.dhan import _chain_from_dhan_df  # noqa: E402
+from ntrade.brokers.dhan_mapper import chain_from_dhan_df  # noqa: E402
 
 
 def test_black_scholes_call_price_bounds():
@@ -96,7 +96,7 @@ def test_chain_from_dhan_df():
                 f"{leg} Theta": -0.2, f"{leg} Vega": 0.1,
             })
     df = pd.DataFrame(rows)
-    chain = _chain_from_dhan_df(underlying, df, atm=24550)
+    chain = chain_from_dhan_df(underlying, df, atm=24550)
     assert len(chain) == 6
     assert len(chain.calls) == 3
     assert len(chain.puts) == 3

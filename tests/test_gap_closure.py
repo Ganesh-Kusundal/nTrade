@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from ntrade.brokers.dhan import DhanBroker
+from ntrade.brokers.dhan_transport import DhanTransport
 from ntrade.brokers.paper import PaperBroker
 from ntrade.domain.instruments.cash import Equity, Index
 from ntrade.domain.instruments.derivatives import Option
@@ -22,6 +23,7 @@ def make_broker(**tsl_methods):
     broker = DhanBroker.__new__(DhanBroker)
     broker._connected = True
     broker.tsl = types.SimpleNamespace(**tsl_methods)
+    broker._transport = DhanTransport(broker.tsl)
     return broker
 
 
@@ -181,9 +183,9 @@ def test_dhan_orderbook_dataframe_normalized():
 
 def test_to_records_symbol_keyed_dict_keeps_keys():
     """Symbol-keyed dicts must keep their key merged into each row."""
-    from ntrade.brokers.dhan import _to_records
-    rows = _to_records({"RELIANCE": {"qty": 10, "ltp": 100.0},
-                        "TCS": [{"qty": 5, "ltp": 50.0}, {"qty": 2, "ltp": 51.0}]})
+    from ntrade.brokers.dhan_mapper import to_records
+    rows = to_records({"RELIANCE": {"qty": 10, "ltp": 100.0},
+                       "TCS": [{"qty": 5, "ltp": 50.0}, {"qty": 2, "ltp": 51.0}]})
     assert rows[0]["symbol"] == "RELIANCE"
     assert rows[1]["symbol"] == "TCS"
     assert rows[2]["symbol"] == "TCS"

@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from ntrade.brokers.dhan import DhanBroker
+from ntrade.brokers.dhan_transport import DhanTransport
 from ntrade.domain.instruments.cash import Equity
 from ntrade.domain.portfolio import Position
 from ntrade.events.market import TickEvent
@@ -56,6 +57,7 @@ def make_broker(**tsl_methods) -> DhanBroker:
     broker = DhanBroker.__new__(DhanBroker)
     broker._connected = True
     broker.tsl = types.SimpleNamespace(**tsl_methods)
+    broker._transport = DhanTransport(broker.tsl)
     return broker
 
 

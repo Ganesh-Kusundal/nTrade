@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from ntrade.brokers.dhan import DhanBroker, dhan_symbol
+from ntrade.brokers.dhan_transport import DhanTransport
 from ntrade.domain.instruments.cash import Equity, Index
 from ntrade.domain.instruments.derivatives import Option
 from ntrade.domain.orders.order import Order, OrderSide, OrderType, TradeType
@@ -16,6 +17,7 @@ def make_broker(**tsl_methods):
     broker = DhanBroker.__new__(DhanBroker)
     broker._connected = True
     broker.tsl = types.SimpleNamespace(**tsl_methods)
+    broker._transport = DhanTransport(broker.tsl)
     return broker
 
 
@@ -83,36 +85,36 @@ def test_get_quote_no_duplicate_kwargs():
 def test_get_quote_raises_on_failure():
     broker = make_broker(get_ltp_data=lambda names: (_ for _ in ()).throw(RuntimeError("boom")))
     nifty = Index("NIFTY")
-    with pytest.raises(RuntimeError, match="LTP is 0"):
+    with pytest.raises(RuntimeError, match="LTP fetch failed"):
         broker.get_quote(nifty)
 
 
 def test_dhan_timeframe_mapping():
-    from ntrade.brokers.dhan import _dhan_timeframe
-    assert _dhan_timeframe("5m") == "5"
-    assert _dhan_timeframe("1m") == "1"
-    assert _dhan_timeframe("15m") == "15"
-    assert _dhan_timeframe("25m") == "25"
-    assert _dhan_timeframe("60m") == "60"
-    assert _dhan_timeframe("1h") == "60"
-    assert _dhan_timeframe("1d") == "DAY"
-    assert _dhan_timeframe("DAY") == "DAY"
+    from ntrade.brokers.dhan_mapper import DhanMapper
+    assert DhanMapper.map_timeframe("5m") == "5"
+    assert DhanMapper.map_timeframe("1m") == "1"
+    assert DhanMapper.map_timeframe("15m") == "15"
+    assert DhanMapper.map_timeframe("25m") == "25"
+    assert DhanMapper.map_timeframe("60m") == "60"
+    assert DhanMapper.map_timeframe("1h") == "60"
+    assert DhanMapper.map_timeframe("1d") == "DAY"
+    assert DhanMapper.map_timeframe("DAY") == "DAY"
 
 
 def test_dhan_timeframe_rejects_10m():
     """Dhan has NO 10-minute interval — must raise, not silently fall back to 5."""
-    from ntrade.brokers.dhan import _dhan_timeframe
+    from ntrade.brokers.dhan_mapper import DhanMapper
     with pytest.raises(ValueError):
-        _dhan_timeframe("10m")
+        DhanMapper.map_timeframe("10m")
     with pytest.raises(ValueError):
-        _dhan_timeframe("daily-x")
+        DhanMapper.map_timeframe("daily-x")
 
 
 def test_dhan_timeframe_accepts_2_3_4m():
-    from ntrade.brokers.dhan import _dhan_timeframe
-    assert _dhan_timeframe("2m") == "2"
-    assert _dhan_timeframe("3m") == "3"
-    assert _dhan_timeframe("4m") == "4"
+    from ntrade.brokers.dhan_mapper import DhanMapper
+    assert DhanMapper.map_timeframe("2m") == "2"
+    assert DhanMapper.map_timeframe("3m") == "3"
+    assert DhanMapper.map_timeframe("4m") == "4"
 
 
 def test_get_historical_rejects_unsupported_timeframe():

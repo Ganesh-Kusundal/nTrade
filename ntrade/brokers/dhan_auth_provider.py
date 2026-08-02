@@ -41,17 +41,26 @@ class DhanAuthProvider:
         self._env_path = env_path
         self._env = env
         self._tsl: Any = None
+        self._gate = None  # optional BrokerRateGate (B-012) — persisted across refreshes
         self._refresh_timer: threading.Timer | None = None
         self._lock = threading.Lock()
 
-    def authenticate(self) -> Any:
+    def authenticate(self, gate=None) -> Any:
         """Run the authentication flow and return a connected Tradehull.
 
         Automatically handles token expiry by falling back to PIN+TOTP.
         Schedules a proactive background refresh after successful auth.
+
+        ``gate`` (optional :class:`BrokerRateGate`, B-012) is forwarded to
+        ``get_tradehull`` so the login-time data-plane probes respect
+        Quote/Data quotas. It is persisted on the provider so later token
+        refreshes (refresh_if_needed / proactive timer) keep using the same
+        gate. ``gate=None`` keeps existing callers unchanged.
         """
+        if gate is not None:
+            self._gate = gate
         with self._lock:
-            self._tsl = get_tradehull(env=self._env, env_path=self._env_path)
+            self._tsl = get_tradehull(env=self._env, env_path=self._env_path, gate=self._gate)
             self._schedule_proactive_refresh()
         return self._tsl
 
@@ -63,13 +72,13 @@ class DhanAuthProvider:
         Thread-safe: only one thread enters the refresh path.
         """
         if self._tsl is None:
-            return self.authenticate()
+            return self.authenticate(gate=self._gate)
 
         token = getattr(self._tsl, "token_id", None)
         if token:
             exp, _ = jwt_expiry(token)
             if exp is not None and int(time.time()) > (exp - EXPIRY_BUFFER_S):
-                return self.authenticate()
+                return self.authenticate(gate=self._gate)
 
         return self._tsl
 
@@ -124,7 +133,7 @@ class DhanAuthProvider:
     def _proactive_refresh(self) -> None:
         """Timer callback: refresh, logging failures instead of raising."""
         try:
-            self.authenticate()
+            self.authenticate(gate=self._gate)
             logger.info("proactive_token_refresh_ok: expiry=%.0fs",
                         self.time_until_expiry())
         except Exception as exc:

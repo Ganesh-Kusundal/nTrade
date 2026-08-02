@@ -1,18 +1,17 @@
-"""Shared Dhan authentication helper.
+"""Shared Dhan authentication helper — single source of truth.
 
 Reads the same vars as check_connection.py / Trade_XV2:
-    DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN, DHAN_AUTH_MODE, DHAN_PIN, DHAN_TOTP_SECRET,
-    DHAN_TOKEN_PATH (shared store), DHAN_COOLDOWN_PATH.
+    DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN (bootstrap seed only), DHAN_PIN,
+    DHAN_TOTP_SECRET, DHAN_TOKEN_PATH (canonical cache), DHAN_COOLDOWN_PATH.
 
-Strategy:
-  1. Prefer a valid token from the shared store (DHAN_TOKEN_PATH).
-  2. Else use DHAN_ACCESS_TOKEN if not provably expired.
-  3. Else fall back to PIN+TOTP (respecting the shared cooldown file) and persist
-     the fresh token back to the shared store.
+Strategy (one cache, not dual SoT):
+  1. Try token from DHAN_TOKEN_PATH if present and not near expiry.
+  2. Else try DHAN_ACCESS_TOKEN as bootstrap seed only.
+  3. Else mint via PIN+TOTP (respecting cooldown).
+  Every successful path persists the working token into DHAN_TOKEN_PATH.
+  A store token that fails the data-plane alive check is cleared before fallthrough.
 
 Dhan APP tokens have a hard 24-hour lifetime and CANNOT be renewed (DH-905 error).
-The system proactively detects expiry using a configurable buffer and automatically
-falls back to PIN+TOTP without attempting renewal.
 """
 
 from __future__ import annotations
@@ -25,6 +24,8 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from ntrade.execution.rate_limit import Quota
 
 TOTP_ATTEMPT_COOLDOWN_S = 90
 # Proactive expiry buffer: refresh token if it expires within this window
@@ -58,12 +59,16 @@ def jwt_expiry(token: str):
         return None, None
 
 
+def _token_usable(token: str) -> bool:
+    """True when JWT is parseable and not within EXPIRY_BUFFER_S of expiry."""
+    exp, _ = jwt_expiry(token)
+    if exp is None:
+        return True  # unparseable — let the data plane decide
+    return int(time.time()) <= (exp - EXPIRY_BUFFER_S)
+
+
 def _token_from_shared_store(token_path: str) -> str | None:
-    """Return token from shared store if it exists and is not near expiry.
-    
-    Returns None if token is missing, invalid, or within EXPIRY_BUFFER_S of expiry.
-    This proactively avoids the DH-905 renewal error that Dhan APP tokens trigger.
-    """
+    """Return token from SoT store if it exists and is not near expiry."""
     try:
         data = json.loads(Path(token_path).read_text())
         token = (data.get("access_token") or "").strip()
@@ -72,7 +77,6 @@ def _token_from_shared_store(token_path: str) -> str | None:
         exp, _ = jwt_expiry(token)
         if exp is None:
             return None
-        # Proactive expiry check: reject token if it expires within buffer
         if int(time.time()) > (exp - EXPIRY_BUFFER_S):
             return None
         return token
@@ -89,7 +93,7 @@ def _cooldown_active(cooldown_path: str) -> bool:
         return False
 
 
-def _persist_shared(token_path: str, cooldown_path: str, token: str) -> None:
+def _persist_shared(token_path: str, cooldown_path: str, token: str, *, source: str = "TOTP") -> None:
     try:
         exp, _ = jwt_expiry(token)
         if token_path:
@@ -97,7 +101,7 @@ def _persist_shared(token_path: str, cooldown_path: str, token: str) -> None:
                 "access_token": token,
                 "expires_at": float(exp or 0),
                 "expires_at_ms": float(exp or 0) * 1000,
-                "source": "TOTP",
+                "source": source,
             }
             Path(token_path).parent.mkdir(parents=True, exist_ok=True)
             Path(token_path).write_text(json.dumps(state))
@@ -113,8 +117,95 @@ def _persist_shared(token_path: str, cooldown_path: str, token: str) -> None:
         pass
 
 
-def get_tradehull(env: dict | None = None, env_path: str = ".env"):
-    """Create a connected Dhan_Tradehull.Tradehull instance using env credentials."""
+def _clear_shared(token_path: str) -> None:
+    """Invalidate a dead SoT cache entry so the next call cannot reuse it."""
+    if not token_path:
+        return
+    try:
+        Path(token_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(token_path).write_text(json.dumps({"access_token": "", "expires_at": 0}))
+        os.chmod(token_path, 0o600)
+    except Exception:
+        pass
+
+
+def _invalid_token_signal(exc: BaseException | None = None, payload: object = None) -> bool:
+    text = f"{exc!s} {payload!s}".lower()
+    return "invalid token" in text or "dh-906" in text
+
+
+def _login_ok(tsl, gate=None) -> bool:
+    """True when Tradehull looks logged in AND the data plane accepts the token.
+
+    # ponytail: LTP then 1 historical bar; upgrade if Dhan adds a ping endpoint.
+    instrument_df alone is not enough — Tradehull can set it after loading the
+    instrument file while market-data calls still return DH-906 Invalid Token.
+
+    ``gate`` is the session's optional :class:`BrokerRateGate` (B-012): the two
+    probe calls (``get_ltp_data`` / ``get_historical_data``) then respect the
+    Quote/Data quota windows instead of bursting at login. ``gate=None`` (the
+    default) is a no-op, so standalone callers stay untouched and paper-safe.
+    """
+    if not (hasattr(tsl, "instrument_df") and hasattr(tsl, "Dhan")):
+        return False
+
+    # Capture library stdout/stderr that embeds Invalid Token in printed dicts
+    out = io.StringIO()
+    err = io.StringIO()
+    try:
+        if gate is not None:
+            gate.acquire(Quota.QUOTE)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            data = tsl.get_ltp_data(names=["NIFTY"])
+        blob = out.getvalue() + err.getvalue()
+        if _invalid_token_signal(payload=blob):
+            return False
+        if isinstance(data, dict) and data.get("NIFTY"):
+            return True
+    except Exception as exc:
+        if _invalid_token_signal(exc):
+            return False
+        blob = out.getvalue() + err.getvalue()
+        if _invalid_token_signal(payload=blob):
+            return False
+
+    # Weekend / empty LTP: fall back to one historical bar
+    out2 = io.StringIO()
+    err2 = io.StringIO()
+    try:
+        if gate is not None:
+            gate.acquire(Quota.DATA)
+        with contextlib.redirect_stdout(out2), contextlib.redirect_stderr(err2):
+            df = tsl.get_historical_data(
+                tradingsymbol="RELIANCE", exchange="NSE", timeframe="5",
+            )
+        blob = out2.getvalue() + err2.getvalue()
+        if _invalid_token_signal(payload=blob):
+            return False
+        if df is not None and len(df) > 0:
+            return True
+    except Exception as exc:
+        if _invalid_token_signal(exc):
+            return False
+        blob = out2.getvalue() + err2.getvalue()
+        if _invalid_token_signal(payload=blob):
+            return False
+    return False
+
+
+def _try_access_token(client_code: str, token: str):
+    """Build Tradehull with an access token; suppress renew-noise on stderr."""
+    with contextlib.redirect_stderr(io.StringIO()):
+        return Tradehull(client_code, token, mode="access_token")
+
+
+def get_tradehull(env: dict | None = None, env_path: str = ".env", gate=None):
+    """Create a connected Tradehull; SoT cache is DHAN_TOKEN_PATH.
+
+    ``gate`` (optional :class:`BrokerRateGate`, B-012) is forwarded to
+    ``_login_ok`` so login-time data-plane probes respect Quote/Data quotas.
+    ``gate=None`` keeps standalone callers unchanged.
+    """
     load_env(env_path)
     if env is None:
         env = os.environ
@@ -132,27 +223,25 @@ def get_tradehull(env: dict | None = None, env_path: str = ".env"):
     if Tradehull is None:
         raise ImportError("Dhan_Tradehull is not installed — run pip install Dhan-Tradehull")
 
-    # 1) shared store first
+    # 1) SoT store
     shared = _token_from_shared_store(token_path) if token_path else None
     if shared:
-        tsl = Tradehull(client_code, shared, mode="access_token")
-        if _login_ok(tsl):
+        tsl = _try_access_token(client_code, shared)
+        if _login_ok(tsl, gate=gate):
+            token = getattr(tsl, "token_id", None) or shared
+            _persist_shared(token_path, cooldown_path, token, source="STORE")
+            return tsl
+        _clear_shared(token_path)
+
+    # 2) Env seed (bootstrap only) — promote into store on success
+    if access_token and _token_usable(access_token):
+        tsl = _try_access_token(client_code, access_token)
+        if _login_ok(tsl, gate=gate):
+            token = getattr(tsl, "token_id", None) or access_token
+            _persist_shared(token_path, cooldown_path, token, source="ENV")
             return tsl
 
-    # 2) .env access token if not expired (with proactive buffer)
-    if access_token:
-        exp, _ = jwt_expiry(access_token)
-        # Skip if token is provably expired (within buffer). Unparseable tokens
-        # (exp=None) are attempted — let Dhan's 401 be the arbiter.
-        if exp is None or int(time.time()) <= (exp - EXPIRY_BUFFER_S):
-            # Suppress Tradehull's misleading "Token renew failed" error output
-            # Dhan APP tokens cannot be renewed (DH-905), so we avoid triggering it
-            with contextlib.redirect_stderr(io.StringIO()):
-                tsl = Tradehull(client_code, access_token, mode="access_token")
-                if _login_ok(tsl):
-                    return tsl
-
-    # 3) PIN+TOTP fallback (automatic for expired/missing tokens)
+    # 3) PIN+TOTP mint
     if not (pin and totp_secret):
         raise ConnectionError(
             "Dhan login failed and DHAN_PIN / DHAN_TOTP_SECRET are missing — "
@@ -160,15 +249,9 @@ def get_tradehull(env: dict | None = None, env_path: str = ".env"):
         )
     if _cooldown_active(cooldown_path):
         raise ConnectionError(f"Dhan TOTP login is on cooldown (see {cooldown_path}). Wait ~90s.")
-    # Suppress Tradehull's verbose login output (SUCCESSFULLY LOGGED INTO DHAN, etc.)
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         tsl = Tradehull(client_code, mode="pin_totp", pin=pin, totp_secret=totp_secret)
-    if not _login_ok(tsl):
+    if not _login_ok(tsl, gate=gate):
         raise ConnectionError("Dhan PIN+TOTP login failed. Check DHAN_PIN / DHAN_TOTP_SECRET.")
-    _persist_shared(token_path, cooldown_path, tsl.token_id)
+    _persist_shared(token_path, cooldown_path, tsl.token_id, source="TOTP")
     return tsl
-
-
-def _login_ok(tsl) -> bool:
-    # The library swallows login errors; success is marked by these attributes.
-    return hasattr(tsl, "instrument_df") and hasattr(tsl, "Dhan")

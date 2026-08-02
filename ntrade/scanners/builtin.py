@@ -28,7 +28,7 @@ def _instruments(session: "TradingSession") -> list:
 
 def _safe_ltp(inst) -> float | None:
     """Best-effort LTP from the instrument's quote."""
-    ltp = inst._quote.ltp
+    ltp = inst.market.ltp()
     return ltp if ltp and ltp > 0 else None
 
 
@@ -53,7 +53,7 @@ class GapScanner(Scanner):
         results: list[ScannerResult] = []
         for inst in _instruments(session):
             ltp = _safe_ltp(inst)
-            prev = inst._quote.prev_close
+            prev = inst.market.prev_close()
             if not ltp or not prev or prev <= 0:
                 continue
             gap_pct = (ltp - prev) / prev * 100
@@ -93,7 +93,7 @@ class VolumeSpikeScanner(Scanner):
              spike_multiplier: float = 2.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
         results: list[ScannerResult] = []
         for inst in _instruments(session):
-            vol = inst._quote.volume or 0
+            vol = inst.market.volume() or 0
             indicators = _safe_indicators(inst)
             avg_vol = indicators.get("avg_volume", 0)
             if avg_vol and avg_vol > 0:
@@ -145,7 +145,7 @@ class MomentumScanner(Scanner):
                     timestamp=now or datetime.now(),
                 ))
                 continue
-            prev = inst._quote.prev_close
+            prev = inst.market.prev_close()
             if prev and prev > 0:
                 change = (ltp - prev) / prev * 100
                 if abs(change) >= min_change_pct:
@@ -183,8 +183,8 @@ class BreakoutScanner(Scanner):
                 continue
             indicators = _safe_indicators(inst)
             stx = indicators.get("stx_10_3")
-            high = inst._quote.high or 0
-            low = inst._quote.low or 0
+            high = inst.market.quote().high or 0
+            low = inst.market.quote().low or 0
             conditions: list[str] = []
             score = 0.0
             # Supertrend-based breakout — stx_10_3 is only a price band when it

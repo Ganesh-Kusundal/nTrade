@@ -98,9 +98,9 @@ class RiskEngine:
                 return f"max positions {self.max_positions} reached"
         if self.price_deviation_pct is not None:
             instrument = self.ctx.instrument(event.symbol)
-            ref = instrument._quote.ltp or None
+            ref = instrument.market.ltp() or None
             if not ref:
-                ref = instrument._quote.prev_close or None
+                ref = instrument.market.prev_close() or None
             if not ref:
                 return (f"price {event.price:.2f} unverifiable: no market price "
                         f"for {event.symbol}")

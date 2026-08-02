@@ -1,10 +1,9 @@
 """Instrument — the abstract root of every market entity in ntrade.
 
 Every instrument owns its own state (quote, depth, history, stream, indicators,
-metadata, session) and exposes six *capability* objects for market data, trading,
-streaming, analytics, derivatives and provider extensions.  Broker transport is
-hidden behind a BrokerAdapter; broker-specific capabilities live behind
-``instrument.extension(Cls)``.
+metadata, session) and exposes *capability* objects for market data, streaming,
+analytics and derivatives.  Broker transport is hidden behind a BrokerAdapter;
+broker-specific capabilities live behind ``instrument.broker``.
 """
 
 from __future__ import annotations
@@ -27,10 +26,8 @@ if TYPE_CHECKING:
     from ntrade.domain.instruments.capabilities import (
         AnalyticsCapability,
         DerivativesCapability,
-        ExtensionCapability,
         MarketCapability,
         StreamCapability,
-        TradeCapability,
     )
     from ntrade.domain.orders.order import OrderFacade
 
@@ -125,10 +122,10 @@ class Instrument(ABC):
         from ntrade.domain.instruments.capabilities import MarketCapability
         return MarketCapability(self)
 
-    @cached_property
-    def trade(self) -> "TradeCapability":
-        from ntrade.domain.instruments.capabilities import TradeCapability
-        return TradeCapability(self)
+    @property
+    def history(self) -> "HistoricalSeries":
+        """Canonical historical OHLCV accessor (mirrors ``market``)."""
+        return self._history
 
     @cached_property
     def stream(self) -> "StreamCapability":
@@ -144,11 +141,6 @@ class Instrument(ABC):
     def derivatives(self) -> "DerivativesCapability":
         from ntrade.domain.instruments.capabilities import DerivativesCapability
         return DerivativesCapability(self)
-
-    @cached_property
-    def extension(self) -> "ExtensionCapability":
-        from ntrade.domain.instruments.capabilities import ExtensionCapability
-        return ExtensionCapability(self)
 
     # ================================================================== quote / depth
     def apply_quote(self, quote: Quote) -> "Instrument":

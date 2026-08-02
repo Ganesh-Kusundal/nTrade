@@ -52,6 +52,15 @@ def _make_instrument(symbol: str, *, ltp: float = 0, prev_close: float = 0,
         inst._depth = depth
     else:
         inst._depth = MarketDepth.empty(symbol)
+
+    market = MagicMock()
+    market.ltp.return_value = ltp
+    market.prev_close.return_value = prev_close
+    market.volume.return_value = volume
+    market.quote.return_value = inst._quote
+    market.bid.return_value = 0.0
+    market.ask.return_value = 0.0
+    inst.market = market
     return inst
 
 

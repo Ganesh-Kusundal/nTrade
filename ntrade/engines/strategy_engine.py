@@ -62,6 +62,8 @@ class StrategyEngine:
         for event_type, hook in self._HOOKS.items():
             context.bus.subscribe(event_type, self._dispatch(hook))
 
+    # strategy lifecycle is orthogonal to scanner throttling (never reset ScannerFacade's
+    # rate-limit cache) see tests/test_contract_strategy_scanner_orthogonal.py
     def register(self, strategy: Strategy) -> Strategy:
         strategy.ctx = self.ctx
         self.strategies.append(strategy)

@@ -185,6 +185,34 @@ class TestOrderPath:
         assert clock.t >= 3.0
 
 
+class TestPositionSyncPath:
+    def test_position_sync_pays_nontrading_quota(self):
+        """T-037: PositionSyncEngine.sync() calls broker.get_positions() /
+        get_balance(), which route through the transport's NON_TRADING gate —
+        the timer-driven reconciliation path is not a rate-limit bypass."""
+        from ntrade.engines.position_sync import PositionSyncEngine
+
+        tsl = MagicMock()
+        tsl.get_positions.return_value = []
+        tsl.get_balance.return_value = 100_000.0
+        broker, _, gate = make_gated_broker(tsl)
+
+        ctx = MagicMock()
+        ctx.portfolio.positions = []
+        ctx.portfolio.position = lambda symbol: None
+        ctx.account.balance = 99_000.0
+        ctx.bus.publish = MagicMock()
+        ctx.now = lambda: date(2026, 8, 2)
+
+        engine = PositionSyncEngine(ctx, broker)
+        engine.sync()
+
+        # positions + balance = 2 NON_TRADING tokens consumed via the gate
+        assert len(gate._history[Quota.NON_TRADING][0]) == 2
+        assert tsl.get_positions.call_count == 1
+        assert tsl.get_balance.call_count == 1
+
+
 class TestPaperBrokerUnaffected:
     def test_paper_broker_unaffected(self):
         """PaperBroker has no gate and no new failure modes."""

@@ -1,4 +1,4 @@
-# nTrade — kanban digest (2026-08-02T17:17:05Z)
+# nTrade — kanban digest (2026-08-02T18:13:45Z)
 
 nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). It provides an instrument-centric API where every market entity (Equity, Future, Option, Index, Commodity) owns its own state (quote, depth, history, stream) and broker transport is hidden behind a BrokerAdapter. Currently integrated with Dhan via Dhan-Tradehull. Architecture: event-driven kernel with engine pipeline (Market→Candle→Indicator→Strategy→Risk→Portfolio), typed EventBus, execution router supporting live/paper/replay modes. 75 source files, 7269 LOC, 40 test files, 361 passing tests.
 
@@ -12,34 +12,43 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - none
 
 ## Recently completed
+- D-018 [debt/done] DhanMarketFeedSource reuses broker tsl instead of second get_tradehull probe chain (completed 2026-08-02)
+- D-019 [debt/done] HistoricalSeries._df copy-on-write + kernel clock for is_fresh/fetch (replay parity) (completed 2026-08-02)
+- D-020 [debt/done] Serialize DhanMarketFeedSource stop/reconnect under a lock (completed 2026-08-02)
+- B-013 [bug/done] Remove 2m/3m/4m from _DHAN_TIMEFRAMES; fail fast with correct supported-timeframe error (completed 2026-08-02)
+- F-001 [feature/done] Sub-5m timeframes via 1m fetch + resample (HistoricalSeries.resample) (completed 2026-08-02)
+- B-014 [bug/done] dhan_transport.get_historical raises on unexpected exceptions (no silent empty CandleSeries) (completed 2026-08-02)
+- B-015 [bug/done] Auth: only _clear_shared on invalid-token signal; make refresh_if_needed atomic under lock (completed 2026-08-02)
+- B-016 [bug/done] DhanTransport.get_balance must not swallow errors to 0.0 (silent-zero regression; position-sync keeps state on raise) (completed 2026-08-02)
 - T-035 [task/done] Gate DhanMarketFeedSource login probe (_context_from_env -> get_tradehull) through session BrokerRateGate (completed 2026-08-02)
 - T-036 [task/done] Expose BrokerRateGate.status() telemetry + quota headroom row in live_read_check.py (completed 2026-08-02)
-- T-037 [task/done] Regression test: PositionSyncEngine sync pays NON_TRADING quota via transport gate (completed 2026-08-02)
-- T-026 [task/done] Route every DhanTransport _tsl call through _invoke(quota, fn); drop 10/s LTP-only limiter (completed 2026-08-02)
-- B-010 [bug/done] Move DhanBroker self.tsl order/status paths onto throttled transport (completed 2026-08-02)
-- T-027 [task/done] Integration tests: Quote 1/s, shared gate, order path, penalize on DH-904 (completed 2026-08-02)
-- T-028 [task/done] Route capability advanced-order placement through ORDER gate (place_super/slice/forever/conditional_trigger, cancel_all) (completed 2026-08-02)
-- T-029 [task/done] Route capability order queries/modify/cancel through ORDER gate (get/modify/cancel super & forever, exchange_time) (completed 2026-08-02)
-- T-030 [task/done] Route conditional-trigger lifecycle through ORDER gate (get_all/get_by_id/delete_conditional_trigger) (completed 2026-08-02)
-- T-031 [task/done] Route kill_switch + enable_pnl_based_exit + margin_calculator through NON_TRADING gate (completed 2026-08-02)
 
 ## Tests
-- last pytest run: 0 failing
+- last pytest run: 1 failing (as of 2026-08-02T18:10:31Z)
+  - tests/test_dhan_broker.py::test_dhan_timeframe_accepts_2_3_4m
 
 ## Drift since previous scan
+- added: docs/superpowers/plans/2026-08-02-timeframe-auth-race-hardening.md
+- modified: .gitignore
 - modified: Dependencies/log_files/logs2026-08-02.log
+- modified: Dependencies/token_1106251237_2026-08-02.txt
 - modified: Dependencies\all_instrument 2026-08-02.csv
-- modified: ntrade/brokers/dhan.py
-- modified: ntrade/execution/rate_limit.py
+- modified: ntrade/brokers/dhan_auth.py
+- modified: ntrade/brokers/dhan_auth_provider.py
+- modified: ntrade/brokers/dhan_mapper.py
+- modified: ntrade/brokers/dhan_transport.py
+- modified: ntrade/domain/market/history.py
+- modified: ntrade/kernel/context.py
 - modified: ntrade/sources/dhan_feed.py
-- modified: scripts/live_read_check.py
 - modified: test.ipynb
+- modified: tests/test_dhan_broker.py
 - modified: tests/test_dhan_feed.py
-- modified: tests/test_pre_deploy_check.py
-- modified: tests/test_rate_gate_integration.py
-- modified: tests/test_rate_limit.py
+- modified: tests/test_dhan_providers.py
+- modified: tests/test_dhan_transport.py
+- modified: tests/test_history_stream.py
 
 ## Recent commits
+- a686e3f fix: commit T-022..T-024 remediation batch (bar-aware LIMIT fills, EventStore torn-line recovery, two-way kill switch)
 - 4741c11 T-037 regression test: position sync pays NON_TRADING quota
 - 8eacfc9 T-036 expose BrokerRateGate.status() telemetry + quota headroom in live-read
 - dfe1b4e T-035 gate DhanMarketFeedSource login probe through BrokerRateGate
@@ -47,9 +56,8 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - 7ff8f90 T-033 add unified pre-deploy gate script
 - 9e284d0 B-012 gate auth probe reads through BrokerRateGate
 - 925ccea T-027 integration tests for broker rate gate
-- 4f58e25 B-010 route order paths through throttled transport; drop 10/s limiter
 
-(178 uncommitted changes in working tree)
+(171 uncommitted changes in working tree)
 
 ## Architecture & components
 - **ntrade/backtest/** (0 files): Backtest simulator: uses TradingKernel in replay mode with SimulatedExecution. Zero parity with live
@@ -73,17 +81,17 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 
 ## Knowledge graph (graphify)
 - 6520 nodes · 11043 edges · 391 communities (built 2026-08-02T10:05:57Z)
-- STALE (12 modified, 311 deleted, 8 new since build) — refresh with `/graphify update`
+- STALE (17 modified, 311 deleted, 9 new since build) — refresh with `/graphify update`
   - modified: ntrade/brokers/dhan.py
   - modified: ntrade/brokers/dhan_auth.py
   - modified: ntrade/brokers/dhan_auth_provider.py
+  - modified: ntrade/brokers/dhan_mapper.py
   - modified: ntrade/brokers/dhan_transport.py
+  - modified: ntrade/domain/market/history.py
   - modified: ntrade/execution/__init__.py
   - modified: ntrade/execution/retry.py
+  - modified: ntrade/kernel/context.py
   - modified: ntrade/sources/dhan_feed.py
-  - modified: scripts/live_read_check.py
-  - modified: tests/test_dhan_auth_unit.py
-  - modified: tests/test_dhan_broker.py
 - AUTO-REFRESH: run `/graphify update` now, then re-run `kanban.py update` to refresh this digest.
 
 ## Data / execution flows

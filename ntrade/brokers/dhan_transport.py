@@ -209,9 +209,14 @@ class DhanTransport:
     ) -> CandleSeries:
         """Fetch historical data with normalization and filtering.
 
-        A DH-904 raises :class:`RateLimited` (never an empty ``CandleSeries``,
-        which would look like "no bars" to a strategy).
+        - A DH-904 raises :class:`RateLimited` (never an empty ``CandleSeries``).
+        - Sub-5m timeframes (2m/3m/4m) fetch the ``1m`` base and resample
+          (F-001) — Dhan has no 2/3/4 minute backend interval.
+        - Any OTHER unexpected failure raises :class:`BrokerDataError` instead
+          of returning an empty series (B-014): a strategy must distinguish
+          "instrument has no bars" from "the broker call failed".
         """
+        rule = DhanMapper.resample_rule(timeframe)
         tf = DhanMapper.map_timeframe(timeframe)
         try:
             df = self._invoke(
@@ -222,9 +227,14 @@ class DhanTransport:
             )
         except RateLimited:
             raise
-        except Exception:
-            return CandleSeries(pd.DataFrame(), symbol=symbol, timeframe=timeframe)
+        except Exception as exc:
+            raise BrokerDataError(
+                f"historical fetch failed for {symbol} ({exchange}) "
+                f"timeframe={timeframe}: {exc}"
+            ) from exc
         df = DhanMapper.normalize_history(df)
+        if rule is not None and not df.empty:
+            df = DhanMapper.resample_history(df, rule)
         return CandleSeries(DhanMapper.filter_history(df, days=days, start=start, end=end, asof=self._ts()), symbol=symbol, timeframe=timeframe)
 
     def get_long_term_historical(
@@ -492,6 +502,14 @@ class DhanTransport:
             return 0.0
 
     def get_balance(self) -> float:
+        """Broker-reported cash balance.
+
+        B-016: never swallow a failure into ``0.0`` — ``PositionSyncEngine.
+        _safe_balance`` relies on the exception to keep the previous account
+        state on a transient error. RateLimited still propagates from
+        ``_invoke``; anything else raises so callers can distinguish "balance
+        is zero" from "the broker call failed".
+        """
         return float(self._invoke(
             Quota.NON_TRADING, lambda: self._tsl.get_balance(),
         ))

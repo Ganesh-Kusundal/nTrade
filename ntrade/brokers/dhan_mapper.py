@@ -20,11 +20,23 @@ if TYPE_CHECKING:
     from ntrade.domain.instruments.base import Instrument
 
 
-# Timeframe mapping: user-facing → Dhan interval string.
+# Timeframe mapping: user-facing → Dhan native interval string.
+#
+# Dhan's backend serves ONLY 1/5/15/25/60m + DAY intraday (verified against
+# DhanHQ docs + the installed Dhan-Tradehull 3.3.2 library: its interval list
+# passes 2/3/4 at the library layer but the backend rejects them). 2m/3m/4m are
+# therefore served by fetching 1m and resampling (F-001), never sent to Dhan
+# directly (B-013: no more silent empty CandleSeries for "supported" timeframes).
 _DHAN_TIMEFRAMES = {
-    "1m": "1", "2m": "2", "3m": "3", "4m": "4", "5m": "5",
-    "15m": "15", "25m": "25", "60m": "60", "1h": "60",
-    "day": "DAY", "1d": "DAY", "daily": "DAY",
+    "1m": "1", "5m": "5", "15m": "15", "25m": "25", "60m": "60",
+    "1h": "60", "day": "DAY", "1d": "DAY", "daily": "DAY",
+}
+
+# Sub-5m timeframes → pandas resample rule (fetched as 1m base, then
+# aggregated). Dhan has no 2/3/4 minute endpoint; resampling is the community-
+# recommended approach (same as Dhan-Tradehull's own resample_timeframe()).
+_RESAMPLE_TIMEFRAMES = {
+    "2m": "2min", "3m": "3min", "4m": "4min",
 }
 
 # Mirrors Dhan-Tradehull's instrument_exchange mapping: NFO/BFO derivatives
@@ -62,14 +74,64 @@ class DhanMapper:
 
     @staticmethod
     def map_timeframe(tf: str) -> str:
-        """Map a user timeframe to Dhan's interval string, raising on unsupported."""
+        """Map a user timeframe to Dhan's native interval string.
+
+        Natively-supported timeframes (1m/5m/15m/25m/60m/DAY) pass through
+        directly; 2m/3m/4m resolve to the ``1m`` base interval so callers can
+        resample after fetching. Anything else raises (B-013: fail fast with a
+        correct message instead of advertising unsupported intervals).
+        """
         key = str(tf).strip().lower()
-        if key not in _DHAN_TIMEFRAMES:
-            raise ValueError(
-                f"Unsupported timeframe {tf!r}; Dhan supports "
-                f"1m/2m/3m/4m/5m/15m/25m/60m/DAY (not 10m)"
-            )
-        return _DHAN_TIMEFRAMES[key]
+        if key in _DHAN_TIMEFRAMES:
+            return _DHAN_TIMEFRAMES[key]
+        if key in _RESAMPLE_TIMEFRAMES:
+            return "1"  # fetch 1m base; the caller resamples to the target
+        raise ValueError(
+            f"Unsupported timeframe {tf!r}; Dhan natively supports "
+            f"1m/5m/15m/25m/60m/DAY, and 2m/3m/4m via 1m resample"
+        )
+
+    @staticmethod
+    def resample_rule(tf: str) -> str | None:
+        """Pandas resample rule for sub-5m timeframes, else None (native)."""
+        key = str(tf).strip().lower()
+        return _RESAMPLE_TIMEFRAMES.get(key)
+
+    @staticmethod
+    def resample_history(df: pd.DataFrame | None, rule: str) -> pd.DataFrame:
+        """Aggregate 1m candles to a coarser rule (e.g. ``3min``).
+
+        OHLCV-safe: open=first, high=max, low=min, close=last, volume/oi=sum,
+        anchored per calendar day at the 09:15 market open so night-session
+        candles never bleed across days (mirrors Tradehull's
+        ``resample_timeframe`` day-grouping). Empty input returns as-is.
+        """
+        if df is None or df.empty or "timestamp" not in df:
+            return df if df is not None else pd.DataFrame()
+        out = df.copy()
+        out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce")
+        # Normalize tz-aware timestamps to naive IST wall time so the day-group
+        # + 09:15 origin math is exact (resample rejects tz-mixed index/origin).
+        if getattr(out["timestamp"].dt, "tz", None) is not None:
+            out["timestamp"] = out["timestamp"].dt.tz_localize(None)
+        out = out.dropna(subset=["timestamp"])
+        if out.empty:
+            return out.reset_index(drop=True)
+        indexed = out.set_index("timestamp")
+        agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+        for col in ("volume", "oi"):
+            if col in indexed.columns:
+                agg[col] = "sum"
+        rows = []
+        for day, group in indexed.groupby(indexed.index.date):
+            # Naive origin anchored at the 09:15 IST market open so
+            # night-session candles stay inside their own calendar day.
+            origin = pd.Timestamp(day) + pd.Timedelta(hours=9, minutes=15)
+            resampled = group.resample(rule, origin=origin).agg(agg).dropna(subset=["open"])
+            rows.append(resampled)
+        if not rows:
+            return pd.DataFrame(columns=out.columns)
+        return pd.concat(rows).reset_index()
 
     # ---- quote normalization -----------------------------------------------
 

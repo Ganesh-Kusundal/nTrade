@@ -43,7 +43,9 @@ class DhanAuthProvider:
         self._tsl: Any = None
         self._gate = None  # optional BrokerRateGate (B-012) — persisted across refreshes
         self._refresh_timer: threading.Timer | None = None
-        self._lock = threading.Lock()
+        # RLock (B-015): refresh_if_needed holds the lock across check+refresh
+        # while authenticate() re-enters it for the actual mint.
+        self._lock = threading.RLock()
 
     def authenticate(self, gate=None) -> Any:
         """Run the authentication flow and return a connected Tradehull.
@@ -69,18 +71,21 @@ class DhanAuthProvider:
 
         Returns the current or refreshed Tradehull instance.
         Call this before critical operations to ensure a valid token.
-        Thread-safe: only one thread enters the refresh path.
+        Thread-safe and atomic (B-015): the expiry check and the refresh are
+        one critical section, so concurrent callers cannot both observe an
+        expired token and double-mint a TOTP login.
         """
-        if self._tsl is None:
-            return self.authenticate(gate=self._gate)
-
-        token = getattr(self._tsl, "token_id", None)
-        if token:
-            exp, _ = jwt_expiry(token)
-            if exp is not None and int(time.time()) > (exp - EXPIRY_BUFFER_S):
+        with self._lock:
+            if self._tsl is None:
                 return self.authenticate(gate=self._gate)
 
-        return self._tsl
+            token = getattr(self._tsl, "token_id", None)
+            if token:
+                exp, _ = jwt_expiry(token)
+                if exp is not None and int(time.time()) > (exp - EXPIRY_BUFFER_S):
+                    return self.authenticate(gate=self._gate)
+
+            return self._tsl
 
     def stop(self) -> None:
         """Cancel the proactive refresh timer. Called during shutdown."""

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "project_summary": "nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). It provides an instrument-centric API where every market entity (Equity, Future, Option, Index, Commodity) owns its own state (quote, depth, history, stream) and broker transport is hidden behind a BrokerAdapter. Currently integrated with Dhan via Dhan-Tradehull. Architecture: event-driven kernel with engine pipeline (Market\u2192Candle\u2192Indicator\u2192Strategy\u2192Risk\u2192Portfolio), typed EventBus, execution router supporting live/paper/replay modes. 75 source files, 7269 LOC, 40 test files, 361 passing tests.",
+  "project_summary": "nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). It provides an instrument-centric API where every market entity (Equity, Future, Option, Index, Commodity) owns its own state (quote, depth, history, stream) and broker transport is hidden behind a BrokerAdapter. Currently integrated with Dhan via Dhan-Tradehull. Architecture: event-driven kernel with engine pipeline (Market→Candle→Indicator→Strategy→Risk→Portfolio), typed EventBus, execution router supporting live/paper/replay modes. 75 source files, 7269 LOC, 40 test files, 361 passing tests.",
   "tasks": [
     {
       "id": "T-001",
@@ -54,7 +54,7 @@
       "id": "D-001",
       "type": "debt",
       "status": "done",
-      "title": "Instrument has ~60 methods/properties spanning market data, analytics, streaming, trading, signals \u2014 god object",
+      "title": "Instrument has ~60 methods/properties spanning market data, analytics, streaming, trading, signals — god object",
       "created": "2026-07-31T19:58:50Z",
       "updated": "2026-08-01T07:14:19Z"
     },
@@ -70,7 +70,7 @@
       "id": "D-003",
       "type": "debt",
       "status": "done",
-      "title": "BrokerAdapter.get_historical() returns pd.DataFrame \u2014 leaks pandas at broker boundary",
+      "title": "BrokerAdapter.get_historical() returns pd.DataFrame — leaks pandas at broker boundary",
       "created": "2026-07-31T19:58:50Z",
       "updated": "2026-08-01T07:14:20Z"
     },
@@ -78,7 +78,7 @@
       "id": "D-004",
       "type": "debt",
       "status": "done",
-      "title": "get_orderbook/get_trade_book return list[dict] \u2014 no domain types",
+      "title": "get_orderbook/get_trade_book return list[dict] — no domain types",
       "created": "2026-07-31T19:58:50Z",
       "updated": "2026-08-01T07:14:20Z"
     },
@@ -86,7 +86,7 @@
       "id": "D-005",
       "type": "debt",
       "status": "done",
-      "title": "Provider SDK (TradeHull) leaks through capability layer \u2014 no transport abstraction",
+      "title": "Provider SDK (TradeHull) leaks through capability layer — no transport abstraction",
       "created": "2026-07-31T19:58:50Z",
       "updated": "2026-08-01T07:14:20Z"
     },
@@ -94,7 +94,7 @@
       "id": "D-006",
       "type": "debt",
       "status": "done",
-      "title": "No rate limiter or retry policy as infrastructure \u2014 ad-hoc time.sleep in retry loops",
+      "title": "No rate limiter or retry policy as infrastructure — ad-hoc time.sleep in retry loops",
       "created": "2026-07-31T19:58:50Z",
       "updated": "2026-08-01T07:14:20Z"
     },
@@ -102,7 +102,7 @@
       "id": "R-001",
       "type": "risk",
       "status": "done",
-      "title": "Phase E (Provider Decomposition) has highest blast radius \u2014 31 capabilities, 8 test files",
+      "title": "Phase E (Provider Decomposition) has highest blast radius — 31 capabilities, 8 test files",
       "created": "2026-07-31T19:58:50Z",
       "updated": "2026-08-01T07:14:20Z"
     },
@@ -110,7 +110,7 @@
       "id": "R-002",
       "type": "risk",
       "status": "done",
-      "title": "Graphify graph is STALE \u2014 25 files deleted since build",
+      "title": "Graphify graph is STALE — 25 files deleted since build",
       "created": "2026-07-31T19:58:50Z",
       "updated": "2026-08-01T07:14:20Z"
     },
@@ -118,7 +118,7 @@
       "id": "B-001",
       "type": "bug",
       "status": "done",
-      "title": "EventStore._decode crashes on unknown event type \u2014 crash recovery impossible after code change",
+      "title": "EventStore._decode crashes on unknown event type — crash recovery impossible after code change",
       "created": "2026-08-01T05:43:54Z",
       "updated": "2026-08-01T06:12:57Z"
     },
@@ -126,7 +126,7 @@
       "id": "B-002",
       "type": "bug",
       "status": "done",
-      "title": "EventBus._history unbounded growth \u2014 OOM in live sessions (~1.1GB per 6.5h day)",
+      "title": "EventBus._history unbounded growth — OOM in live sessions (~1.1GB per 6.5h day)",
       "created": "2026-08-01T05:43:54Z",
       "updated": "2026-08-01T06:12:58Z"
     },
@@ -134,7 +134,7 @@
       "id": "B-003",
       "type": "bug",
       "status": "done",
-      "title": "Kill switch failure silently swallowed \u2014 risk halt does not activate broker kill switch",
+      "title": "Kill switch failure silently swallowed — risk halt does not activate broker kill switch",
       "created": "2026-08-01T05:43:55Z",
       "updated": "2026-08-01T06:12:58Z"
     },
@@ -142,7 +142,7 @@
       "id": "B-004",
       "type": "bug",
       "status": "done",
-      "title": "Quote.is_stale() uses datetime.now() \u2014 always True during replay, breaks zero-parity",
+      "title": "Quote.is_stale() uses datetime.now() — always True during replay, breaks zero-parity",
       "created": "2026-08-01T05:43:55Z",
       "updated": "2026-08-01T06:12:58Z"
     },
@@ -150,7 +150,7 @@
       "id": "B-005",
       "type": "bug",
       "status": "done",
-      "title": "get_quote() returns ltp=0.0 on failure \u2014 zero price corrupts downstream PnL and risk",
+      "title": "get_quote() returns ltp=0.0 on failure — zero price corrupts downstream PnL and risk",
       "created": "2026-08-01T05:43:55Z",
       "updated": "2026-08-01T06:12:58Z"
     },
@@ -158,7 +158,7 @@
       "id": "D-007",
       "type": "debt",
       "status": "done",
-      "title": "TradingContext shared mutable state has no synchronization \u2014 data race in live mode",
+      "title": "TradingContext shared mutable state has no synchronization — data race in live mode",
       "created": "2026-08-01T05:44:14Z",
       "updated": "2026-08-01T07:14:20Z"
     },
@@ -166,7 +166,7 @@
       "id": "D-008",
       "type": "debt",
       "status": "done",
-      "title": "EventStore opens/closes JSONL file per event inside bus lock \u2014 I/O bottleneck",
+      "title": "EventStore opens/closes JSONL file per event inside bus lock — I/O bottleneck",
       "created": "2026-08-01T05:44:15Z",
       "updated": "2026-08-01T06:42:12Z"
     },
@@ -174,7 +174,7 @@
       "id": "D-009",
       "type": "debt",
       "status": "done",
-      "title": "LiveStream._ticks grows unbounded \u2014 ~55GB per session at 50 instruments",
+      "title": "LiveStream._ticks grows unbounded — ~55GB per session at 50 instruments",
       "created": "2026-08-01T05:44:15Z",
       "updated": "2026-08-01T06:42:11Z"
     },
@@ -182,7 +182,7 @@
       "id": "D-010",
       "type": "debt",
       "status": "done",
-      "title": "Token file written with world-readable permissions (0o644) \u2014 JWT trading credentials exposed",
+      "title": "Token file written with world-readable permissions (0o644) — JWT trading credentials exposed",
       "created": "2026-08-01T05:44:15Z",
       "updated": "2026-08-01T06:49:11Z"
     },
@@ -198,7 +198,7 @@
       "id": "D-012",
       "type": "debt",
       "status": "done",
-      "title": "EventBus swallows ALL handler exceptions with zero logging \u2014 only 4 log calls in 7269 LOC",
+      "title": "EventBus swallows ALL handler exceptions with zero logging — only 4 log calls in 7269 LOC",
       "created": "2026-08-01T05:44:17Z",
       "updated": "2026-08-01T06:42:11Z"
     },
@@ -206,7 +206,7 @@
       "id": "D-013",
       "type": "debt",
       "status": "done",
-      "title": "DhanFeed._on_error is literal pass \u2014 silent feed death with no reconnection",
+      "title": "DhanFeed._on_error is literal pass — silent feed death with no reconnection",
       "created": "2026-08-01T05:44:17Z",
       "updated": "2026-08-01T06:42:11Z"
     },
@@ -222,7 +222,7 @@
       "id": "D-015",
       "type": "debt",
       "status": "done",
-      "title": "Order.created_at uses wall clock (datetime.now) \u2014 breaks replay determinism",
+      "title": "Order.created_at uses wall clock (datetime.now) — breaks replay determinism",
       "created": "2026-08-01T05:44:18Z",
       "updated": "2026-08-01T06:49:12Z"
     },
@@ -230,7 +230,7 @@
       "id": "D-016",
       "type": "debt",
       "status": "done",
-      "title": "get_order_status() returns stale order on failure \u2014 zombie order risk",
+      "title": "get_order_status() returns stale order on failure — zombie order risk",
       "created": "2026-08-01T05:44:18Z",
       "updated": "2026-08-01T06:49:11Z"
     },
@@ -238,7 +238,7 @@
       "id": "T-007",
       "type": "task",
       "status": "done",
-      "title": "Phase 0 (Immediate): Fix 5 critical bugs \u2014 kill switch logging, EventStore decode guard, EventBus history bound, Quote.is_stale clock param, get_quote raise on failure",
+      "title": "Phase 0 (Immediate): Fix 5 critical bugs — kill switch logging, EventStore decode guard, EventBus history bound, Quote.is_stale clock param, get_quote raise on failure",
       "created": "2026-08-01T05:44:33Z",
       "updated": "2026-08-01T06:12:51Z"
     },
@@ -254,7 +254,7 @@
       "id": "T-009",
       "type": "task",
       "status": "done",
-      "title": "Phase 2 (Determinism): Fix all 23 datetime.now() violations \u2014 inject kernel clock into domain objects and broker adapters",
+      "title": "Phase 2 (Determinism): Fix all 23 datetime.now() violations — inject kernel clock into domain objects and broker adapters",
       "created": "2026-08-01T05:44:33Z",
       "updated": "2026-08-01T06:42:11Z"
     },
@@ -262,7 +262,7 @@
       "id": "T-010",
       "type": "task",
       "status": "done",
-      "title": "Phase 3 (Memory safety): Bound all unbounded collections \u2014 EventBus history, LiveStream ticks, EventStore, CandleEngine closed, IndicatorEngine rows",
+      "title": "Phase 3 (Memory safety): Bound all unbounded collections — EventBus history, LiveStream ticks, EventStore, CandleEngine closed, IndicatorEngine rows",
       "created": "2026-08-01T05:44:33Z",
       "updated": "2026-08-01T06:42:11Z"
     },
@@ -270,7 +270,7 @@
       "id": "R-003",
       "type": "risk",
       "status": "done",
-      "title": "No signal handling (SIGTERM/SIGINT) \u2014 Ctrl+C crashes LiveRunner with no cleanup",
+      "title": "No signal handling (SIGTERM/SIGINT) — Ctrl+C crashes LiveRunner with no cleanup",
       "created": "2026-08-01T05:44:36Z",
       "updated": "2026-08-01T06:42:18Z"
     },
@@ -278,7 +278,7 @@
       "id": "R-004",
       "type": "risk",
       "status": "done",
-      "title": "No feed watchdog or heartbeat \u2014 frozen kernel/feed goes undetected",
+      "title": "No feed watchdog or heartbeat — frozen kernel/feed goes undetected",
       "created": "2026-08-01T05:44:36Z",
       "updated": "2026-08-01T06:42:18Z"
     },
@@ -286,7 +286,7 @@
       "id": "R-005",
       "type": "risk",
       "status": "done",
-      "title": "No order timeout detection \u2014 PENDING orders can sit forever",
+      "title": "No order timeout detection — PENDING orders can sit forever",
       "created": "2026-08-01T05:44:36Z",
       "updated": "2026-08-01T06:49:11Z"
     },
@@ -302,7 +302,7 @@
       "id": "R-007",
       "type": "risk",
       "status": "done",
-      "title": "No integration test for full pipeline: feed \u2192 kernel \u2192 strategy \u2192 risk \u2192 execution \u2192 portfolio",
+      "title": "No integration test for full pipeline: feed → kernel → strategy → risk → execution → portfolio",
       "created": "2026-08-01T05:44:36Z",
       "updated": "2026-08-01T06:49:12Z"
     },
@@ -310,7 +310,7 @@
       "id": "B-006",
       "type": "bug",
       "status": "done",
-      "title": "F-004 live fills carry zero commission/statutory \u2014 parity gap",
+      "title": "F-004 live fills carry zero commission/statutory — parity gap",
       "created": "2026-08-01T12:03:31Z",
       "updated": "2026-08-01T12:03:31Z"
     },
@@ -318,7 +318,7 @@
       "id": "B-007",
       "type": "bug",
       "status": "done",
-      "title": "F-005 backtest candles degenerate (open=high=low=close) \u2014 QuoteEvent OHLCV ignored by CandleEngine",
+      "title": "F-005 backtest candles degenerate (open=high=low=close) — QuoteEvent OHLCV ignored by CandleEngine",
       "created": "2026-08-01T12:03:31Z",
       "updated": "2026-08-01T12:03:31Z"
     },
@@ -326,7 +326,7 @@
       "id": "B-008",
       "type": "bug",
       "status": "done",
-      "title": "Scanner reads indicator keys pipeline never produces (avg_volume/rsi/supertrend vs rsi_14/atr_14/stx_10_3) \u2014 3 dead branches",
+      "title": "Scanner reads indicator keys pipeline never produces (avg_volume/rsi/supertrend vs rsi_14/atr_14/stx_10_3) — 3 dead branches",
       "created": "2026-08-01T12:03:31Z",
       "updated": "2026-08-01T12:03:31Z"
     },
@@ -350,7 +350,7 @@
       "id": "T-011",
       "type": "task",
       "status": "done",
-      "title": "Auto-refresh Dhan token on expiry \u2014 proactive buffer + background timer + _ensure_tsl() in critical paths",
+      "title": "Auto-refresh Dhan token on expiry — proactive buffer + background timer + _ensure_tsl() in critical paths",
       "created": "2026-08-01T12:19:51Z",
       "updated": "2026-08-01T12:19:51Z"
     },
@@ -358,7 +358,7 @@
       "id": "T-012",
       "type": "task",
       "status": "done",
-      "title": "Route DhanBroker data calls through DhanTransport \u2014 finish T-005/D-005 provider decomposition",
+      "title": "Route DhanBroker data calls through DhanTransport — finish T-005/D-005 provider decomposition",
       "created": "2026-08-01T19:26:50Z",
       "updated": "2026-08-02T03:22:35Z"
     },
@@ -366,7 +366,7 @@
       "id": "T-013",
       "type": "task",
       "status": "done",
-      "title": "Wire capability layer into production reads \u2014 finish T-002/D-001 (use .market/.history/.stream instead of inst._quote)",
+      "title": "Wire capability layer into production reads — finish T-002/D-001 (use .market/.history/.stream instead of inst._quote)",
       "created": "2026-08-01T19:26:50Z",
       "updated": "2026-08-02T04:02:17Z"
     },
@@ -374,7 +374,7 @@
       "id": "T-014",
       "type": "task",
       "status": "done",
-      "title": "Attach consumers for R-006 observability events (Heartbeat/FeedDisconnected/OrderTimeout) \u2014 watchdog + alerting",
+      "title": "Attach consumers for R-006 observability events (Heartbeat/FeedDisconnected/OrderTimeout) — watchdog + alerting",
       "created": "2026-08-01T19:26:50Z",
       "updated": "2026-08-02T03:27:29Z"
     },
@@ -382,7 +382,7 @@
       "id": "T-015",
       "type": "task",
       "status": "done",
-      "title": "Wire DhanAuthProvider.stop() into LiveRunner shutdown path \u2014 finish T-011 token refresh",
+      "title": "Wire DhanAuthProvider.stop() into LiveRunner shutdown path — finish T-011 token refresh",
       "created": "2026-08-01T19:26:54Z",
       "updated": "2026-08-02T03:25:55Z"
     },
@@ -390,7 +390,7 @@
       "id": "T-016",
       "type": "task",
       "status": "done",
-      "title": "Arm RateLimiter/RetryPolicy in hot paths \u2014 finish D-006 resilience infrastructure",
+      "title": "Arm RateLimiter/RetryPolicy in hot paths — finish D-006 resilience infrastructure",
       "created": "2026-08-01T19:26:54Z",
       "updated": "2026-08-02T03:24:38Z"
     },
@@ -406,7 +406,7 @@
       "id": "T-018",
       "type": "task",
       "status": "done",
-      "title": "Wire feed watchdog reconnection (LiveStream reconnect events) \u2014 finish R-004",
+      "title": "Wire feed watchdog reconnection (LiveStream reconnect events) — finish R-004",
       "created": "2026-08-01T19:26:54Z",
       "updated": "2026-08-02T03:30:10Z"
     },
@@ -438,7 +438,7 @@
       "id": "T-022",
       "type": "task",
       "status": "done",
-      "title": "Default backtest LIMIT fills ignore bar trade-through \u2014 optimistic fills",
+      "title": "Default backtest LIMIT fills ignore bar trade-through — optimistic fills",
       "created": "2026-08-02T09:55:57Z",
       "updated": "2026-08-02T09:55:57Z"
     },
@@ -446,7 +446,7 @@
       "id": "T-023",
       "type": "task",
       "status": "done",
-      "title": "EventStore._load crashes on torn final JSONL line \u2014 recovery fails when it is needed most",
+      "title": "EventStore._load crashes on torn final JSONL line — recovery fails when it is needed most",
       "created": "2026-08-02T09:55:57Z",
       "updated": "2026-08-02T09:55:57Z"
     },
@@ -454,7 +454,7 @@
       "id": "T-024",
       "type": "task",
       "status": "done",
-      "title": "LiveRunner kill switch is one-way \u2014 no DEACTIVATE on RiskResumedEvent",
+      "title": "LiveRunner kill switch is one-way — no DEACTIVATE on RiskResumedEvent",
       "created": "2026-08-02T09:55:57Z",
       "updated": "2026-08-02T09:55:57Z"
     },
@@ -585,26 +585,90 @@
       "title": "Regression test: PositionSyncEngine sync pays NON_TRADING quota via transport gate",
       "created": "2026-08-02T17:16:07Z",
       "updated": "2026-08-02T17:16:07Z"
+    },
+    {
+      "id": "B-013",
+      "type": "bug",
+      "status": "done",
+      "title": "Remove 2m/3m/4m from _DHAN_TIMEFRAMES; fail fast with correct supported-timeframe error",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:25Z"
+    },
+    {
+      "id": "F-001",
+      "type": "feature",
+      "status": "done",
+      "title": "Sub-5m timeframes via 1m fetch + resample (HistoricalSeries.resample)",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:25Z"
+    },
+    {
+      "id": "B-014",
+      "type": "bug",
+      "status": "done",
+      "title": "dhan_transport.get_historical raises on unexpected exceptions (no silent empty CandleSeries)",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:25Z"
+    },
+    {
+      "id": "B-015",
+      "type": "bug",
+      "status": "done",
+      "title": "Auth: only _clear_shared on invalid-token signal; make refresh_if_needed atomic under lock",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:25Z"
+    },
+    {
+      "id": "D-018",
+      "type": "debt",
+      "status": "done",
+      "title": "DhanMarketFeedSource reuses broker tsl instead of second get_tradehull probe chain",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:26Z"
+    },
+    {
+      "id": "D-019",
+      "type": "debt",
+      "status": "done",
+      "title": "HistoricalSeries._df copy-on-write + kernel clock for is_fresh/fetch (replay parity)",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:26Z"
+    },
+    {
+      "id": "D-020",
+      "type": "debt",
+      "status": "done",
+      "title": "Serialize DhanMarketFeedSource stop/reconnect under a lock",
+      "created": "2026-08-02T17:41:17Z",
+      "updated": "2026-08-02T18:12:26Z"
+    },
+    {
+      "id": "B-016",
+      "type": "bug",
+      "status": "done",
+      "title": "DhanTransport.get_balance must not swallow errors to 0.0 (silent-zero regression; position-sync keeps state on raise)",
+      "created": "2026-08-02T18:03:26Z",
+      "updated": "2026-08-02T18:12:25Z"
     }
   ],
   "flows": {
-    "market_data": "BrokerAdapter.get_quote() \u2192 Quote (frozen) \u2192 Instrument.apply_quote() \u2192 QuoteUpdatedEvent \u2192 EventBus \u2192 MarketEngine \u2192 CandleEngine \u2192 IndicatorEngine \u2192 StrategyEngine",
-    "order_lifecycle": "Instrument.order.buy() \u2192 OrderFacade \u2192 Order \u2192 BrokerAdapter.place_order() \u2192 OrderPlacedEvent \u2192 EventBus \u2192 OrderEngine \u2192 RiskEngine \u2192 BrokerExecution \u2192 FillEvent \u2192 PortfolioEngine",
-    "live_streaming": "BrokerAdapter.subscribe() \u2192 LiveStream \u2192 tick ingestion \u2192 Instrument._quote update \u2192 TickEvent/QuoteEvent \u2192 EventBus \u2192 engines \u2192 strategy callbacks",
-    "position_sync": "PositionSyncEngine pulls broker.get_positions()/get_balance() \u2192 reconciles into kernel Portfolio \u2192 raises on failure (never silently zeros)",
-    "replay": "EventStore \u2192 timestamped events \u2192 ReplayClock.setTime() \u2192 EventBus.publish() \u2192 identical engine pipeline as live (zero parity)"
+    "market_data": "BrokerAdapter.get_quote() → Quote (frozen) → Instrument.apply_quote() → QuoteUpdatedEvent → EventBus → MarketEngine → CandleEngine → IndicatorEngine → StrategyEngine",
+    "order_lifecycle": "Instrument.order.buy() → OrderFacade → Order → BrokerAdapter.place_order() → OrderPlacedEvent → EventBus → OrderEngine → RiskEngine → BrokerExecution → FillEvent → PortfolioEngine",
+    "live_streaming": "BrokerAdapter.subscribe() → LiveStream → tick ingestion → Instrument._quote update → TickEvent/QuoteEvent → EventBus → engines → strategy callbacks",
+    "position_sync": "PositionSyncEngine pulls broker.get_positions()/get_balance() → reconciles into kernel Portfolio → raises on failure (never silently zeros)",
+    "replay": "EventStore → timestamped events → ReplayClock.setTime() → EventBus.publish() → identical engine pipeline as live (zero parity)"
   },
   "components": {
     "ntrade/brokers/": "Broker adapter layer: BrokerAdapter (abstract), DhanBroker (Dhan-Tradehull wrapper, 1095 LOC), PaperBroker (deterministic offline), capabilities (dynamic broker-specific extensions via BrokerExtensionFacade)",
-    "ntrade/domain/instruments/": "Instrument hierarchy: Instrument (ABC) \u2192 Equity, Index, ETF, Currency, Commodity, Bond, Crypto, Spot, Future, Option, SyntheticInstrument. Each owns quote, depth, history, stream, indicators, broker wiring",
+    "ntrade/domain/instruments/": "Instrument hierarchy: Instrument (ABC) → Equity, Index, ETF, Currency, Commodity, Bond, Crypto, Spot, Future, Option, SyntheticInstrument. Each owns quote, depth, history, stream, indicators, broker wiring",
     "ntrade/domain/market/": "Market value objects: Quote (frozen), Tick (frozen), MarketDepth (frozen), HistoricalSeries (DataFrame wrapper with cache/fetch/resample), LiveStream (subscription lifecycle + callbacks)",
     "ntrade/domain/orders/": "Order model: Order (mutable dataclass), OrderFacade (fluent API: instrument.order.buy()), OrderSide/OrderType/TradeType/OrderStatus enums",
     "ntrade/kernel/": "Core runtime: TradingKernel (engine stack coordinator), EventBus (typed pub/sub), TradingClock (Live/Replay), TradingContext, ResilientKernel (crash recovery + EventStore rebuild)",
     "ntrade/engines/": "Engine pipeline: MarketEngine, CandleEngine, IndicatorEngine, StrategyEngine, RiskEngine, PortfolioEngine, PositionSyncEngine, OrderEngine",
     "ntrade/execution/": "Execution layer: ExecutionRouter (multi-target), BrokerExecution (live), SimulatedExecution (paper), costs module",
-    "ntrade/facade.py": "Public entry point: Market class \u2014 wraps BrokerRegistry + InstrumentFactory. m.equity('TCS'), m.index('NIFTY'), m.portfolio(), m.account()",
-    "ntrade/factories.py": "InstrumentFactory \u2014 creates all instrument types with SymbolMaster flyweight cache. OptionFactory for synthetic analytics",
-    "ntrade/registry.py": "SymbolMaster (flyweight: shared instrument instances), BrokerRegistry (name \u2192 factory: dhan, paper)",
+    "ntrade/facade.py": "Public entry point: Market class — wraps BrokerRegistry + InstrumentFactory. m.equity('TCS'), m.index('NIFTY'), m.portfolio(), m.account()",
+    "ntrade/factories.py": "InstrumentFactory — creates all instrument types with SymbolMaster flyweight cache. OptionFactory for synthetic analytics",
+    "ntrade/registry.py": "SymbolMaster (flyweight: shared instrument instances), BrokerRegistry (name → factory: dhan, paper)",
     "ntrade/events/": "Typed event hierarchy: Event (base), QuoteUpdatedEvent, TickEvent, OrderPlacedEvent, FillEvent, SignalEvent, RiskHaltedEvent, lifecycle events",
     "ntrade/sources/": "Market data feeds: DhanFeedSource (WebSocket), MarketFeedSource (kernel feed), SyntheticFeedSource (tick simulation)",
     "ntrade/runner/": "Live runner: wraps TradingKernel + MarketFeedSource, closes audit gaps (position sync, order polling, kill switch)",

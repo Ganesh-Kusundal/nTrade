@@ -134,22 +134,15 @@ def _invalid_token_signal(exc: BaseException | None = None, payload: object = No
     return "invalid token" in text or "dh-906" in text
 
 
-def _login_ok(tsl, gate=None) -> bool:
-    """True when Tradehull looks logged in AND the data plane accepts the token.
+def _login_ok_status(tsl, gate=None) -> tuple[bool, bool]:
+    """Return (ok, is_invalid_token).
 
-    # ponytail: LTP then 1 historical bar; upgrade if Dhan adds a ping endpoint.
-    instrument_df alone is not enough — Tradehull can set it after loading the
-    instrument file while market-data calls still return DH-906 Invalid Token.
-
-    ``gate`` is the session's optional :class:`BrokerRateGate` (B-012): the two
-    probe calls (``get_ltp_data`` / ``get_historical_data``) then respect the
-    Quote/Data quota windows instead of bursting at login. ``gate=None`` (the
-    default) is a no-op, so standalone callers stay untouched and paper-safe.
+    Distinguishes a genuine invalid token (DH-906) from a transient data-plane
+    hiccup (None/empty LTP/bars during weekend/maintenance).
     """
     if not (hasattr(tsl, "instrument_df") and hasattr(tsl, "Dhan")):
-        return False
+        return False, True
 
-    # Capture library stdout/stderr that embeds Invalid Token in printed dicts
     out = io.StringIO()
     err = io.StringIO()
     try:
@@ -159,15 +152,15 @@ def _login_ok(tsl, gate=None) -> bool:
             data = tsl.get_ltp_data(names=["NIFTY"])
         blob = out.getvalue() + err.getvalue()
         if _invalid_token_signal(payload=blob):
-            return False
+            return False, True
         if isinstance(data, dict) and data.get("NIFTY"):
-            return True
+            return True, False
     except Exception as exc:
         if _invalid_token_signal(exc):
-            return False
+            return False, True
         blob = out.getvalue() + err.getvalue()
         if _invalid_token_signal(payload=blob):
-            return False
+            return False, True
 
     # Weekend / empty LTP: fall back to one historical bar
     out2 = io.StringIO()
@@ -181,16 +174,21 @@ def _login_ok(tsl, gate=None) -> bool:
             )
         blob = out2.getvalue() + err2.getvalue()
         if _invalid_token_signal(payload=blob):
-            return False
+            return False, True
         if df is not None and len(df) > 0:
-            return True
+            return True, False
     except Exception as exc:
         if _invalid_token_signal(exc):
-            return False
+            return False, True
         blob = out2.getvalue() + err2.getvalue()
         if _invalid_token_signal(payload=blob):
-            return False
-    return False
+            return False, True
+    return False, False
+
+
+def _login_ok(tsl, gate=None) -> bool:
+    ok, _ = _login_ok_status(tsl, gate=gate)
+    return ok
 
 
 def _try_access_token(client_code: str, token: str):
@@ -227,18 +225,26 @@ def get_tradehull(env: dict | None = None, env_path: str = ".env", gate=None):
     shared = _token_from_shared_store(token_path) if token_path else None
     if shared:
         tsl = _try_access_token(client_code, shared)
-        if _login_ok(tsl, gate=gate):
+        ok, is_invalid = _login_ok_status(tsl, gate=gate)
+        if ok:
             token = getattr(tsl, "token_id", None) or shared
             _persist_shared(token_path, cooldown_path, token, source="STORE")
             return tsl
-        _clear_shared(token_path)
+        if is_invalid:
+            _clear_shared(token_path)
+        elif not (pin and totp_secret):
+            # Transient data-plane failure with no TOTP credentials: keep store token
+            return tsl
 
     # 2) Env seed (bootstrap only) — promote into store on success
     if access_token and _token_usable(access_token):
         tsl = _try_access_token(client_code, access_token)
-        if _login_ok(tsl, gate=gate):
+        ok, is_invalid = _login_ok_status(tsl, gate=gate)
+        if ok:
             token = getattr(tsl, "token_id", None) or access_token
             _persist_shared(token_path, cooldown_path, token, source="ENV")
+            return tsl
+        if not is_invalid and not (pin and totp_secret):
             return tsl
 
     # 3) PIN+TOTP mint
@@ -251,7 +257,8 @@ def get_tradehull(env: dict | None = None, env_path: str = ".env", gate=None):
         raise ConnectionError(f"Dhan TOTP login is on cooldown (see {cooldown_path}). Wait ~90s.")
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         tsl = Tradehull(client_code, mode="pin_totp", pin=pin, totp_secret=totp_secret)
-    if not _login_ok(tsl, gate=gate):
+    ok, _ = _login_ok_status(tsl, gate=gate)
+    if not ok:
         raise ConnectionError("Dhan PIN+TOTP login failed. Check DHAN_PIN / DHAN_TOTP_SECRET.")
     _persist_shared(token_path, cooldown_path, tsl.token_id, source="TOTP")
     return tsl

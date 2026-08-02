@@ -111,11 +111,19 @@ def test_dhan_timeframe_rejects_10m():
         DhanMapper.map_timeframe("daily-x")
 
 
-def test_dhan_timeframe_accepts_2_3_4m():
+def test_dhan_timeframe_sub5m_maps_to_1m_base():
+    """B-013/F-001: 2m/3m/4m are NOT native Dhan intervals — they map to the
+    1m base interval so the transport fetches 1m and resamples, instead of
+    sending an unsupported "2"/"3"/"4" to the backend (which used to fail
+    and silently return an empty CandleSeries)."""
     from ntrade.brokers.dhan_mapper import DhanMapper
-    assert DhanMapper.map_timeframe("2m") == "2"
-    assert DhanMapper.map_timeframe("3m") == "3"
-    assert DhanMapper.map_timeframe("4m") == "4"
+    assert DhanMapper.map_timeframe("2m") == "1"
+    assert DhanMapper.map_timeframe("3m") == "1"
+    assert DhanMapper.map_timeframe("4m") == "1"
+    assert DhanMapper.resample_rule("2m") == "2min"
+    assert DhanMapper.resample_rule("3m") == "3min"
+    assert DhanMapper.resample_rule("4m") == "4min"
+    assert DhanMapper.resample_rule("5m") is None  # native, no resample
 
 
 def test_get_historical_rejects_unsupported_timeframe():

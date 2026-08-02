@@ -173,6 +173,48 @@ class TestDhanAuthProvider:
         auth = DhanAuthProvider()
         assert "not authenticated" in repr(auth)
 
+    @patch("ntrade.brokers.dhan_auth_provider.get_tradehull")
+    def test_refresh_if_needed_atomic_single_mint(self, mock_get):
+        """B-015: concurrent refresh_if_needed callers must not double-mint a
+        TOTP login — the expiry check and the refresh are one critical section."""
+        import threading
+
+        calls = []
+
+        def fake_get_tradehull(*, env=None, env_path=".env", gate=None):
+            calls.append(1)
+            tsl = MagicMock()
+            # far-future token: the second thread must see it fresh
+            tsl.token_id = "eyJhbGciOiJub25lIn0.eyJleHAiOjk5OTk5OTk5OTl9.c2ln"
+            return tsl
+
+        mock_get.side_effect = fake_get_tradehull
+        auth = DhanAuthProvider()
+        expired = MagicMock()
+        expired.token_id = "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.c2ln"  # exp=1
+        auth._tsl = expired
+
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                results.append(auth.refresh_if_needed())
+            except Exception as exc:  # pragma: no cover - unexpected
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        assert len(calls) == 1  # exactly one mint despite 4 concurrent callers
+        assert len(results) == 4
+        assert all(r is auth._tsl for r in results)
+        auth.stop()  # cancel the proactive-refresh daemon timer
+
 
 # ========================================================= DhanTransport
 
@@ -203,6 +245,16 @@ class TestDhanTransport:
         tsl.get_balance.return_value = 500000.0
         transport = DhanTransport(tsl)
         assert transport.get_balance() == 500000.0
+
+    def test_get_balance_raises_on_transient_error(self):
+        """B-016: a transient broker failure must RAISE, not silently return
+        0.0 — PositionSyncEngine._safe_balance relies on the exception to keep
+        the previous account state."""
+        tsl = MagicMock()
+        tsl.get_balance.side_effect = ConnectionError("net down")
+        transport = DhanTransport(tsl)
+        with pytest.raises(ConnectionError):
+            transport.get_balance()
 
     def test_get_lot_size(self):
         tsl = MagicMock()

@@ -22,18 +22,24 @@ class HistoricalSeries:
     is the deliberate choice here, consistent with `series.cached`.
     """
 
-    def __init__(self, instrument: "Instrument", df: pd.DataFrame | None = None, timeframe: str = "5m"):
+    def __init__(self, instrument: "Instrument", df: pd.DataFrame | None = None, timeframe: str = "5m", clock=None):
         self.instrument = instrument
         self.timeframe = timeframe
         self._df = df if df is not None else pd.DataFrame()
         self._df_timeframe = timeframe if df is not None else None
         self._cached = df is not None
         self._last_fetched_at: datetime | None = None
+        # D-019: injectable clock (callable -> datetime) so is_fresh/fetch
+        # follow the kernel clock (replay parity) instead of wall time.
+        self.clock = clock or datetime.now
 
     # ------------------------------------------------------------------ state
     @property
     def df(self) -> pd.DataFrame:
-        return self._df
+        """Copy-on-write (D-019): external readers get an independent copy so
+        nobody can mutate the instrument's cached frame in place (which would
+        desync ``_df_timeframe``/``_cached`` and race the feed thread)."""
+        return self._df.copy()
 
     @property
     def cached(self) -> bool:
@@ -46,7 +52,7 @@ class HistoricalSeries:
     def is_fresh(self, max_age_minutes: float = 5.0) -> bool:
         if self._last_fetched_at is None:
             return False
-        return (datetime.now() - self._last_fetched_at).total_seconds() < max_age_minutes * 60
+        return (self.clock() - self._last_fetched_at).total_seconds() < max_age_minutes * 60
 
     # ------------------------------------------------------------------ fetch
     def fetch(
@@ -73,7 +79,7 @@ class HistoricalSeries:
         self._df = df if df is not None else pd.DataFrame()
         self._df_timeframe = self.timeframe
         self._cached = not self._df.empty
-        self._last_fetched_at = datetime.now()
+        self._last_fetched_at = self.clock()
         return self
 
     def __call__(self, timeframe=None, days=None, start=None, end=None, force: bool = False) -> "HistoricalSeries":
@@ -121,7 +127,7 @@ class HistoricalSeries:
         agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
         agg.update({c: "sum" for c in indexed.columns if c in ("volume", "oi")})
         resampled = indexed.resample(rule).agg(agg).dropna(subset=["open"]).reset_index()
-        return HistoricalSeries(self.instrument, resampled, rule)
+        return HistoricalSeries(self.instrument, resampled, rule, clock=self.clock)
     # ------------------------------------------------------------------ pandas
     def indicators(self, **params) -> dict[str, float]:
         """Compute the indicator bundle over this series (mission: history.indicators())."""
@@ -135,10 +141,15 @@ class HistoricalSeries:
         return len(self._df)
 
     def __getitem__(self, key):
+        # NOTE (D-019): column/row views into the internal frame are returned
+        # as-is for performance — mutating them in place would corrupt the
+        # cache. Use ``df`` / ``to_df()`` when you need a copy-safe surface.
         return self._df[key]
 
     def __getattr__(self, name):
-        # Delegate dataframe-like attribute access (e.g. series.close, .iloc)
+        # Delegate dataframe-like attribute access (e.g. series.close, .iloc).
+        # Same CoW note as __getitem__: these are views into the internal
+        # frame — read them, don't mutate in place.
         try:
             return getattr(self._df, name)
         except AttributeError:

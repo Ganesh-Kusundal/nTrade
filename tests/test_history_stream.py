@@ -18,6 +18,54 @@ def test_history_series_empty():
     assert not h.is_fresh()
 
 
+def test_history_df_property_is_defensive_copy():
+    """D-019: external readers of ``.df`` get a copy — in-place mutation via
+    the property must not corrupt the instrument's cached frame."""
+    broker = PaperBroker()
+    rel = Equity("RELIANCE", broker=broker)
+    h = rel._history.fetch(timeframe="5m")
+    leaked = h.df
+    leaked.loc[0, "close"] = 999.0
+    assert h.df.loc[0, "close"] != 999.0  # internal frame untouched
+
+
+def test_history_clock_drives_freshness():
+    """D-019: is_fresh/fetch follow the injected clock (replay parity)."""
+    from datetime import datetime, timedelta
+
+    class FakeClock:
+        def __init__(self):
+            self.t = datetime(2026, 8, 3, 9, 15, 0)
+
+        def __call__(self):
+            return self.t
+
+    broker = PaperBroker()
+    rel = Equity("RELIANCE", broker=broker)
+    clock = FakeClock()
+    h = HistoricalSeries(rel, clock=clock)
+    h.fetch(timeframe="5m")
+    assert h.is_fresh()
+    clock.t += timedelta(minutes=6)
+    assert not h.is_fresh()  # 6min > 5min window, per injected clock
+
+
+def test_kernel_register_wires_history_clock():
+    """D-019: registering an instrument on a kernel wires ctx.now into its
+    history so replay mode drives freshness deterministically."""
+    from ntrade.kernel.clock import ReplayClock
+    from ntrade.kernel.event_bus import EventBus
+    from ntrade.kernel.context import TradingContext
+
+    rel = Equity("RELIANCE")
+    ctx = TradingContext(EventBus(), ReplayClock())
+    ctx.register(rel)
+    # Bound methods are recreated per access, so compare behaviour, not identity.
+    assert rel._history.clock() == ctx.now()
+    assert callable(rel._history.clock)
+    assert rel._history.clock.__self__ is ctx
+
+
 def test_history_fetch_sets_state():
     broker = PaperBroker()
     rel = Equity("RELIANCE", broker=broker)

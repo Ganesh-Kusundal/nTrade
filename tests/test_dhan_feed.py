@@ -85,3 +85,134 @@ def test_context_from_env_gate_none_is_noop(monkeypatch):
     feed = DhanMarketFeedSource()  # no gate
     feed._context_from_env()
     assert captured["gate"] is None
+
+
+def test_context_from_env_reuses_broker_tsl(monkeypatch):
+    """D-018: the feed reuses an already-authenticated broker tsl from kernel
+    context instead of running a second get_tradehull probe chain."""
+    import sys
+    from types import SimpleNamespace
+
+    from ntrade.kernel.context import TradingContext
+    from ntrade.kernel.event_bus import EventBus
+    from ntrade.kernel.clock import LiveClock
+    from ntrade.sources.dhan_feed import DhanMarketFeedSource
+
+    probe_calls = []
+
+    def fake_get_tradehull(*, gate=None, **kwargs):
+        probe_calls.append(gate)
+        raise AssertionError("D-018: probe chain must be skipped when broker tsl exists")
+
+    fake_dhanhq = SimpleNamespace(DhanContext=lambda cc, tok: SimpleNamespace(
+        ClientCode=cc, token_id=tok))
+    monkeypatch.setitem(sys.modules, "dhanhq", fake_dhanhq)
+    monkeypatch.setattr("ntrade.brokers.dhan_auth.get_tradehull", fake_get_tradehull)
+
+    broker = SimpleNamespace(tsl=SimpleNamespace(ClientCode="REAL", token_id="realtok"))
+    inst = SimpleNamespace(broker_adapter=broker, symbol="NIFTY")
+    ctx = TradingContext(EventBus(), LiveClock())
+    ctx.register(inst)
+    kernel = SimpleNamespace(ctx=ctx)
+
+    feed = DhanMarketFeedSource(kernel=kernel)
+    context = feed._context_from_env()
+    assert context.ClientCode == "REAL"
+    assert context.token_id == "realtok"
+    assert probe_calls == []  # get_tradehull never invoked
+
+
+def test_context_from_env_no_broker_tsl_falls_back_to_probe(monkeypatch):
+    """D-018: when no instrument exposes a usable tsl, the feed still falls
+    back to the get_tradehull probe chain."""
+    import sys
+    from types import SimpleNamespace
+
+    from ntrade.kernel.context import TradingContext
+    from ntrade.kernel.event_bus import EventBus
+    from ntrade.kernel.clock import LiveClock
+    from ntrade.sources.dhan_feed import DhanMarketFeedSource
+
+    probe_calls = []
+
+    def fake_get_tradehull(*, gate=None, **kwargs):
+        probe_calls.append(gate)
+        return SimpleNamespace(ClientCode="FAKE", token_id="tok")
+
+    fake_dhanhq = SimpleNamespace(DhanContext=lambda cc, tok: SimpleNamespace(
+        ClientCode=cc, token_id=tok))
+    monkeypatch.setitem(sys.modules, "dhanhq", fake_dhanhq)
+    monkeypatch.setattr("ntrade.brokers.dhan_auth.get_tradehull", fake_get_tradehull)
+
+    # Instrument exists but its broker exposes no usable tsl (e.g. paper).
+    inst = SimpleNamespace(broker_adapter=SimpleNamespace(tsl=None), symbol="NIFTY")
+    ctx = TradingContext(EventBus(), LiveClock())
+    ctx.register(inst)
+    kernel = SimpleNamespace(ctx=ctx)
+
+    feed = DhanMarketFeedSource(kernel=kernel)
+    context = feed._context_from_env()
+    assert context.ClientCode == "FAKE"
+    assert len(probe_calls) == 1
+
+
+def test_start_stop_serialized_by_lifecycle_lock():
+    """D-020: concurrent stop()/start() callers cannot double-close or
+    rebuild the single-use websocket concurrently."""
+    import threading
+    from ntrade.sources.dhan_feed import DhanMarketFeedSource
+
+    class FakeFeed:
+        def __init__(self):
+            self.close_count = 0
+            self.start_count = 0
+
+        def start(self):
+            self.start_count += 1
+            return object()  # thread-like
+
+        def close_connection(self):
+            self.close_count += 1
+
+    feed = DhanMarketFeedSource(feed_factory=lambda subs: FakeFeed())
+    feed._feed = FakeFeed()  # simulate an already-built feed
+    feed._last_close_count = 0
+
+    # Track close calls across the shared fake feed.
+    real_close = feed._feed.close_connection
+    feed._feed.close_connection = lambda: (real_close(), setattr(feed, "_last_close_count", feed._last_close_count + 1))
+    feed._reconnect_limiter = type("NoWait", (), {"wait": lambda self: None})()
+
+    errors = []
+
+    def stopper():
+        try:
+            for _ in range(5):
+                feed.stop()
+        except Exception as exc:  # pragma: no cover - unexpected
+            errors.append(exc)
+
+    threads = [threading.Thread(target=stopper) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    assert feed._feed is None
+    assert not feed.running
+    # The feed was closed exactly once overall (idempotent stop): each
+    # thread raced but the RLock serialized close + cache-drop.
+    assert feed._last_close_count == 1
+
+
+def test_stop_is_idempotent_and_running_flag_clears():
+    """D-020: stop() without a feed is a no-op; running flag is cleared."""
+    from ntrade.sources.dhan_feed import DhanMarketFeedSource
+
+    feed = DhanMarketFeedSource()
+    feed.running = True
+    feed.stop()
+    assert not feed.running
+    assert feed._feed is None
+    feed.stop()  # second stop must not raise

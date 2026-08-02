@@ -11,6 +11,7 @@ invariant).
 
 from __future__ import annotations
 
+import threading
 import time
 import logging
 
@@ -127,6 +128,11 @@ class DhanMarketFeedSource(MarketFeedSource):
         self._sleep = time.sleep
         self._reconnect_limiter = RateLimiter(calls_per_second=0.5)
         self._reconnect_called = False
+        # D-020: serializes start()/stop()/_reconnect() so a LiveRunner stop
+        # racing the dhanhq error/close callbacks cannot double-close or
+        # rebuild the single-use websocket concurrently. RLock: _reconnect
+        # re-enters via stop()/start().
+        self._lifecycle_lock = threading.RLock()
 
     # ------------------------------------------------------------------ wiring
     def _subscriptions(self) -> list:
@@ -157,20 +163,27 @@ class DhanMarketFeedSource(MarketFeedSource):
         from dhanhq import DhanContext
         from ntrade.brokers.dhan_auth import get_tradehull
 
-        # T-035: feed construction performs the same _login_ok probes the broker
-        # connect path does (B-012) — route them through the session gate too.
+        # Re-use already authenticated tsl from kernel context if available (P4)
+        if self.kernel is not None:
+            for inst in self.kernel.ctx.instruments_snapshot():
+                broker = getattr(inst, "broker_adapter", None)
+                tsl = getattr(broker, "tsl", None) if broker else None
+                if tsl is not None and getattr(tsl, "ClientCode", None) and getattr(tsl, "token_id", None):
+                    return DhanContext(tsl.ClientCode, tsl.token_id)
+
         tsl = get_tradehull(gate=self._gate)
         return DhanContext(tsl.ClientCode, tsl.token_id)
 
     # ------------------------------------------------------------------ feed
     def start(self) -> None:
         """Start the websocket in a background thread (non-blocking)."""
-        self._reconnect_limiter.wait()
-        feed = self._build_feed()
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._thread = feed.start()
-        self.running = True
+        with self._lifecycle_lock:
+            self._reconnect_limiter.wait()
+            feed = self._build_feed()
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._thread = feed.start()
+            self.running = True
 
     def wait_ready(self, timeout: float = 15.0, min_ticks: int = 1) -> bool:
         """Block until the feed is connected and has ingested >= min_ticks
@@ -184,16 +197,17 @@ class DhanMarketFeedSource(MarketFeedSource):
         return self.running and self.payloads_ingested >= min_ticks
 
     def stop(self) -> None:
-        if self._feed is not None:
-            try:
-                self._feed.close_connection()
-            except Exception:
-                pass
-        # drop the cached feed so start() builds a fresh one (a dhanhq
-        # MarketFeed's event loop is single-use and cannot be restarted).
-        self._feed = None
-        self._thread = None
-        self.running = False
+        with self._lifecycle_lock:
+            if self._feed is not None:
+                try:
+                    self._feed.close_connection()
+                except Exception:
+                    pass
+            # drop the cached feed so start() builds a fresh one (a dhanhq
+            # MarketFeed's event loop is single-use and cannot be restarted).
+            self._feed = None
+            self._thread = None
+            self.running = False
 
     def _on_message(self, instance, payload: dict) -> None:
         """dhanhq callback: translate a payload to canonical events + publish."""
@@ -214,19 +228,20 @@ class DhanMarketFeedSource(MarketFeedSource):
     # Reconnect re-uses start()/stop(), so code-21 + version v2 are always
     # reapplied at re-arm (see tests/test_contract_feed_reconnect_subscription.py)
     def _reconnect(self) -> None:
-        self._reconnect_limiter.wait()
-        try:
-            self.stop()          # tear down the dead socket
-            self.start()         # re-attach + re-subscribe (fresh MarketFeed)
-            self._reconnect_called = True
-            # Re-arm every instrument stream so consumers see them as live again.
-            if self.kernel is not None:
-                for instrument in self.kernel.ctx.instruments_snapshot():
-                    stream = getattr(instrument, "_stream", None)
-                    if stream is not None:
-                        stream.notify_reconnect()
-        except Exception as exc:
-            _logger.error("reconnect failed — feed remains down: %s", exc)
+        with self._lifecycle_lock:
+            self._reconnect_limiter.wait()
+            try:
+                self.stop()          # tear down the dead socket
+                self.start()         # re-attach + re-subscribe (fresh MarketFeed)
+                self._reconnect_called = True
+                # Re-arm every instrument stream so consumers see them as live again.
+                if self.kernel is not None:
+                    for instrument in self.kernel.ctx.instruments_snapshot():
+                        stream = getattr(instrument, "_stream", None)
+                        if stream is not None:
+                            stream.notify_reconnect()
+            except Exception as exc:
+                _logger.error("reconnect failed — feed remains down: %s", exc)
 
     def _on_close(self, instance) -> None:
         _logger.warning("feed closed")

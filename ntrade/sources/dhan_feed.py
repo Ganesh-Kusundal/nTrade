@@ -17,6 +17,7 @@ import logging
 from ntrade.events.market import DepthEvent, QuoteEvent, TickEvent
 from ntrade.sources.market_feed import MarketFeedSource
 from ntrade.events.lifecycle import FeedDisconnectedEvent
+from ntrade.execution.retry import RateLimiter
 
 _logger = logging.getLogger("ntrade.feed.dhan")
 
@@ -124,6 +125,7 @@ class DhanMarketFeedSource(MarketFeedSource):
         self.payloads_ingested = 0
         self._timer = time.monotonic
         self._sleep = time.sleep
+        self._reconnect_limiter = RateLimiter(calls_per_second=0.5)
 
     # ------------------------------------------------------------------ wiring
     def _mode_code(self) -> int:
@@ -174,6 +176,7 @@ class DhanMarketFeedSource(MarketFeedSource):
     # ------------------------------------------------------------------ feed
     def start(self) -> None:
         """Start the websocket in a background thread (non-blocking)."""
+        self._reconnect_limiter.wait()
         feed = self._build_feed()
         if self._thread is not None and self._thread.is_alive():
             return

@@ -31,6 +31,7 @@ from ntrade.brokers.dhan_mapper import (
     _first_str,
 )
 from ntrade.brokers.dhan_transport import DhanTransport
+from ntrade.execution.retry import RateLimiter
 from ntrade.domain.market.candles import CandleSeries
 from ntrade.domain.market.depth import MarketDepth
 from ntrade.domain.market.quote import Quote
@@ -64,7 +65,11 @@ class DhanBroker(BrokerAdapter):
 
     def connect(self) -> "DhanBroker":
         self.tsl = self._auth.authenticate()
-        self._transport = DhanTransport(self.tsl, clock=getattr(self, "_clock", None))
+        self._rate_limiter = RateLimiter(calls_per_second=10.0)  # Dhan API ceiling
+        self._transport = DhanTransport(
+            self.tsl, rate_limiter=self._rate_limiter,
+            clock=getattr(self, "_clock", None),
+        )
         self._connected = True
         return self
 

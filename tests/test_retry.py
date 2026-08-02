@@ -235,3 +235,14 @@ class TestDhanTransportRetryIntegration:
         tsl.get_ltp_data.return_value = {"SYM": 50.0}
         transport = DhanTransport(tsl)
         assert transport.get_ltp("SYM") == 50.0
+
+    def test_transport_rate_limiter_throttles_ltp(self):
+        """A wired RateLimiter is actually consulted on the LTP hot path."""
+        from ntrade.brokers.dhan_transport import DhanTransport
+        from ntrade.execution.retry import RateLimiter
+        tsl = MagicMock()
+        tsl.get_ltp_data.return_value = {"TCS": 100.0}
+        limiter = RateLimiter(calls_per_second=100.0)
+        transport = DhanTransport(tsl, rate_limiter=limiter)
+        transport.get_ltp("TCS")
+        assert limiter._last_time > 0  # the limiter was actually consulted

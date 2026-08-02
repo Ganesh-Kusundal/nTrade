@@ -54,10 +54,11 @@ class DhanTransport:
     """
 
     def __init__(self, tsl: Any, retry_policy: RetryPolicy | None = None,
-                 clock=None):
+                 rate_limiter=None, clock=None):
         self._tsl = tsl
         self._mapper = DhanMapper()
         self._retry_policy = retry_policy or RetryPolicy()
+        self._rate_limiter = rate_limiter  # optional shared Dhan API rate ceiling
         self._clock = clock  # optional TradingClock — zero-parity timestamps
 
     def _ts(self, now=None):
@@ -76,6 +77,11 @@ class DhanTransport:
     def tsl(self, value: Any) -> None:
         self._tsl = value
 
+    def _throttled(self) -> None:
+        """Respect the shared Dhan API rate ceiling, if configured."""
+        if self._rate_limiter is not None:
+            self._rate_limiter.wait()
+
     # ---- market data -------------------------------------------------------
 
     def get_ltp(self, symbol: str) -> float:
@@ -88,6 +94,7 @@ class DhanTransport:
         names = [symbol]
 
         def _try_ltp() -> float:
+            self._throttled()
             data = self._tsl.get_ltp_data(names=names)
             candidate = float(data.get(names[0], 0.0) or 0.0)
             if candidate > 0:

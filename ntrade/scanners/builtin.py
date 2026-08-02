@@ -87,6 +87,7 @@ class VolumeSpikeScanner(Scanner):
     """
 
     name = "volume_spike"
+    rate_limit_seconds = 30.0   # M6: don't rescan the full universe every tick
 
     def scan(self, session: "TradingSession", *, min_volume: int = 100_000,
              spike_multiplier: float = 2.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
@@ -124,6 +125,7 @@ class MomentumScanner(Scanner):
     """
 
     name = "momentum"
+    rate_limit_seconds = 30.0   # M6: don't rescan the full universe every tick
 
     def scan(self, session: "TradingSession", *, rsi_threshold: float = 60.0,
              min_change_pct: float = 1.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
@@ -171,6 +173,7 @@ class BreakoutScanner(Scanner):
     """
 
     name = "breakout"
+    rate_limit_seconds = 30.0   # M6: don't rescan the full universe every tick
 
     def scan(self, session: "TradingSession", *, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
         results: list[ScannerResult] = []

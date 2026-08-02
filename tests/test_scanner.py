@@ -105,26 +105,7 @@ class TestScannerABC:
         results = s.scan(session)
         assert len(results) == 2
 
-    def test_top_ranks_by_score(self):
-        class MyScanner(Scanner):
-            name = "ranker"
-            def scan(self, session, **kw):
-                return [
-                    ScannerResult(instrument=MagicMock(), scanner_name=self.name,
-                                  score=s, signal="BUY")
-                    for s in (1.0, 5.0, 3.0, 9.0, 2.0)
-                ]
-
-        s = MyScanner()
-        session = _make_session_with_instruments()
-        top3 = s.top(session, 3)
-        assert len(top3) == 3
-        assert top3[0].score == 9.0 and top3[0].rank == 1
-        assert top3[1].score == 5.0 and top3[1].rank == 2
-        assert top3[2].score == 3.0 and top3[2].rank == 3
-
-
-# ============================================================ ScannerFacade
+    # ============================================================ ScannerFacade
 
 class TestScannerFacade:
     def test_builtins_registered(self):
@@ -182,6 +163,28 @@ class TestScannerFacade:
         assert len(results) == 2
         assert results[0].rank == 1
         assert results[0].score > results[1].score
+
+    def test_facade_ranks_scores_via_run(self):
+        session = _make_session_with_instruments()
+        facade = ScannerFacade(session)
+
+        class Ranker(Scanner):
+            name = "ranker"
+            def scan(self, session, **kw):
+                return [ScannerResult(instrument=MagicMock(), scanner_name=self.name,
+                                      score=s, signal="BUY")
+                        for s in (1.0, 5.0, 3.0, 9.0, 2.0)]
+
+        results = facade.custom(Ranker())
+        assert [r.score for r in results[:3]] == [9.0, 5.0, 3.0]
+        assert [r.rank for r in results[:3]] == [1, 2, 3]
+
+    def test_builtin_scanners_arm_m6_throttle(self):
+        for cls in (MomentumScanner, VolumeSpikeScanner, BreakoutScanner):
+            assert cls.name in ("momentum", "volume_spike", "breakout")
+            assert cls.rate_limit_seconds > 0, f"{cls.__name__} must arm the M6 throttle"
+        for cls in (GapScanner, ImbalanceScanner):
+            assert cls.rate_limit_seconds == 0.0, f"{cls.__name__} must stay unthrottled"
 
 
 # ============================================================ Gap Scanner

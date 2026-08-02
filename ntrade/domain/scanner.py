@@ -48,7 +48,9 @@ class Scanner(ABC):
     """Abstract base for all scanners.
 
     Subclasses implement ``scan()`` which receives the active
-    ``TradingSession`` and returns a list of ``ScannerResult``.
+    ``TradingSession`` and returns a list of ``ScannerResult``.  Ranking and
+    rate-limit throttling are handled by ``ScannerFacade._run`` (the canonical
+    path); ``scan()`` itself returns raw, unranked results.
     """
 
     name: str = "base"
@@ -58,16 +60,8 @@ class Scanner(ABC):
 
     @abstractmethod
     def scan(self, session: "TradingSession", **kw: Any) -> list[ScannerResult]:
-        """Run the scan and return ranked results."""
+        """Run the scan and return raw results (unranked)."""
         ...
-
-    def top(self, session: "TradingSession", n: int = 10, **kw: Any) -> list[ScannerResult]:
-        """Convenience: run scan and return top *n* results by score."""
-        results = self.scan(session, **kw)
-        results.sort(key=lambda r: r.score, reverse=True)
-        for i, r in enumerate(results[:n]):
-            object.__setattr__(r, "rank", i + 1)
-        return results[:n]
 
 
 class ScannerFacade:

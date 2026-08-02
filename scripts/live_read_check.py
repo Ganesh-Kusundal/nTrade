@@ -16,6 +16,24 @@ from ntrade.kernel.trading_session import TradingSession  # noqa: E402
 RESULTS: list[tuple[str, str, str]] = []
 
 
+def exit_code(results, strict: bool = False) -> int:
+    """Exit decision for a live-read run (T-034).
+
+    FAIL rows always fail the run (a crashed endpoint is never go-live safe).
+    DEGRADED rows (degenerate but non-crashing reads, e.g. lot_size 0) fail
+    closed under ``strict`` — for go-live, a DEGRADED market-data row means a
+    strategy may size wrong. Plain ``strict=False`` (diagnostics) tolerates
+    DEGRADED.
+    """
+    failed = [name for name, status, _ in results if status == "FAIL"]
+    degraded = [name for name, status, _ in results if status == "DEGRADED"]
+    if failed:
+        return 1
+    if strict and degraded:
+        return 1
+    return 0
+
+
 def check(name: str, fn, sane=None):
     """Run one read endpoint; record PASS / FAIL / DEGRADED.
 
@@ -38,7 +56,13 @@ def check(name: str, fn, sane=None):
     RESULTS.append((name, status, summary))
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(description="Live read-only check (T-034 strict mode)")
+    parser.add_argument("--strict", action="store_true",
+                        help="fail closed on DEGRADED rows (recommended for go-live)")
+    args = parser.parse_args(argv)
+
     print("== ntrade live read-only check ==")
 
     # ------------------------------------------------------------ connection
@@ -137,7 +161,7 @@ def main() -> int:
     degraded = [name for name, status, _ in RESULTS if status == "DEGRADED"]
     print(f"\nRESULT: {len(RESULTS) - len(failed)}/{len(RESULTS)} endpoints OK"
           f" ({len(degraded)} degraded: {degraded})")
-    return 1 if failed else 0
+    return exit_code(RESULTS, strict=args.strict)
 
 
 def _dhan_symbol_of(instrument) -> str:

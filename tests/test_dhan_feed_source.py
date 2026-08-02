@@ -180,23 +180,20 @@ def test_source_injects_feed_factory():
         return FakeFeed(subscriptions)
 
     src = DhanMarketFeedSource(k, symbols=[(1, 2885)], symbol_map=SYMBOL_MAP,
-                               feed_factory=factory, mode="full")
+                               feed_factory=factory)
     src.start()
     assert captured["subs"] == [(1, 2885, 21)]  # Full = 21
     assert isinstance(src._feed, FakeFeed)
     assert src._feed.started is True
 
 
-def test_source_default_mode_is_full():
-    src = DhanMarketFeedSource(symbols=[(1, 2885)])
-    assert src._mode_code() == 21
-
-
-def test_source_bad_mode_raises():
-    src = DhanMarketFeedSource(symbols=[(1, 2885)])
-    with pytest.raises(ValueError, match="mode"):
-        src.mode = "bogus"
-        src._mode_code()
+def test_feed_always_uses_full_mode_code():
+    k = _kernel()
+    src = DhanMarketFeedSource(k, symbols=[(1, 2885)],
+                               feed_factory=lambda subs: FakeFeed(subs))
+    assert src._subscriptions() == [(1, 2885, 21)]
+    assert not hasattr(src, "version")
+    assert not hasattr(src, "mode")
 
 
 def test_source_on_message_publishes_to_kernel():
@@ -261,12 +258,6 @@ def test_source_requires_dhanhq_when_no_factory(monkeypatch):
     src = DhanMarketFeedSource(symbols=[(1, 2885)], symbol_map=SYMBOL_MAP)
     with pytest.raises(ImportError, match="dhanhq"):
         src._build_feed()
-
-
-def test_source_depth_mode_rejected_under_v2():
-    src = DhanMarketFeedSource(symbols=[(1, 2885)], version="v2", mode="depth")
-    with pytest.raises(ValueError, match="v2"):
-        src._mode_code()
 
 
 def test_source_restart_after_stop_rebuilds_feed():

@@ -108,18 +108,14 @@ class DhanMarketFeedSource(MarketFeedSource):
 
     name = "dhan"
 
-    _MODE_CODES = {"ticker": 15, "quote": 17, "depth": 19, "full": 21}
-
     def __init__(self, kernel=None, *, symbols: list | None = None,
                  symbol_map: dict | None = None, feed_factory=None,
-                 dhan_context=None, version: str = "v2", mode: str = "full"):
+                 dhan_context=None):
         super().__init__(kernel)
         self.symbols = list(symbols or [])
         self.symbol_map = dict(symbol_map or {})
         self.feed_factory = feed_factory
         self.dhan_context = dhan_context
-        self.version = version
-        self.mode = mode
         self._feed = None
         self._thread = None
         self.payloads_ingested = 0
@@ -129,22 +125,8 @@ class DhanMarketFeedSource(MarketFeedSource):
         self._reconnect_called = False
 
     # ------------------------------------------------------------------ wiring
-    def _mode_code(self) -> int:
-        mode = str(self.mode).lower()
-        if mode == "depth" and str(self.version).lower().startswith("v2"):
-            # dhanhq v2 forbids the depth subscription code (19); full data
-            # (21) already carries the 5-level depth.
-            raise ValueError(
-                "mode='depth' is not supported by the dhanhq v2 MarketFeed; "
-                "use mode='full' (includes depth) instead")
-        code = self._MODE_CODES.get(mode)
-        if code is None:
-            raise ValueError(
-                f"unknown feed mode {self.mode!r}; expected ticker/quote/depth/full")
-        return code
-
     def _subscriptions(self) -> list:
-        return [(exch, sec, self._mode_code()) for exch, sec in self.symbols]
+        return [(exch, sec, 21) for exch, sec in self.symbols]
 
     def _build_feed(self):
         if self._feed is not None:
@@ -160,7 +142,7 @@ class DhanMarketFeedSource(MarketFeedSource):
             ) from exc
         context = self.dhan_context or self._context_from_env()
         feed = MarketFeed(
-            context, self._subscriptions(), version=self.version,
+            context, self._subscriptions(), version="v2",
             on_message=self._on_message, on_error=self._on_error,
             on_close=self._on_close,
         )

@@ -1,80 +1,37 @@
-# Task Group 2 Report — B-007 / F-005: backtest candles carry real OHLCV
-
-## Status: DONE
-
-## What changed
-
-### `ntrade/engines/candle_engine.py`
-- `CandleEngine.__init__` now also subscribes `context.bus.subscribe(QuoteEvent, self.on_quote)` (alongside the existing `TickEvent` subscription).
-- New `on_quote(self, event)`:
-  - Returns immediately unless `self.ctx.mode == "backtest"` — live/replay `QuoteEvent`s carry day-session OHLCV (dhan_feed.py, market_feed.py) and must not mint bar candles.
-  - Otherwise ingests the bar **authoritatively** via new `_ingest_bar(...)`: sets `open/high/low/close/volume` directly from the event fields (`close` maps to `QuoteEvent.ltp`, which the backtest producer sets to the bar close) instead of min/max accumulation.
-  - Records `self._bar_seeded[symbol] = bucket` so the paired close tick is skipped.
-- `on_tick`: now skips ingestion when `self._bar_seeded.get(event.symbol) == self._bucket(event.ts)` — the simulator's close tick is the same bar's print, and ingesting it would double-count volume. The seed naturally advances/overwrites as the bucket advances.
-- `_bar_seeded: dict[str, int]` is a `(symbol -> bucket)` last-seed key (the brief's second option), so no explicit cleanup is needed beyond overwrite-on-advance.
-- Tick-only ingestion path (`_ingest`) is unchanged; existing replay-mode candle tests are untouched by the mode gate.
-
-### `tests/test_candle_engine.py` (new, 3 tests)
-1. `test_backtest_candles_carry_real_ohlcv` — runs `BacktestSimulator(timeframe="5m", initial_cash=100_000.0, statutory=None)` over a 20-bar `_ohlcv` frame (per-bar `open`/`close` differ by 1.0, `high`/`low` by 3.0) and asserts all 20 closed candles carry the real bar values: `open=100+i`, `high=102+i`, `low=99+i`, `close=101+i`, `volume=1000`, and `open != close` (not degenerate). Was failing before the fix (open=high=low=close).
-2. `test_backtest_indicators_populated_with_real_candles` — after the run, asserts `instrument._indicators` holds `rsi_14`, `atr_14`, `stx_10_3`, and `atr_14 ≈ 3.0` (the real 3.0 high-low range; degenerate candles collapse ATR to ~1.0). Was failing before the fix.
-3. `test_candle_engine_ignores_live_quote_events` — a `QuoteEvent` published in `mode="replay"` must produce zero candles (guard for the mode gate). Passes both before and after (regression guard).
-
-## Checklist verification (against the brief)
-- [x] `CandleEngine.__init__` subscribes `QuoteEvent` → `on_quote`.
-- [x] `on_quote` gates on `self.ctx.mode == "backtest"`, ingests bar authoritatively, records `_bar_seeded[symbol] = bucket`.
-- [x] `on_tick` skips when the tick's bucket was bar-seeded; seed advances with the bucket.
-- [x] Failing tests written first (confirmed red), then impl, then green.
-- [x] IndicatorEngine populates `rsi_14`/`atr_14`/`stx_10_3` after ≥10 real bars.
-- [x] Tick-only tests stay green (`test_market_engine_projects_quote`, `test_candle_engine_closes_candle_on_next_bucket`, `test_candle_engine_flush_closes_partial`) — replay mode, untouched.
-- [x] `test_backtest_simulator_produces_equity_curve` still passes (`BuySellOnCandles` trades on candle count + `event.close`, both unchanged).
-- [x] Full suite green: `./.venv/bin/python -m pytest -q`.
-
-## Test commands and output
-
-TDD — failing test first:
-```
-$ ./.venv/bin/python -m pytest -q tests/test_candle_engine.py
-FAILED tests/test_candle_engine.py::test_backtest_candles_carry_real_ohlcv
-FAILED tests/test_candle_engine.py::test_backtest_indicators_populated_with_real_candles
-2 failed, 1 passed in 0.33s
-```
-
-After implementation:
-```
-$ ./.venv/bin/python -m pytest -q tests/test_candle_engine.py
-...                                                                      [100%]
-3 passed in 0.30s
-```
-
-Full suite:
-```
-$ ./.venv/bin/python -m pytest -q
-<…>
-[100%]
-621 passed in 5.66s
-```
-(618 baseline + 3 new tests; no regressions.)
+# Task 2 (T-012) — Implementation Report
 
 ## Commit
-- `c215df6` — `backtest candles carry real OHLCV; skip paired close tick (B-007, F-005)` (only `ntrade/engines/candle_engine.py` + `tests/test_candle_engine.py` staged; pre-existing uncommitted dhan*.py / kanban / scratch changes left untouched).
+- Hash: `7fe832ac176274b5e00a369bd171c0e1bb597f8c`
+- Subject: `T-012 route DhanBroker data calls through DhanTransport`
 
-## Concerns
-- `QuoteEvent` has no `close` field; the bar close is taken from `QuoteEvent.ltp`, which the backtest producer sets to the bar close. If another backtest producer ever publishes `ltp != close`, candles would carry the wrong close. Not an issue for the current simulator (simulator.py:130 sets `ltp=close`).
-- In backtest, the bar's `QuoteEvent` is authoritative for its whole bucket: any additional ticks in that bucket are skipped. The current simulator publishes exactly one quote + one tick per bar, so this is correct and avoids volume double-counting. A backtest source that publishes *multiple* trades per bar would undercount volume (by design of this fix — the bar is the unit).
-- The report's assertion tolerance `atr_14 ≈ 3.0 ± 0.5` accommodates pandas ewm warm-up (first row's `prev_close` is NaN), which lands ATR at ~2.93, not exactly 3.0.
-
-## Review fix round 1
-
-Applied reviewer findings for F-005 (documentation only, no behavior change):
-
-- `ntrade/engines/candle_engine.py::on_tick` — expanded the skip comment to a short block above the `_bar_seeded` check, documenting that in backtest mode a bar's `QuoteEvent` is the authoritative volume unit for its bucket and that extra same-bucket ticks (the paired close tick today, and any future multi-trade backtest source) are intentionally skipped to avoid volume double-counting.
-- `tests/test_candle_engine.py` — removed the unused `TickEvent` import (only `QuoteEvent` is used).
-
-Covering tests:
+## `git show --stat HEAD`
 ```
-$ ./.venv/bin/python -m pytest -q tests/test_candle_engine.py tests/test_kernel_engines.py tests/test_replay_backtest.py
-......................                                                   [100%]
-22 passed in 0.63s
+ ntrade/brokers/dhan.py           | 517 ++++-----------------------------------
+ ntrade/brokers/dhan_mapper.py    |  11 +-
+ ntrade/brokers/dhan_transport.py |  13 +-
+ tests/test_dhan_broker.py        |  36 +--
+ tests/test_gap_closure.py        |   8 +-
+ tests/test_live_execution.py     |   2 +
+ tests/test_mission_gaps.py       |   4 +
+ tests/test_options_analytics.py  |   4 +-
+ 8 files changed, 103 insertions(+), 492 deletions(-)
 ```
 
-Commit: `be18e1d76826ecceca75c55b11fa74104db66135` — `F-005 review: document bar-authoritative tick-skip; drop unused import` (only `ntrade/engines/candle_engine.py` + `tests/test_candle_engine.py` staged).
+## Full-suite pass count
+
+`./.venv/bin/python -m pytest -q` → **625 passed** (matches the 625 baseline; no test-count drift).
+
+## Test files changed and why
+
+1. **tests/test_dhan_broker.py** — `make_broker` now wires `broker._transport = DhanTransport(broker.tsl)`; `test_get_quote_raises_on_failure` match changed to `"LTP fetch failed"`; three `_dhan_timeframe` imports switched to exported `DhanMapper.map_timeframe`.
+2. **tests/test_gap_closure.py** — `make_broker` wires `_transport`; local `_to_records` import switched to `dhan_mapper.to_records`.
+3. **tests/test_options_analytics.py** — `_chain_from_dhan_df` import/call switched to exported `dhan_mapper.chain_from_dhan_df`.
+4. **tests/test_mission_gaps.py** — both `test_dhan_get_instrument_metadata_*` tests wire `_transport` (local DhanTransport import added).
+5. **tests/test_live_execution.py** (NOT one of the four listed in the brief) — its `make_broker` stubs `tsl` with no `_transport`; the newly-routed `get_positions`/`get_balance` relied on `self._transport.get_positions()` and raised `AttributeError: 'NoneType'`. Wired `broker._transport = DhanTransport(broker.tsl)` (the minimal fix the brief anticipated). **This is the ONLY other test file beyond the four that needed `_transport` wiring** — all removal/route touches were confined to the intended four.
+
+## Deviations / surprises
+
+- **Fix in `dhan_transport.py` (module code, allowed):** `get_instrument_metadata` and `blocks_day` referenced `DhanMapper.DAY_BLOCK_MAPPED_EXCHANGE`, but that constant is module-level in `dhan_mapper.py`, not a class attribute. This raised `AttributeError`, which the `except` swallowed and returned the wrong default (`True` for "blocks day" on NFO index options; `{}` for metadata). This was a pre-existing latent bug that only became visible once the broker routed these reads through the transport. Fixed by importing the module-level `DAY_BLOCK_MAPPED_EXCHANGE` and referencing it directly. (Otherwise `test_get_historical_day_nfo_index_option_uses_intraday_wrapper` and `test_dhan_get_instrument_metadata_from_file` failed.)
+2. **Commit includes `tests/test_live_execution.py`** — the brief's `git add` list only named the four test files, but that factory was legitimately broken by the routing and required the minimal wiring. Added explicitly; nothing else from the dirty working tree was staged. All other uncommitted prior-batch files were left untouched (verified via `git show --stat HEAD` — exactly 8 files).
+3. Order placement/cancel/modify/status/detail/executed-price methods were left on `self.tsl` per brief (verified: every remaining `self.tsl.` call is an order/execution path).
+4. Days `asof`/`now` parity applied to `DhanMapper.filter_history` (in `dhan_mapper.py`) and passed as `asof=self._ts()` from the three transport history methods; `get_depth` gained a `now` kwarg passed to `normalize_depth`.

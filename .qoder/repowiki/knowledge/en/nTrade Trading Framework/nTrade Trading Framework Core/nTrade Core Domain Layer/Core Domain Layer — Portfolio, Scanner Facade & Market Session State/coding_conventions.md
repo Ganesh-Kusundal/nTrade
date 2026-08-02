@@ -1,0 +1,5 @@
+- Domain value objects are declared as `@dataclass` (often `frozen=True` for results like `ScannerResult`) with `field(default_factory=dict)` for mutable fields such as `metadata` and `indicator_values`.
+- Composite domain objects (`Portfolio`, `Account`) provide both a `from_broker` classmethod and an instance `refresh` method that rebuild themselves from an injected `BrokerAdapter`, keeping live data separate from constructed snapshots.
+- External dependencies (`BrokerAdapter`, `Instrument`, `TradingSession`) are imported only inside `if TYPE_CHECKING:` blocks to prevent circular imports between domain, kernel, and brokers layers.
+- Each domain object exposes an `as_dict()` method returning a plain dict representation, used consistently by `Position`, `Holding`, `Portfolio`, and `Account` for serialization.
+- Pluggable components implement a `name` class attribute and are registered into the facade via explicit iteration over known classes rather than reflection or configuration files.

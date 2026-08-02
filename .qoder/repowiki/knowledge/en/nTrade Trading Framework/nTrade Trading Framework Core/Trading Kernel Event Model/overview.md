@@ -1,0 +1,1 @@
+Immutable, hashable dataclass events that form the canonical communication protocol between market feed, strategy, risk, OMS, and portfolio engines in the nTrade trading kernel.

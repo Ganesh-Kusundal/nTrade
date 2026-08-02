@@ -1,1 +1,0 @@
-None — the module is imported directly. The `TradingKernel` constructor accepts interchangeable `bus`, `clock`, and `execution` targets, so tests typically inject a `ReplayClock` and an `EventStore` to enable deterministic replay.

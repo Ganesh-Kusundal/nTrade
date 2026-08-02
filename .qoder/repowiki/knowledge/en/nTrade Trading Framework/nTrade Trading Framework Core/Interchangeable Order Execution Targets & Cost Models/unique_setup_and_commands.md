@@ -1,0 +1,1 @@
+No build or setup steps; the module is imported directly. `STATUTORY_DEFAULT` sentinel controls whether Indian statutory costs are enabled (default) or disabled (pass `None` for zero-cost mode).

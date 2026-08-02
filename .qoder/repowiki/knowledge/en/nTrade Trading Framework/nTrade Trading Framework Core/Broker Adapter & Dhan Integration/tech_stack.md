@@ -1,0 +1,1 @@
+Python ABCs for the adapter pattern; pandas DataFrames for historical data; optional `Dhan_Tradehull` library imported lazily so non-Dhan installs succeed; dotenv for `.env` credential loading; threading.Timer for proactive token refresh; RetryPolicy from `ntrade.execution.retry` for transient failure handling.

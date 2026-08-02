@@ -1,0 +1,1 @@
+Importing `ntrade` registers default brokers (paper, dhan if available) and exposes the full SDK surface; no build step is required beyond installing dependencies.

@@ -1,1 +1,0 @@
-No build or test commands are defined in this leaf module; it is a pure Python package consumed by `ntrade.kernel` and `ntrade.brokers`. Instrument instances can be created without a broker adapter (broker is optional/lazy), enabling unit testing of domain logic in isolation.

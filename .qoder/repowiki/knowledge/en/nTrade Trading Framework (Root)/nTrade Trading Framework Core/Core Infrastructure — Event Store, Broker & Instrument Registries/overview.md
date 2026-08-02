@@ -1,1 +1,0 @@
-Provides the append-only event store for deterministic replay and crash recovery, plus the legacy Market facade, instrument factory, and thread-safe broker/instrument registries that underpin nTrade's object lifecycle.

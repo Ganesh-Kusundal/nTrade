@@ -1,1 +1,0 @@
-Python trading framework that wires domain models, an event-driven kernel, broker adapters, execution pipelines, market feeds, and backtest/replay engines into a unified zero-parity trading session.

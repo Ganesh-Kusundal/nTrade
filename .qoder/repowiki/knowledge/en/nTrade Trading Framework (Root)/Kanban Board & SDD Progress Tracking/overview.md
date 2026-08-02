@@ -1,1 +1,0 @@
-Generated metadata and progress tracking for the nTrade project, including a kanban board of tasks/bugs/debt/risks, scan indices, and Superpowers SDD task completion logs.

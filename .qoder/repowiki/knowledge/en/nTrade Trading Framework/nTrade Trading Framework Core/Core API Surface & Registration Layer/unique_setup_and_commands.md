@@ -1,0 +1,1 @@
+Default brokers (`dhan`, `paper`) are registered lazily on first `BrokerRegistry.get()` call; optional broker packages may be absent and are silently skipped via `try/except ImportError`. Calling `register_default_brokers()` forces eager registration for backward compatibility.

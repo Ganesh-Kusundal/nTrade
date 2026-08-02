@@ -1,0 +1,4 @@
+- Public API is kept minimal and re-exported through `__init__.py` using an explicit `__all__` list.
+- Optional dependencies (fill policy, clock, kernel, instrument) are injected via keyword arguments with sensible defaults, enabling both convenience construction and full override.
+- Stateful accumulators used during `run()` (e.g. `_curve_rows`, `_rolled`, `_futures_costs_total`) are reset at the start of each run rather than on construction.
+- Monetary values are rounded to a fixed number of decimals (2 for equity/prices, 4 for costs) at every deduction point to keep PnL deterministic.

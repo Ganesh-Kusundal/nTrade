@@ -1,0 +1,6 @@
+- Each source subclass defines a `name` string attribute identifying the feed type, set in the class body rather than passed via constructor.
+- Sources accept an optional `kernel` argument and expose an `attach(kernel)` method returning `self`, keeping the kernel reference lazy and injectable.
+- All market data is published through `self.bus.publish(...)` using canonical event types from `ntrade.events.market`, never calling the kernel directly.
+- External dependencies (e.g. `dhanhq`) are imported inside methods or guarded by try/except ImportError, so the module imports cleanly without them installed.
+- Pure transformation logic (payload-to-events mapping) is separated into top-level functions like `dhan_payload_to_events` so it can be unit-tested independently of network I/O.
+- Background producers use a `_stopping` flag or `running` property to coordinate graceful shutdown, and threads are marked as daemon threads.

@@ -1,5 +1,0 @@
-- All event types are `@dataclass(frozen=True, kw_only=True)` subclasses of `Event`, carrying a `ts: datetime` sourced exclusively from `TradingClock.now()` rather than `datetime.now()`.
-- Cross-subsystem communication goes only through `EventBus.publish` / `subscribe`; no direct imports between sibling engines or modules.
-- Thread safety is enforced by wrapping mutable state access with `threading.RLock` (used in `EventBus`, `TradingContext`, and per-operation locks in engines).
-- Handler callbacks are wrapped in try/except that logs errors but never re-raises, ensuring one faulty subscriber cannot crash the bus dispatch loop.
-- Kernel mode variants (live/replay/backtest) are expressed by swapping concrete `TradingClock` and execution target instances rather than branching on mode strings inside core logic.

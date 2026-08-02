@@ -1,71 +1,47 @@
-# Task Group 1 report — B-006 / F-004: live broker fills pay commission + statutory
+# Task 1 Report (T-020) — Remove fake streaming no-ops from the capability surface
 
-**Status:** DONE
-
-**Scope:** `BrokerExecution._emit_fill` now computes commission + statutory exactly like
-`SimulatedExecution`; the live kernel target threads the session's `statutory` param, so
-paper/backtest PnL converges on live.
+**Status:** DONE_WITH_CONCERNS
 
 ## What changed
 
-### `ntrade/execution/broker_executor.py`
-- Imported `CommissionModel`, `FlatCommission`, `IndianStatutoryCosts`, `STATUTORY_DEFAULT`,
-  `resolve_statutory` from `ntrade.execution.costs`.
-- `__init__(self, context, broker, *, commission: CommissionModel | None = None,
-  statutory=STATUTORY_DEFAULT)` — mirrors `SimulatedExecution.__init__`:
-  `self.commission = commission or FlatCommission(0.0)` and
-  `self.statutory: IndianStatutoryCosts | None = resolve_statutory(statutory)`
-  (`None` → zero-cost opt-out, `STATUTORY_DEFAULT` → `IndianStatutoryCosts()`). New params are
-  keyword-only with defaults, so all three existing construction sites keep working.
-- `_emit_fill`: after computing `price`, resolves the instrument via
-  `self.ctx.instrument(intent.symbol)` (guarded for `None` → falls back to the configured
-  model's default product schedule, never crashes) and computes
-  `notional = price * new_qty`, `commission = round(self.commission.apply(notional), 4)`,
-  `statutory = 0.0 if self.statutory is None else round(model.total_cost(notional, intent.side, brokerage=commission), 4)`.
-  Both values are passed into the `OrderFilledEvent` (previously left at the `0.0` defaults).
+- `ntrade/brokers/dhan.py` — deleted the `_market_feed` and `_order_update_stream`
+  module-level functions (formerly lines 883-898) together with their
+  `@capability("market_feed", ...)` / `@capability("order_update_stream", ...)`
+  decorators. Verified via `grep -rn` that `subscribe`/`LiveStream`/`market_feed`/
+  `order_update_stream` are now entirely unreferenced in `dhan.py`; no imports
+  needed removal (the `subscribe(...)` calls were method calls on the base
+  `BrokerAdapter`, not imports).
+- `tests/test_dhan_broker.py` — appended `test_no_fake_streaming_capabilities`
+  exactly as specified in the brief.
 
-### `ntrade/kernel/session.py`
-- `BrokerExecution(self.ctx, broker)` → `BrokerExecution(self.ctx, broker, statutory=statutory)`
-  (session already defaults `statutory=STATUTORY_DEFAULT`, so live now charges by default exactly
-  like the sim target).
+## Test commands and output
 
-### `tests/test_live_execution.py`
-- New failing-first test `test_live_broker_fill_charges_statutory_by_default`: live kernel with a
-  fill-on-poll broker emits `OrderFilledEvent` with `commission == 0.0` (FlatCommission default)
-  and `statutory > 0.0` under default wiring; also asserts the live statutory charge matches the
-  simulated target for the same notional.
-- New failing-first test `test_broker_execution_flat_commission_statutory_none_opt_out`:
-  `BrokerExecution(ctx, broker, commission=FlatCommission(5.0), statutory=None)` emits
-  `commission == 5.0` and `statutory == 0.0` (zero-cost opt-out preserved).
-- Updated `test_live_kernel_zero_parity_with_simulated`: passes `statutory=None` to the live
-  kernel too, so both sides share the zero-cost setting and the parity assertions (balance,
-  fill price/qty, position) remain meaningful.
+1. Failing-test step (`./.venv/bin/python -m pytest tests/test_dhan_broker.py::test_no_fake_streaming_capabilities -q`):
+   `1 passed in 0.37s` — **PASS on first run, before deletion** (see concerns).
+2. Post-deletion verification (same command): `1 passed in 0.36s`.
+3. Full suite (`./.venv/bin/python -m pytest -q`): **625 passed in 6.12s**
+   (baseline 624 + the new test; no failures).
 
-## Verification
+## Commit
 
-Both new tests were written first and observed failing (statutory `0.0`; `TypeError: unexpected
-keyword argument 'commission'`), then the implementation made them pass.
+`d0908dc` — `T-020 remove fake streaming no-op capabilities`
 
-- Targeted: `./.venv/bin/python -m pytest -q tests/test_live_execution.py tests/test_broker_executor.py tests/test_findings_batch3.py`
-  → `33 passed in 0.33s`
-- Full suite: `./.venv/bin/python -m pytest -q` → `618 passed in 5.66s`
-  (baseline 616 + the 2 new tests; `test_broker_executor.py` stale-eviction and
-  `test_findings_batch3.py` M2 tests still pass — they construct `BrokerExecution(ctx, broker)`
-  with default args and assert only on `open_orders()`).
-
-## Commits
-
-- `38d5e61` — "H6 live broker fills pay commission + statutory; live/sim parity"
-
-Only the three task files were staged/committed (`ntrade/execution/broker_executor.py`,
-`ntrade/kernel/session.py`, `tests/test_live_execution.py`). Pre-existing uncommitted changes to
-`ntrade/brokers/dhan*.py` and the kanban/sdd docs were left untouched and unstaged.
+Note: the commit also carried the pre-staged `check_connection.py` deletion that
+was already in the index from the prior batch (3 files in commit); I staged only
+the two brief-listed files via explicit `git add ntrade/brokers/dhan.py
+tests/test_dhan_broker.py`.
 
 ## Concerns
 
-- None blocking. Live statutory on the fill event now flows into `PortfolioEngine.on_filled`
-  (portfolio_engine.py:51 `charges = event.commission + event.statutory`), which is what makes
-  live balance PnL converge on paper. The delivery-detection uplift that the simulator applies to
-  overnight equity round trips (simulator.py:105-126) is intentionally not mirrored here — live
-  fills arrive one leg at a time and the broker's own payout is authoritative; flagging for
-  awareness only.
+- **The brief's "failing test" expectation was incorrect.** The two fake streaming
+  functions are **module-level** `@capability`-decorated functions, not `DhanBroker`
+  class attributes, so `hasattr(DhanBroker, "_market_feed")` is False both before
+  and after deletion. The test as specified in the brief is therefore vacuous —
+  it passed on first run and never actually guarded the deletion. The deletion is
+  still verified by the repo-wide grep (zero references remain) and the full suite,
+  but the test will not catch a regression. A meaningful test would assert the
+  capability names are absent from `registered_capabilities()` (or that
+  `instrument.broker.available()` excludes them). I did not alter the test beyond
+  the brief's verbatim text per the "don't modify beyond the brief" rule.
+- `check_connection.py` (pre-staged deletion) rode along into the commit because it
+  was already in the index when this task started.

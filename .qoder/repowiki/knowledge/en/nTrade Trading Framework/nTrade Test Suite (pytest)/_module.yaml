@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: tests
+title: nTrade Test Suite (pytest)
+scope:
+    - tests/
+source_files: []
+depends_on: []
+related_to:
+    - path: docs_plans
+    - path: ntrade_core/brokers
+    - path: ntrade_core/kernel
+    - path: ntrade_core/sources

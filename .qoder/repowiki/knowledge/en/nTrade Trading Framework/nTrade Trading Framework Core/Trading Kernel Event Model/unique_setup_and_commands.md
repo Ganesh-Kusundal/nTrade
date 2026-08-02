@@ -1,0 +1,1 @@
+No build or test commands are required; the module is a pure Python package imported via `from ntrade.events import <EventClass>` after installing the ntrade package.

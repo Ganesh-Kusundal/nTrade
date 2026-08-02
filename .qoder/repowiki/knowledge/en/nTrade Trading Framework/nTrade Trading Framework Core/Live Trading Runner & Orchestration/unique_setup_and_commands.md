@@ -1,0 +1,1 @@
+`build_source(kernel, feed='synth', frame=...)` requires a non-empty pandas OHLCV DataFrame for the synth path; the live path passes through `live_kwargs` to `DhanMarketFeedSource`. `measure_tick_throughput` registers an `Equity` instrument under the given symbol before publishing ticks.

@@ -1,206 +1,197 @@
-diff --git a/ntrade/domain/analytics/indicators.py b/ntrade/domain/analytics/indicators.py
-index d558bf0..23cf4d4 100644
---- a/ntrade/domain/analytics/indicators.py
-+++ b/ntrade/domain/analytics/indicators.py
-@@ -171,20 +171,21 @@ def compute_bundle(df: pd.DataFrame, **params) -> dict[str, float]:
-     def _series_last(name: str, series_fn, *, store_key: str | None = None):
-         def _run():
-             s = series_fn()
-             v = s.iloc[-1]
-             return float(v)
-         _capture(name, _run, store_key=store_key)
+b2f8f11 T-016 arm RateLimiter in transport and feed hot paths
+=== STAT ===
+ ntrade/brokers/dhan.py           |  7 ++++++-
+ ntrade/brokers/dhan_transport.py |  9 ++++++++-
+ ntrade/sources/dhan_feed.py      |  3 +++
+ tests/test_retry.py              | 11 +++++++++++
+ 4 files changed, 28 insertions(+), 2 deletions(-)
+=== DIFF ===
+diff --git a/ntrade/brokers/dhan.py b/ntrade/brokers/dhan.py
+index 0a9140e..fb1509b 100644
+--- a/ntrade/brokers/dhan.py
++++ b/ntrade/brokers/dhan.py
+@@ -26,16 +26,17 @@ from ntrade.brokers.dhan_auth_provider import DhanAuthProvider
+ from ntrade.brokers.dhan_mapper import (
+     DhanMapper,
+     chain_from_dhan_df,
+     _first_float,
+     _first_int,
+     _first_str,
+ )
+ from ntrade.brokers.dhan_transport import DhanTransport
++from ntrade.execution.retry import RateLimiter
+ from ntrade.domain.market.candles import CandleSeries
+ from ntrade.domain.market.depth import MarketDepth
+ from ntrade.domain.market.quote import Quote
+ from ntrade.domain.orders.book import OrderBook, TradeBook
+ from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
  
-     _series_last("rsi", lambda: rsi(df, rsi_period), store_key=f"rsi_{rsi_period}")
-     _series_last("atr", lambda: atr(df, atr_period), store_key=f"atr_{atr_period}")
-     _series_last("vwap", lambda: vwap(df), store_key="vwap")
-+    _capture("avg_volume", lambda: float(df["volume"].astype(float).mean()))
+ if TYPE_CHECKING:
+     from ntrade.domain.instruments.base import Instrument
+@@ -59,17 +60,21 @@ class DhanBroker(BrokerAdapter):
+         self._transport: DhanTransport | None = None
+         self._mapper = DhanMapper()
+         self.tsl = None  # backward compat — capabilities reference broker.tsl
+         if connect:
+             self.connect()
  
-     def _supertrend_last():
-         st = supertrend(df, st_period, st_mult)
-         return st[f"STX_{st_period}_{st_mult}"].iloc[-1]
-     _capture("supertrend", _supertrend_last, store_key=f"stx_{st_period}_{st_key_mult}")
+     def connect(self) -> "DhanBroker":
+         self.tsl = self._auth.authenticate()
+-        self._transport = DhanTransport(self.tsl, clock=getattr(self, "_clock", None))
++        self._rate_limiter = RateLimiter(calls_per_second=10.0)  # Dhan API ceiling
++        self._transport = DhanTransport(
++            self.tsl, rate_limiter=self._rate_limiter,
++            clock=getattr(self, "_clock", None),
++        )
+         self._connected = True
+         return self
  
-     for period in ema_periods:
-         _series_last(f"ema{int(period)}", lambda p=period: ema(df, int(p)),
-                      store_key=f"ema_{int(period)}")
-     for period in sma_periods:
-diff --git a/ntrade/scanners/builtin.py b/ntrade/scanners/builtin.py
-index 65160fb..732c6be 100644
---- a/ntrade/scanners/builtin.py
-+++ b/ntrade/scanners/builtin.py
-@@ -121,27 +121,27 @@ class MomentumScanner(Scanner):
-     name = "momentum"
+     def _ensure_tsl(self):
+         """Ensure the token is fresh before critical operations.
  
-     def scan(self, session: "TradingSession", *, rsi_threshold: float = 60.0,
-              min_change_pct: float = 1.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
-         results: list[ScannerResult] = []
-         for inst in _instruments(session):
-             ltp = _safe_ltp(inst)
-             if not ltp:
-                 continue
-             indicators = _safe_indicators(inst)
--            rsi = indicators.get("rsi")
-+            rsi = indicators.get("rsi_14")
-             if rsi is not None and rsi >= rsi_threshold:
-                 results.append(ScannerResult(
-                     instrument=inst, scanner_name=self.name,
-                     score=rsi, signal="BUY",
-                     matched_conditions=("rsi_momentum",),
--                    indicator_values={"rsi": rsi},
-+                    indicator_values={"rsi_14": rsi},
-                     timestamp=now or datetime.now(),
-                 ))
-                 continue
-             prev = inst._quote.prev_close
-             if prev and prev > 0:
-                 change = (ltp - prev) / prev * 100
-                 if abs(change) >= min_change_pct:
-                     signal = "BUY" if change > 0 else "SELL"
-                     results.append(ScannerResult(
-                         instrument=inst, scanner_name=self.name,
-@@ -151,61 +151,61 @@ class MomentumScanner(Scanner):
-                         timestamp=now or datetime.now(),
-                     ))
-         return results
+         Mirrors testTrade's pattern where DhanHttpClient calls
+         token_manager.get_token() on every HTTP request. This checks
+diff --git a/ntrade/brokers/dhan_transport.py b/ntrade/brokers/dhan_transport.py
+index beacd9a..cb5254c 100644
+--- a/ntrade/brokers/dhan_transport.py
++++ b/ntrade/brokers/dhan_transport.py
+@@ -49,20 +49,21 @@ class BrokerDataError(RuntimeError):
+ class DhanTransport:
+     """Wraps Tradehull API calls with retry and normalization.
  
- 
- # ============================================================== Breakout
- 
- class BreakoutScanner(Scanner):
-     """Detect instruments breaking above recent highs or below recent lows.
- 
--    Uses ``supertrend`` or ``atr`` indicators if available; otherwise
--    compares LTP against a simple high/low range from the quote.
-+    Uses ``stx_10_3`` (supertrend) or ``atr_14`` indicators if available;
-+    otherwise compares LTP against a simple high/low range from the quote.
+     Constructed with an authenticated Tradehull instance; the DhanBroker
+     composes this alongside DhanAuthProvider and DhanMapper.
      """
  
-     name = "breakout"
+     def __init__(self, tsl: Any, retry_policy: RetryPolicy | None = None,
+-                 clock=None):
++                 rate_limiter=None, clock=None):
+         self._tsl = tsl
+         self._mapper = DhanMapper()
+         self._retry_policy = retry_policy or RetryPolicy()
++        self._rate_limiter = rate_limiter  # optional shared Dhan API rate ceiling
+         self._clock = clock  # optional TradingClock — zero-parity timestamps
  
-     def scan(self, session: "TradingSession", *, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
-         results: list[ScannerResult] = []
-         for inst in _instruments(session):
-             ltp = _safe_ltp(inst)
-             if not ltp:
-                 continue
-             indicators = _safe_indicators(inst)
--            supertrend = indicators.get("supertrend")
-+            stx = indicators.get("stx_10_3")
-             high = inst._quote.high or 0
-             low = inst._quote.low or 0
-             conditions: list[str] = []
-             score = 0.0
-             # Supertrend-based breakout
--            if supertrend is not None and supertrend > 0:
--                if ltp > supertrend:
-+            if stx is not None and stx > 0:
-+                if ltp > stx:
-                     conditions.append("above_supertrend")
--                    score = (ltp - supertrend) / supertrend * 100
-+                    score = (ltp - stx) / stx * 100
-             # High/low breakout
-             elif high > 0 and low > 0:
-                 range_ = high - low
-                 if range_ > 0:
-                     if ltp >= high:
-                         conditions.append("high_breakout")
-                         score = (ltp - high) / range_ * 100
-                     elif ltp <= low:
-                         conditions.append("low_breakout")
-                         score = (low - ltp) / range_ * 100
-             if not conditions:
-                 continue
-             signal = "BUY" if "low_breakout" not in conditions else "SELL"
-             results.append(ScannerResult(
-                 instrument=inst, scanner_name=self.name,
-                 score=round(score, 4), signal=signal,
-                 matched_conditions=tuple(conditions),
--                indicator_values={k: indicators.get(k, 0) for k in ("supertrend", "atr") if indicators.get(k)},
-+                indicator_values={k: indicators.get(k, 0) for k in ("stx_10_3", "atr_14") if indicators.get(k)},
-                 timestamp=now or datetime.now(),
-             ))
-         return results
+     def _ts(self, now=None):
+         """Resolve a timestamp: explicit ``now`` > injected clock > wall clock."""
+         if now is not None:
+             return now
+         if self._clock is not None:
+             return self._clock.now()
+@@ -71,28 +72,34 @@ class DhanTransport:
+     @property
+     def tsl(self) -> Any:
+         return self._tsl
  
+     @tsl.setter
+     def tsl(self, value: Any) -> None:
+         self._tsl = value
  
- # ============================================================== Imbalance
++    def _throttled(self) -> None:
++        """Respect the shared Dhan API rate ceiling, if configured."""
++        if self._rate_limiter is not None:
++            self._rate_limiter.wait()
++
+     # ---- market data -------------------------------------------------------
  
- class ImbalanceScanner(Scanner):
-     """Detect order-book imbalance (bid vs ask pressure).
+     def get_ltp(self, symbol: str) -> float:
+         """Fetch LTP with retry (Dhan's endpoint is flaky ~50% of calls).
  
-diff --git a/tests/test_indicators.py b/tests/test_indicators.py
-index d46f202..2cd41aa 100644
---- a/tests/test_indicators.py
-+++ b/tests/test_indicators.py
-@@ -63,20 +63,22 @@ def test_supertrend_down_on_downtrend():
-     st = supertrend(df, atr_period=10, multiplier=3)
-     assert st["STX_10_3"].iloc[-1] == "down"
+         Raises :class:`BrokerDataError` when every retry fails or the broker
+         returns a zero price — a 0.0 LTP is indistinguishable from "no data"
+         and would silently corrupt downstream PnL/risk (B-005 contract).
+         """
+         names = [symbol]
  
+         def _try_ltp() -> float:
++            self._throttled()
+             data = self._tsl.get_ltp_data(names=names)
+             candidate = float(data.get(names[0], 0.0) or 0.0)
+             if candidate > 0:
+                 return candidate
+             raise ValueError("LTP is 0")
  
- def test_compute_bundle(df):
-     bundle = compute_bundle(df)
-     assert "rsi_14" in bundle
-     assert "atr_14" in bundle
-     assert "vwap" in bundle
-     assert "stx_10_3" in bundle
-+    assert "avg_volume" in bundle
-+    assert bundle["avg_volume"] == 1000.0
+         try:
+             return self._retry_policy.execute(_try_ltp)
+diff --git a/ntrade/sources/dhan_feed.py b/ntrade/sources/dhan_feed.py
+index 1e787a4..b65e67f 100644
+--- a/ntrade/sources/dhan_feed.py
++++ b/ntrade/sources/dhan_feed.py
+@@ -12,16 +12,17 @@ invariant).
+ from __future__ import annotations
+ 
+ import time
+ import logging
+ 
+ from ntrade.events.market import DepthEvent, QuoteEvent, TickEvent
+ from ntrade.sources.market_feed import MarketFeedSource
+ from ntrade.events.lifecycle import FeedDisconnectedEvent
++from ntrade.execution.retry import RateLimiter
+ 
+ _logger = logging.getLogger("ntrade.feed.dhan")
  
  
- def test_sma():
-     df = pd.DataFrame({
-         "timestamp": pd.date_range("2026-01-01", periods=10, freq="5min"),
-         "open": [100] * 10, "high": [102] * 10, "low": [98] * 10,
-         "close": list(range(100, 110)), "volume": [1000] * 10,
-     })
-     s = sma(df, period=5)
-     assert len(s) == 10
-diff --git a/tests/test_scanner.py b/tests/test_scanner.py
-index 1b6e478..93e27f6 100644
---- a/tests/test_scanner.py
-+++ b/tests/test_scanner.py
-@@ -235,21 +235,21 @@ class TestVolumeSpikeScanner:
-     def test_below_threshold(self):
-         inst = _make_instrument("REL", ltp=2500, volume=50_000)
-         session = _make_session_with_instruments(inst)
-         assert VolumeSpikeScanner().scan(session, min_volume=100_000) == []
+ def _to_float(value) -> float:
+     try:
+         return float(value or 0.0)
+     except (TypeError, ValueError):
+@@ -119,16 +120,17 @@ class DhanMarketFeedSource(MarketFeedSource):
+         self.dhan_context = dhan_context
+         self.version = version
+         self.mode = mode
+         self._feed = None
+         self._thread = None
+         self.payloads_ingested = 0
+         self._timer = time.monotonic
+         self._sleep = time.sleep
++        self._reconnect_limiter = RateLimiter(calls_per_second=0.5)
  
+     # ------------------------------------------------------------------ wiring
+     def _mode_code(self) -> int:
+         mode = str(self.mode).lower()
+         if mode == "depth" and str(self.version).lower().startswith("v2"):
+             # dhanhq v2 forbids the depth subscription code (19); full data
+             # (21) already carries the 5-level depth.
+             raise ValueError(
+@@ -169,16 +171,17 @@ class DhanMarketFeedSource(MarketFeedSource):
+         from ntrade.brokers.dhan_auth import get_tradehull
  
- # ============================================================ Momentum
+         tsl = get_tradehull()
+         return DhanContext(tsl.ClientCode, tsl.token_id)
  
- class TestMomentumScanner:
-     def test_rsi_momentum(self):
--        inst = _make_instrument("INFY", ltp=1500, indicators={"rsi": 72.0})
-+        inst = _make_instrument("INFY", ltp=1500, indicators={"rsi_14": 72.0})
-         session = _make_session_with_instruments(inst)
-         results = MomentumScanner().scan(session, rsi_threshold=60.0)
-         assert len(results) == 1
-         assert "rsi_momentum" in results[0].matched_conditions
+     # ------------------------------------------------------------------ feed
+     def start(self) -> None:
+         """Start the websocket in a background thread (non-blocking)."""
++        self._reconnect_limiter.wait()
+         feed = self._build_feed()
+         if self._thread is not None and self._thread.is_alive():
+             return
+         self._thread = feed.start()
+         self.running = True
  
-     def test_price_change_fallback(self):
-         inst = _make_instrument("INFY", ltp=1600, prev_close=1500)  # 6.67%
-         session = _make_session_with_instruments(inst)
-         results = MomentumScanner().scan(session, min_change_pct=1.0)
-         assert len(results) == 1
-@@ -262,21 +262,21 @@ class TestMomentumScanner:
-         results = MomentumScanner().scan(session, min_change_pct=1.0)
-         assert len(results) == 1
-         assert results[0].signal == "SELL"
+     def wait_ready(self, timeout: float = 15.0, min_ticks: int = 1) -> bool:
+         """Block until the feed is connected and has ingested >= min_ticks
+diff --git a/tests/test_retry.py b/tests/test_retry.py
+index f1925de..d577faa 100644
+--- a/tests/test_retry.py
++++ b/tests/test_retry.py
+@@ -230,8 +230,19 @@ class TestDhanTransportRetryIntegration:
  
- 
- # ============================================================ Breakout
- 
- class TestBreakoutScanner:
-     def test_supertrend_breakout(self):
-         inst = _make_instrument("HDFC", ltp=1700,
--                                indicators={"supertrend": 1650.0})
-+                                indicators={"stx_10_3": 1650.0})
-         session = _make_session_with_instruments(inst)
-         results = BreakoutScanner().scan(session)
-         assert len(results) == 1
-         assert "above_supertrend" in results[0].matched_conditions
- 
-     def test_high_breakout(self):
-         inst = _make_instrument("HDFC", ltp=1700, high=1700, low=1600)
-         session = _make_session_with_instruments(inst)
-         results = BreakoutScanner().scan(session)
-         assert len(results) == 1
+     def test_existing_constructor_still_works(self):
+         """Backward compat: DhanTransport(tsl) without retry_policy still works."""
+         from ntrade.brokers.dhan_transport import DhanTransport
+         tsl = MagicMock()
+         tsl.get_ltp_data.return_value = {"SYM": 50.0}
+         transport = DhanTransport(tsl)
+         assert transport.get_ltp("SYM") == 50.0
++
++    def test_transport_rate_limiter_throttles_ltp(self):
++        """A wired RateLimiter is actually consulted on the LTP hot path."""
++        from ntrade.brokers.dhan_transport import DhanTransport
++        from ntrade.execution.retry import RateLimiter
++        tsl = MagicMock()
++        tsl.get_ltp_data.return_value = {"TCS": 100.0}
++        limiter = RateLimiter(calls_per_second=100.0)
++        transport = DhanTransport(tsl, rate_limiter=limiter)
++        transport.get_ltp("TCS")
++        assert limiter._last_time > 0  # the limiter was actually consulted

@@ -357,82 +357,82 @@
     {
       "id": "T-012",
       "type": "task",
-      "status": "planned",
+      "status": "done",
       "title": "Route DhanBroker data calls through DhanTransport — finish T-005/D-005 provider decomposition",
       "created": "2026-08-01T19:26:50Z",
-      "updated": "2026-08-01T19:26:50Z"
+      "updated": "2026-08-02T03:22:35Z"
     },
     {
       "id": "T-013",
       "type": "task",
-      "status": "planned",
+      "status": "done",
       "title": "Wire capability layer into production reads — finish T-002/D-001 (use .market/.history/.stream instead of inst._quote)",
       "created": "2026-08-01T19:26:50Z",
-      "updated": "2026-08-01T19:26:50Z"
+      "updated": "2026-08-02T04:02:17Z"
     },
     {
       "id": "T-014",
       "type": "task",
-      "status": "planned",
+      "status": "done",
       "title": "Attach consumers for R-006 observability events (Heartbeat/FeedDisconnected/OrderTimeout) — watchdog + alerting",
       "created": "2026-08-01T19:26:50Z",
-      "updated": "2026-08-01T19:26:50Z"
+      "updated": "2026-08-02T03:27:29Z"
     },
     {
       "id": "T-015",
       "type": "task",
-      "status": "planned",
+      "status": "done",
       "title": "Wire DhanAuthProvider.stop() into LiveRunner shutdown path — finish T-011 token refresh",
       "created": "2026-08-01T19:26:54Z",
-      "updated": "2026-08-01T19:26:54Z"
+      "updated": "2026-08-02T03:25:55Z"
     },
     {
       "id": "T-016",
       "type": "task",
-      "status": "planned",
+      "status": "done",
       "title": "Arm RateLimiter/RetryPolicy in hot paths — finish D-006 resilience infrastructure",
       "created": "2026-08-01T19:26:54Z",
-      "updated": "2026-08-01T19:26:54Z"
+      "updated": "2026-08-02T03:24:38Z"
     },
     {
       "id": "T-017",
       "type": "task",
-      "status": "planned",
+      "status": "done",
       "title": "Arm ScannerFacade M6 throttle on a built-in scanner",
       "created": "2026-08-01T19:26:54Z",
-      "updated": "2026-08-01T19:26:54Z"
+      "updated": "2026-08-02T03:33:48Z"
     },
     {
       "id": "T-018",
       "type": "task",
-      "status": "planned",
+      "status": "done",
       "title": "Wire feed watchdog reconnection (LiveStream reconnect events) — finish R-004",
       "created": "2026-08-01T19:26:54Z",
-      "updated": "2026-08-01T19:26:54Z"
+      "updated": "2026-08-02T03:30:10Z"
     },
     {
       "id": "T-019",
       "type": "task",
-      "status": "planned",
+      "status": "done",
       "title": "Wire DhanFeed mode matrix (ticker/quote/depth) for the live streaming plan",
       "created": "2026-08-01T19:27:01Z",
-      "updated": "2026-08-01T19:27:01Z"
+      "updated": "2026-08-02T03:31:55Z"
     },
     {
       "id": "T-020",
       "type": "task",
-      "status": "planned",
+      "status": "done",
       "title": "Remove fake streaming no-ops (market_feed/order_update_stream stubs) from capability surface",
       "created": "2026-08-01T19:27:01Z",
-      "updated": "2026-08-01T19:27:01Z"
+      "updated": "2026-08-01T19:47:06Z"
     },
     {
       "id": "T-021",
       "type": "task",
-      "status": "planned",
+      "status": "done",
       "title": "StrategyRunner full surface or trim to documented API",
       "created": "2026-08-01T19:27:01Z",
-      "updated": "2026-08-01T19:27:01Z"
+      "updated": "2026-08-02T04:03:58Z"
     }
   ],
   "flows": {

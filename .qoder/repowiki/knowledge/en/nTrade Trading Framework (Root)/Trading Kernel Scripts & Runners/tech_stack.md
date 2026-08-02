@@ -1,1 +1,0 @@
-Python scripts using argparse for CLI flags, pandas DataFrames for candle data, and the internal `ntrade` framework (TradingKernel, ReplayClock/LiveClock, SimulatedFeedSource/SyntheticMarketFeedSource, LiveRunner, EmaCrossStrategy, TradingSession with Dhan broker integration). Output artifacts include `.benchmarks/latency.json` and JSON reports from `build_paper_report`.

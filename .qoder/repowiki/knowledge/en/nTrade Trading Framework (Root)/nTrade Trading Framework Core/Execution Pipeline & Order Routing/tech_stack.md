@@ -1,1 +1,0 @@
-Pure Python with `abc.ABC` for model interfaces, `dataclasses.frozen` for immutable retry configuration, and `threading.Lock` for the rate limiter; no external dependencies beyond the standard library.

@@ -1,5 +1,0 @@
-- All inter-component communication goes through immutable `Event` subclasses published to the shared `EventBus` — no direct method calls between engines.
-- Concrete implementations are registered via class-level registries (`BrokerRegistry`, `SymbolMaster`) guarded by `threading.RLock` for thread-safe lazy initialization.
-- Zero-parity design: every live component has a drop-in replacement (PaperBroker/SimulatedExecution, SimulatedFeedSource, ReplayClock, BacktestSimulator) sharing the same public API.
-- Domain objects are created exclusively through factories (`InstrumentFactory`, `OptionFactory`) that delegate to `SymbolMaster` flyweight caching rather than direct constructors.
-- Public API is consolidated through a single facade (`Market` → `TradingSession`) so users interact with one entry point regardless of backend.

@@ -1,0 +1,5 @@
+- Every public class is re-exported through `ntrade/__init__.py` and listed in `__all__`, so consumers import directly from the top-level `ntrade` package rather than submodules.
+- Legacy facades delegate entirely to newer abstractions (e.g. `Market` forwards all calls to `TradingSession`) while keeping the old API alive for compatibility.
+- Shared mutable state uses `threading.RLock` around dict mutations to protect against concurrent access from feed threads and strategy threads.
+- Optional dependencies are imported lazily inside functions and wrapped in `try/except ImportError` so the package remains importable without every broker backend installed.
+- Factory methods accept `**kw` and forward them through a small `_broker_kw(broker)` helper that conditionally injects the `broker` argument only when present.

@@ -1,0 +1,1 @@
+Defines the core order domain model (Order, OrderFacade, enums) and immutable order/trade book value objects that normalize broker responses across the broker boundary.

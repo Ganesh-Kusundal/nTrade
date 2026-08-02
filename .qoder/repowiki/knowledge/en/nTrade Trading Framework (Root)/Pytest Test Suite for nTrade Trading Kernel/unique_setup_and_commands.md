@@ -1,1 +1,0 @@
-Tests are run with standard pytest invocation from the repository root (e.g. `pytest tests/`). No special conftest or environment variables are required; replay-mode tests use `ReplayClock` to avoid wall-clock timing, while live-mode tests inject `LiveClock` and `PaperBroker` so they remain deterministic.

@@ -1,0 +1,6 @@
+- Each subsystem is exposed through a small, single-responsibility class with a clear constructor signature and fluent `return self` chaining on mutating methods.
+- Shared mutable state is always accessed through `TradingContext`, which serializes access via its internal `RLock` rather than ad-hoc locking at call sites.
+- Time is never obtained via `datetime.now()` directly; all code calls `self.clock.now()` (or `ctx.now()`) so live/replay/simulation modes stay parity-equivalent.
+- Event handlers are subscribed/unsubscribed through the central `EventBus`, and handler exceptions are swallowed and logged so one faulty subscriber cannot crash the kernel.
+- Class-method constructors (`connect`, `paper`, `replay`) encapsulate object creation while delegating to a common `__init__`, keeping the public API uniform across modes.
+- Lifecycle resources (strategy runners, global risk subscription) use context-manager semantics (`__enter__`/`__exit__`) or explicit `release()` methods with reference counting to guarantee cleanup even on exceptions.

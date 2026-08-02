@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: ntrade_core/domain/analytics
+title: Options Analytics & Technical Indicators
+scope:
+    - ntrade/domain/analytics/
+source_files: []
+depends_on: []
+related_to: []

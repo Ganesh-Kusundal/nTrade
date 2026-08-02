@@ -1,1 +1,0 @@
-Regenerate via `python3 .qoder/skills/kanban.cli/scripts/kanban.py update` (referenced at bottom of CONTEXT.md) and `/graphify update` to refresh the knowledge graph. The board header notes branch `main @ e418df5 | 7 dirty` and timestamp generation.

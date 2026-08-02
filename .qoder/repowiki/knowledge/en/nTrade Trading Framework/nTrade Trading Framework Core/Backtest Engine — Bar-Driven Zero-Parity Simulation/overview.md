@@ -1,0 +1,1 @@
+Runs the live TradingKernel over historical OHLCV bars with bar-aware fill policies and futures carry/roll cost modeling, producing BacktestResult summaries identical to live execution.

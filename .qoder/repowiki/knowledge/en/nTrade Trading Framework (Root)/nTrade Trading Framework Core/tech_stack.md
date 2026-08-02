@@ -1,1 +1,0 @@
-Pure Python with no external runtime dependencies at the kernel level; optional `dhan-tradehull` for live Dhan integration. Thread safety relies on `threading.RLock` for registries and a synchronous in-process `EventBus` (no async/queues).

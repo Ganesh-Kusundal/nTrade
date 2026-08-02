@@ -5,6 +5,7 @@
 - [market_feed.py](file://ntrade/sources/market_feed.py)
 - [dhan_feed.py](file://ntrade/sources/dhan_feed.py)
 - [synthetic_feed.py](file://ntrade/sources/synthetic_feed.py)
+- [stream.py](file://ntrade/domain/market/stream.py)
 - [market.py](file://ntrade/events/market.py)
 - [base.py](file://ntrade/events/base.py)
 - [lifecycle.py](file://ntrade/events/lifecycle.py)
@@ -13,7 +14,15 @@
 - [test_sources.py](file://tests/test_sources.py)
 - [test_synthetic_feed.py](file://tests/test_synthetic_feed.py)
 - [test_dhan_feed_source.py](file://tests/test_dhan_feed_source.py)
+- [test_contract_feed_reconnect_subscription.py](file://tests/test_contract_feed_reconnect_subscription.py)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added comprehensive documentation for deterministic feed reconnection behavior in DhanMarketFeedSource
+- Updated connection lifecycle section to detail the stop/start reconnection pattern
+- Enhanced troubleshooting guide with reconnect-specific guidance
+- Added new diagram illustrating the reconnect flow and stream notification mechanism
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -28,10 +37,10 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document explains the market data feed sources in nTrade, focusing on the abstract base class that unifies all ingestion implementations and the concrete sources for live streaming, deterministic simulation, and synthetic tick generation from historical OHLCV data. It covers event emission patterns (TickEvent, QuoteEvent), normalization to canonical formats, connection management, multiplexing symbols, reconnection handling, and performance considerations such as memory usage, asynchronous processing, and connection lifecycle.
+This document explains the market data feed sources in nTrade, focusing on the abstract base class that unifies all ingestion implementations and the concrete sources for live streaming, deterministic simulation, and synthetic tick generation from historical OHLCV data. It covers event emission patterns (TickEvent, QuoteEvent), normalization to canonical formats, connection management, multiplexing symbols, automatic reconnection handling with deterministic parameter reaplication, and performance considerations such as memory usage, asynchronous processing, and connection lifecycle.
 
 ## Project Structure
-The feed source subsystem lives under ntrade/sources and integrates with the kernel’s event bus via canonical events defined in ntrade/events. A small runner helper wires either a synthetic or live feed depending on configuration.
+The feed source subsystem lives under ntrade/sources and integrates with the kernel's event bus via canonical events defined in ntrade/events. A small runner helper wires either a synthetic or live feed depending on configuration.
 
 ```mermaid
 graph TB
@@ -78,7 +87,7 @@ FEEDS --> DMS
 
 **Section sources**
 - [market_feed.py:1-105](file://ntrade/sources/market_feed.py#L1-L105)
-- [dhan_feed.py:1-233](file://ntrade/sources/dhan_feed.py#L1-L233)
+- [dhan_feed.py:1-240](file://ntrade/sources/dhan_feed.py#L1-L240)
 - [synthetic_feed.py:1-77](file://ntrade/sources/synthetic_feed.py#L1-L77)
 - [market.py:1-83](file://ntrade/events/market.py#L1-L83)
 - [base.py:1-22](file://ntrade/events/base.py#L1-L22)
@@ -90,7 +99,7 @@ FEEDS --> DMS
 - MarketFeedSource: Abstract base defining start/stop and kernel attachment; exposes bus for publishing canonical events.
 - SimulatedFeedSource: Deterministic tick generator from a price list or OHLCV DataFrame; publishes TickEvent and QuoteEvent per row.
 - SyntheticMarketFeedSource: Converts 1-minute OHLCV bars into 1-second ticks using a deterministic simulator; publishes QuoteEvent per bar and TickEvent per second.
-- DhanMarketFeedSource: Live WebSocket adapter over dhanhq.MarketFeed; maps payloads to canonical events and manages connection lifecycle.
+- DhanMarketFeedSource: Live WebSocket adapter over dhanhq.MarketFeed; maps payloads to canonical events and manages connection lifecycle with deterministic reconnection.
 
 Key event types:
 - TickEvent: single trade/quote print with symbol, exchange, price, quantity, side, kind.
@@ -103,12 +112,12 @@ All events inherit Event, which provides ts (from TradingClock) and event_id.
 - [market_feed.py:23-45](file://ntrade/sources/market_feed.py#L23-L45)
 - [market_feed.py:47-105](file://ntrade/sources/market_feed.py#L47-L105)
 - [synthetic_feed.py:19-77](file://ntrade/sources/synthetic_feed.py#L19-L77)
-- [dhan_feed.py:98-233](file://ntrade/sources/dhan_feed.py#L98-L233)
+- [dhan_feed.py:98-240](file://ntrade/sources/dhan_feed.py#L98-L240)
 - [market.py:11-48](file://ntrade/events/market.py#L11-L48)
 - [base.py:16-22](file://ntrade/events/base.py#L16-L22)
 
 ## Architecture Overview
-The zero-parity design ensures kernels and strategies consume identical events regardless of source. Sources publish to the kernel’s event bus; downstream engines subscribe and process uniformly.
+The zero-parity design ensures kernels and strategies consume identical events regardless of source. Sources publish to the kernel's event bus; downstream engines subscribe and process uniformly.
 
 ```mermaid
 sequenceDiagram
@@ -229,13 +238,20 @@ end
 Purpose:
 - Live WebSocket feed adapter for dhanhq.MarketFeed.
 - Maps wire payloads to canonical events via dhan_payload_to_events.
-- Manages subscriptions, mode codes, and connection lifecycle.
+- Manages subscriptions, mode codes, and connection lifecycle with deterministic reconnection.
 
 Key behaviors:
 - start() launches feed in a background thread; wait_ready() polls until connected and ingested min ticks.
 - stop() closes connection and resets internal state so start() can rebuild feed.
 - _on_message normalizes payload and publishes TickEvent, QuoteEvent, and DepthEvent as applicable.
 - _on_error logs errors; _on_close emits FeedDisconnectedEvent.
+
+**Updated** Reconnection Behavior:
+The reconnect mechanism ensures deterministic subscription specifications across connection cycles:
+- _reconnect() method uses stop() followed by start() to guarantee fresh feed construction
+- This ensures code-21 + version v2 parameters are always reapplied consistently
+- All instrument streams receive notify_reconnect() calls to maintain state consistency
+- Rate limiting prevents excessive reconnection attempts (0.5 calls per second)
 
 Multiplexing:
 - Subscriptions are built from symbols list and mode code; each subscription tuple includes exchange, security_id, and mode code.
@@ -256,16 +272,19 @@ class DhanMarketFeedSource {
 -_feed
 -_thread
 -payloads_ingested
+-_reconnect_limiter
+-_reconnect_called
 +start() void
 +wait_ready(timeout, min_ticks) bool
 +stop() void
--_mode_code() int
--_subscriptions() list
--_build_feed()
--_context_from_env()
--_on_message(instance, payload)
--_on_error(instance, error)
--_on_close(instance)
++_mode_code() int
++_subscriptions() list
++_build_feed()
++_context_from_env()
++_on_message(instance, payload)
++_on_error(instance, error)
++_on_close(instance)
++_reconnect() void
 +running bool
 }
 class MarketFeedSource
@@ -273,7 +292,7 @@ DhanMarketFeedSource --|> MarketFeedSource
 ```
 
 **Diagram sources**
-- [dhan_feed.py:98-233](file://ntrade/sources/dhan_feed.py#L98-L233)
+- [dhan_feed.py:98-240](file://ntrade/sources/dhan_feed.py#L98-L240)
 - [market_feed.py:23-45](file://ntrade/sources/market_feed.py#L23-L45)
 
 ```mermaid
@@ -282,6 +301,7 @@ participant WS as "dhanhq.MarketFeed"
 participant Src as "DhanMarketFeedSource"
 participant Mapper as "dhan_payload_to_events"
 participant Bus as "Kernel Bus"
+participant Stream as "Instrument Streams"
 Src->>WS : start()
 WS-->>Src : on_message(payload)
 Src->>Mapper : map(payload, symbol_map, ts)
@@ -289,19 +309,24 @@ Mapper-->>Src : [TickEvent, QuoteEvent?, DepthEvent?]
 Src->>Bus : publish(each event)
 WS-->>Src : on_error(error)
 Src->>Src : log error
+Src->>Src : _reconnect()
+Src->>Src : stop()
+Src->>Src : start()
+Src->>Stream : notify_reconnect()
 WS-->>Src : on_close()
 Src->>Bus : publish(FeedDisconnectedEvent)
 ```
 
 **Diagram sources**
-- [dhan_feed.py:175-233](file://ntrade/sources/dhan_feed.py#L175-L233)
+- [dhan_feed.py:175-240](file://ntrade/sources/dhan_feed.py#L175-L240)
 - [dhan_feed.py:38-96](file://ntrade/sources/dhan_feed.py#L38-L96)
+- [stream.py:128-131](file://ntrade/domain/market/stream.py#L128-L131)
 - [lifecycle.py:52-57](file://ntrade/events/lifecycle.py#L52-L57)
 
 **Section sources**
-- [dhan_feed.py:1-233](file://ntrade/sources/dhan_feed.py#L1-L233)
-- [test_dhan_feed_source.py:1-200](file://tests/test_dhan_feed_source.py#L1-L200)
-- [test_dhan_feed_source.py:202-294](file://tests/test_dhan_feed_source.py#L202-L294)
+- [dhan_feed.py:1-240](file://ntrade/sources/dhan_feed.py#L1-L240)
+- [test_dhan_feed_source.py:1-314](file://tests/test_dhan_feed_source.py#L1-L314)
+- [test_contract_feed_reconnect_subscription.py:1-70](file://tests/test_contract_feed_reconnect_subscription.py#L1-L70)
 
 ### Event Emission Patterns and Normalization
 - All sources publish canonical events to the kernel bus.
@@ -355,18 +380,20 @@ SMFS --> SIM["simulate_1m_ticks"]
 DMS["DhanMarketFeedSource"] --> MFS
 DMS --> EVT
 DMS --> EXT["dhanhq.MarketFeed (external)"]
+DMS --> STREAM["LiveStream (reconnect)"]
 ```
 
 **Diagram sources**
 - [market_feed.py:23-45](file://ntrade/sources/market_feed.py#L23-L45)
 - [synthetic_feed.py:19-77](file://ntrade/sources/synthetic_feed.py#L19-L77)
-- [dhan_feed.py:98-233](file://ntrade/sources/dhan_feed.py#L98-L233)
+- [dhan_feed.py:98-240](file://ntrade/sources/dhan_feed.py#L98-L240)
 - [tick_simulator.py:51-82](file://ntrade/sim/tick_simulator.py#L51-L82)
+- [stream.py:128-131](file://ntrade/domain/market/stream.py#L128-L131)
 
 **Section sources**
 - [market_feed.py:1-105](file://ntrade/sources/market_feed.py#L1-L105)
 - [synthetic_feed.py:1-77](file://ntrade/sources/synthetic_feed.py#L1-L77)
-- [dhan_feed.py:1-233](file://ntrade/sources/dhan_feed.py#L1-L233)
+- [dhan_feed.py:1-240](file://ntrade/sources/dhan_feed.py#L1-L240)
 - [tick_simulator.py:1-82](file://ntrade/sim/tick_simulator.py#L1-L82)
 
 ## Performance Considerations
@@ -383,8 +410,9 @@ DMS --> EXT["dhanhq.MarketFeed (external)"]
 - Event throughput:
   - Prefer batched operations where possible; minimize per-tick overhead in event construction.
   - Ensure kernel clock updates are efficient; only set when needed.
-
-[No sources needed since this section provides general guidance]
+- Reconnection overhead:
+  - Rate limiter prevents excessive reconnection attempts (0.5 calls per second).
+  - Reconnection triggers full stop/start cycle ensuring clean state reset.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -396,18 +424,25 @@ Common issues and resolutions:
   - DhanMarketFeedSource enforces supported modes; v2 forbids depth-only mode—use full instead.
 - Disconnections:
   - FeedDisconnectedEvent is emitted on close; handle reconnect logic at higher layers.
+  - Automatic reconnection uses rate limiting to prevent excessive attempts.
 - Synthetic feed timing:
   - Ensure OHLCV frame has valid timestamps and non-empty data; otherwise constructor raises.
+- Reconnection failures:
+  - Check that _reconnect_limiter is functioning properly.
+  - Verify that stop() successfully clears cached feed instances.
+  - Monitor _reconnect_called flag to confirm reconnection attempts.
+- Stream state inconsistency:
+  - Instrument streams receive notify_reconnect() calls to maintain consistent state.
+  - Verify stream states transition from NOT_SUBSCRIBED to SUBSCRIBED after reconnection.
 
 **Section sources**
-- [dhan_feed.py:128-144](file://ntrade/sources/dhan_feed.py#L128-L144)
-- [dhan_feed.py:206-233](file://ntrade/sources/dhan_feed.py#L206-L233)
+- [dhan_feed.py:128-144](file://ntrade/sources/dhan_feed.py#L128-144)
+- [dhan_feed.py:206-240](file://ntrade/sources/dhan_feed.py#L206-240)
+- [stream.py:124-131](file://ntrade/domain/market/stream.py#L124-L131)
 - [synthetic_feed.py:22-35](file://ntrade/sources/synthetic_feed.py#L22-L35)
 
 ## Conclusion
-The feed source layer in nTrade provides a clean abstraction for diverse market data origins while preserving zero-parity across live, simulated, and synthetic scenarios. By standardizing event emission and normalization, strategies and engines remain agnostic to the underlying transport. The documented components and patterns enable robust, testable, and performant data ingestion pipelines.
-
-[No sources needed since this section summarizes without analyzing specific files]
+The feed source layer in nTrade provides a clean abstraction for diverse market data origins while preserving zero-parity across live, simulated, and synthetic scenarios. By standardizing event emission and normalization, strategies and engines remain agnostic to the underlying transport. The documented components and patterns enable robust, testable, and performant data ingestion pipelines with deterministic reconnection behavior ensuring consistent subscription specifications across connection cycles.
 
 ## Appendices
 
@@ -428,3 +463,14 @@ D --> |No| F["Raise ValueError"]
 
 **Section sources**
 - [feeds.py:1-19](file://ntrade/runner/feeds.py#L1-L19)
+
+### Reconnection Contract Verification
+The deterministic reconnection behavior is verified through contract tests that ensure:
+- Stop→start reconnect builds a fresh feed with identical subscription specifications
+- Code-21 mode is consistently applied across all connection cycles
+- Version v2 parameters are reapplied during reconnection
+- All instrument streams receive proper notification of reconnection events
+
+**Section sources**
+- [test_contract_feed_reconnect_subscription.py:47-70](file://tests/test_contract_feed_reconnect_subscription.py#L47-L70)
+- [test_dhan_feed_source.py:289-314](file://tests/test_dhan_feed_source.py#L289-L314)

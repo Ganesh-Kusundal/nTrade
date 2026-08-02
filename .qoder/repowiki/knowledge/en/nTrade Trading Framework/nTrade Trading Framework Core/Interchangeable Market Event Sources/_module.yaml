@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: ntrade_core/sources
+title: Interchangeable Market Event Sources
+scope:
+    - ntrade/sources/
+source_files: []
+depends_on: []
+related_to:
+    - path: ntrade_core/runner
+    - path: tests

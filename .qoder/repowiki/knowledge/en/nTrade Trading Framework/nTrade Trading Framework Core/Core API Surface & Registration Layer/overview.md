@@ -1,0 +1,1 @@
+Public entry points for ntrade: a flat `__init__.py` re-exporting the SDK surface, a legacy `Market` facade delegating to `TradingSession`, an `InstrumentFactory` for domain object creation, and thread-safe registries (`SymbolMaster`, `BrokerRegistry`) implementing flyweight and factory registration.

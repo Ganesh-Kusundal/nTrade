@@ -1,1 +1,0 @@
-Zero-parity simulation layer that runs the TradingKernel over historical bars (backtest), deterministically replays recorded event streams (replay), and synthesizes realistic 1-second ticks from OHLCV bars for testing.

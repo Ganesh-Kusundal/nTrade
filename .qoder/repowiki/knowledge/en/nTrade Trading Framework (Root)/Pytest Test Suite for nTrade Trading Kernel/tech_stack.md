@@ -1,1 +1,0 @@
-pytest as the test framework; pandas for synthetic OHLCV data generation; unittest.mock.MagicMock for mocking brokers and external components; no external test database or fixture files — all state is constructed inline per test.

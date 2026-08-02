@@ -6,42 +6,50 @@ scope:
     - '**'
 ---
 
-### Zero Parity
-- Definition：Architectural invariant ensuring that the same event stream produces identical results across live trading, replay, and backtest environments. The core principle that strategies run identically regardless of whether events originate from a live broker, replay file, or historical simulator.
-- Aliases：zero-parity、parity invariant
+### zero-parity
+- Definition：Core invariant that the same event stream through TradingKernel(mode=...) produces identical fills across live, replay, and backtest modes. The engine stack is mode-independent; only the event source, execution target, and clock differ. This is the single most important correctness guarantee for a trading system.
+- Aliases：zero parity、parity
 
-### Trading Kernel
-- Definition：Central orchestrator component that wires together all trading engines, manages event flow, and coordinates the complete trading pipeline from market data ingestion through execution and portfolio updates.
-- Aliases：kernel、trading_kernel
+### capability
+- Definition：Broker-specific feature registered via @capability decorator without modifying base classes. Enables open/closed principle — new brokers add capabilities without domain code changes. Examples include depth20, kill_switch, margin_calculator. The BrokerExtensionFacade dynamically dispatches capability names to registered functions.
+- Aliases：@capability、capability pattern
 
-### Event Bus
-- Definition：Synchronous publish-subscribe messaging system that decouples trading components. Uses MRO-based subscription where handlers inherit from base classes automatically receive relevant events.
-- Aliases：bus、event_bus
+### kill switch
+- Definition：Risk circuit breaker mechanism that halts all trading activity when predefined thresholds are breached (daily loss, drawdown, price deviation). Wired through LiveRunner to call instrument.broker.kill_switch(action="ACTIVATE") on every instrument. Failure to activate must be logged and escalated — silent failure leaves the broker accepting orders with no risk oversight.
+- Aliases：risk halt、circuit breaker
 
-### Broker Adapter
-- Definition：Abstraction layer that normalizes broker-specific APIs into domain objects. Implements the BrokerAdapter ABC pattern allowing multiple brokers (PaperBroker, DhanBroker) to plug in without changing domain logic.
-- Aliases：adapter、broker_adapter
+### EventStore
+- Definition：Persistent append-only log of canonical events used for crash recovery and replay. Stores JSON-encoded events per file. Currently opens/closes file handle per event (I/O bottleneck), has no file locking or fsync, and crashes on unknown event types during decode. Critical for ResilientKernel's one-shot recovery without re-running strategies.
+- Aliases：event store、event log
 
-### Capability Pattern
-- Definition：Open/closed extension mechanism allowing broker-specific features to be registered dynamically. Enables adding new broker capabilities without modifying base instrument classes.
-- Aliases：capability、capabilities
+### ReplayClock
+- Definition：Deterministic time source injected into the kernel for replay/backtest modes. Replaces datetime.now() to ensure simulation time drives all timestamp-dependent logic. The kernel's own docstring states engines and strategies never call datetime.now() directly — they ask the trading clock instead. However, 20+ call sites in domain/broker layers still violate this invariant.
+- Aliases：trading clock、simulation clock
 
 ### ResilientKernel
-- Definition：Crash recovery mechanism built on top of EventStore that replays causal market events to reconstruct trading state after failures. Ensures deterministic recovery without re-executing strategies.
-- Aliases：resilient_kernel、recovery
-
-### LiveStream
-- Definition：Per-instrument observer target managing subscription lifecycle, tick caching, and callback registration for real-time market data. Distinct from EventBus which handles inter-engine communication.
-- Aliases：stream、live_stream
+- Definition：Kernel wrapper that provides crash recovery by replaying the causal event stream (market data + fills) without re-running strategies. Recording is paused during recovery, execution sequence is reseeded, and recovery is one-shot. Requires EventStore to function.
+- Aliases：crash recovery kernel
 
 ### PositionSyncEngine
-- Definition：Background reconciliation engine that synchronizes kernel's internal position state with broker-reported positions. Acts as source of truth for actual holdings while kernel maintains derived state for strategy decisions.
-- Aliases：position_sync、sync_engine
+- Definition：Background engine that synchronizes local position state with broker reality. On failure returns None (not empty list) so the kernel keeps previous state rather than silently wiping positions on network blips. Runs independently of strategy execution.
+- Aliases：position sync
 
-### Risk Circuit Breaker
-- Definition：Safety mechanism that halts trading when predefined risk thresholds are breached (daily loss, drawdown, price deviation). Automatically activates kill switch on brokers when triggered.
-- Aliases：risk_breaker、circuit_breaker
+### LiveStream
+- Definition：Per-instrument user-facing callback lifecycle managing subscription state, tick caching, and on_tick/on_quote decorator API. Distinct from EventBus: EventBus handles kernel-level inter-engine communication, while LiveStream manages user-level subscriptions and callbacks. Serves different purpose than EventBus and should not be removed.
+- Aliases：tick stream、subscription manager
 
-### BacktestSimulator
-- Definition：Deterministic simulation engine that replays historical OHLCV data through the same trading kernel, producing identical decisions as live trading for validation and testing.
-- Aliases：simulator、backtest_simulator
+### OptionChain navigation
+- Definition：Structured way to navigate options contracts through Expiry and OptionPair objects. Methods include expiries(), atm(), calls(), puts(), otm(), itm(), greeks(), iv(), oi(). Returns Instruments (not symbols) so scanner output flows directly into trading without conversion.
+- Aliases：option chain、expiry navigation
+
+### Scanner subsystem
+- Definition：Pluggable market scanning framework returning Instrument lists (not symbols). Built-in scanners include GapScanner, VolumeSpikeScanner, MomentumScanner, BreakoutScanner, ImbalanceScanner. ScannerResult is a frozen dataclass with ranking support via top(). Integrated through TradingSession.scanner() facade.
+- Aliases：scanner、market scanner
+
+### Provider decomposition
+- Definition：Architecture pattern splitting broker implementation into focused services: Authentication, Symbol Mapping, Transport (REST/WebSocket), and Capabilities. DhanBroker (1095 lines) currently mixes all concerns — the goal is to extract into DhanAuth, DhanMapper, DhanTransport, and capability modules so adding Upstox becomes a plugin exercise.
+- Aliases：provider pattern、broker decomposition
+
+### TradingSession
+- Definition：Unified entry point replacing dual entry points (Market + TradingKernel). Single interface for connect("dhan"), paper(), replay(events) with identical APIs regardless of provider. Composes InstrumentFactory, Portfolio, Account, event routing, and extension discovery. Must resolve naming conflict with existing domain/session.py TradingSession dataclass.
+- Aliases：session、trading session

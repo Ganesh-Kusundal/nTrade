@@ -1,0 +1,1 @@
+pytest with fixtures and parametrization; pandas for synthetic OHLCV data generation; unittest.mock.MagicMock for component stubbing; PaperBroker as a no-op broker for deterministic testing; SyntheticMarketFeedSource for headless tick/candle injection.

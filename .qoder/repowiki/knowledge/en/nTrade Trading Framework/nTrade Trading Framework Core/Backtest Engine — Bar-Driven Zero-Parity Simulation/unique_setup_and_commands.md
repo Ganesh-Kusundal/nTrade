@@ -1,0 +1,1 @@
+No build or test commands are defined in this module; usage is via `BacktestSimulator(...).run(pd.DataFrame)` where the DataFrame must contain columns `timestamp, open, high, low, close, volume`.

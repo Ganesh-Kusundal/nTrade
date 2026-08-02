@@ -1,1 +1,0 @@
-The dhan-tradehull skill requires `pip install --pre dhanhq && pip install Dhan-Tradehull`. The graphify skill installs via `uv tool install graphifyy` or `pip install graphifyy`, optionally with `[gemini]` extras, and writes persistent state under a project-local `graphify-out/` directory (including `graph.json`, cost tracking, and cached extractions).

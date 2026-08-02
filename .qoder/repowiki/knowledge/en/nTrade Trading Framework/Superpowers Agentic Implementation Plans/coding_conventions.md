@@ -1,0 +1,6 @@
+- Each task follows a fixed five-step sequence: write the failing test first, run it to verify failure, implement minimally, run the task's tests, then run the full suite to confirm no regressions.
+- All new events are defined as `@dataclass(frozen=True, kw_only=True)` classes extending `ntrade.events.base.Event`, with timestamps sourced from the kernel clock rather than `datetime.now()`.
+- Domain-layer code stays broker-agnostic — broker-specific side effects (kill switch, timestamps, I/O) are handled in infra layers like `LiveRunner`, never inside RiskEngine or other domain components.
+- Deterministic simulation uses seeded `random.Random(seed)` so identical seeds plus identical input bars produce identical tick sequences.
+- Plans constrain changes to appending/modifying existing modules only, never wholesale restructuring of existing files.
+- Task gates are measured by the pytest suite turning green, not by git commits — the repo is not git-tracked during execution.

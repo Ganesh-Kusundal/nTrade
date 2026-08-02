@@ -1,0 +1,5 @@
+- All inter-component communication uses immutable, hashable dataclass events from `ntrade.events.*` published to the kernel EventBus.
+- Domain objects are created through `InstrumentFactory` and cached via `SymbolMaster` flyweight to guarantee identity per symbol/exchange.
+- Pluggable components (brokers, execution targets, market feeds) register themselves via class-level registries protected by `threading.RLock`.
+- Each subsystem lives in its own package with an explicit `__init__.py` re-exporting only the stable public symbols.
+- Live, simulated, replay and backtest modes share identical interfaces so strategy code remains mode-agnostic.

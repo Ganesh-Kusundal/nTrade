@@ -1,1 +1,0 @@
-Pure Python with pandas for indicator computation (`compute_bundle` from `ntrade.domain.analytics.indicators`); event bus pattern via a publish/subscribe mechanism exposed through `context.bus`; datetime handling uses UTC-pinned timestamps with naive wall-clock labels for candle timestamps.

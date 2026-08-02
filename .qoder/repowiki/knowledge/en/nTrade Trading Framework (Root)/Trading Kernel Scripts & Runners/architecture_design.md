@@ -1,8 +1,0 @@
-Each file is an independent CLI script with its own `main()` returning an `int` exit code, invoked via `if __name__ == "__main__": sys.exit(main())`. Every script bootstraps the package by inserting the repo root into `sys.path` (`sys.path.insert(0, str(Path(__file__).resolve().parent.parent))`) and then imports from `ntrade.*` (kernel, engines, sources, runners). The scripts form six complementary roles:
-- `benchmark_latency.py`: constructs a `TradingKernel` in replay mode with `ReplayClock` and calls `measure_tick_throughput` to write `.benchmarks/latency.json`.
-- `ema_cross_run.py`: wires `SimulatedFeedSource` + `EmaCrossStrategy` over real historical OHLCV fetched via `TradingSession.connect("dhan")`, then prints event-flow counts and P&L.
-- `live_read_check.py`: systematic read-only probe of every Dhan read endpoint, classifying results as PASS/FAIL/DEGRADED via a shared `check(name, fn, sane)` helper.
-- `live_runner_run.py`: generic harness using `LiveRunner` with either a synth feed (historical data extrapolated to 1s ticks) or a live websocket feed selected by `--feed`.
-- `live_smoke.py`: minimal smoke test exercising quote, history, indicators, option chain, balance, and new endpoints against live Dhan.
-- `paper_gate_run.py`: runs `EmaCrossStrategy` over historical data via `SyntheticMarketFeedSource`, builds a report via `build_paper_report`, and fails CI when fills==0 or max drawdown exceeds 30%.
-All scripts depend only on the `ntrade` package; there is no inter-script dependency — each is self-contained.

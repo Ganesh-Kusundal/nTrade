@@ -1,6 +1,0 @@
-- Each script exposes a `main() -> int` function and exits via `sys.exit(main())` under `if __name__ == "__main__"`.
-- Package imports are deferred until after `sys.path.insert(0, parent_dir)` so the scripts can be executed directly without pre-installing the package.
-- Broker interaction goes through `TradingSession.connect("dhan")` followed by `session.index(symbol)` to obtain instruments, rather than calling broker methods directly.
-- Replay-mode kernels are always constructed with `mode="replay", clock=ReplayClock()` and started/stopped explicitly via `k.start()` and `k.stop(reason=...)`.
-- CLI arguments use `argparse.ArgumentParser` with descriptive defaults, and output files are written under `.benchmarks/` relative to the repo root.
-- Live-read checks use a shared `check(name, fn, sane=None)` helper that records `(name, status, summary)` tuples and classifies degenerate but non-failing responses as DEGRADED.

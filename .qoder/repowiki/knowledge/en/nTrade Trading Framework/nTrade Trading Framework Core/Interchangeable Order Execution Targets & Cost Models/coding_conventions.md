@@ -1,0 +1,5 @@
+- Execution targets expose a `name` class attribute (`"broker"`, `"simulated"`) and a `submit(intent)` method returning either `None` or an `OrderRejectedEvent`, enabling uniform registration and dispatch through `ExecutionRouter`.
+- Cost models are injected as pluggable objects implementing abstract base classes (`SlippageModel`, `CommissionModel`) rather than hard-coded, allowing identical cost pipelines across simulated and live execution.
+- Indian statutory costs use the `STATUTORY_DEFAULT` sentinel to distinguish "use realistic defaults" from explicit `None` (zero-cost opt-out), resolved via `resolve_statutory()` at construction time.
+- Events are published exclusively through `self.ctx.bus.publish(...)` using typed event classes (`OrderAcceptedEvent`, `OrderFilledEvent`, `OrderRejectedEvent`, etc.) rather than direct callbacks or return values.
+- Per-instrument product schedule selection is done via `statutory.for_instrument(instrument, delivery=...)` so F&O vs equity rates are derived from the instrument class, not passed explicitly by callers.

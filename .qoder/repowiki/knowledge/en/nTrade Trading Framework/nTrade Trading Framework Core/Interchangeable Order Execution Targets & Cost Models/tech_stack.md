@@ -1,0 +1,1 @@
+Pure Python with no external dependencies — uses `abc.ABC` for model interfaces, `dataclasses.frozen` for immutable `RetryPolicy`, `threading.Lock` for the token-bucket rate limiter, and standard library `time.monotonic` / `random` for timing and jitter.

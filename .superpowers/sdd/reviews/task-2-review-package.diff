@@ -1,162 +1,1231 @@
-diff --git a/ntrade/engines/candle_engine.py b/ntrade/engines/candle_engine.py
-index d79f33a..fd00cc4 100644
---- a/ntrade/engines/candle_engine.py
-+++ b/ntrade/engines/candle_engine.py
-@@ -2,49 +2,76 @@
- 
- One engine per timeframe (1m, 5m, ...). A candle closes when a tick arrives in
- a later bucket; the closed candle is broadcast for indicators/strategies. The
- last partial candle can be flushed explicitly at session end.
+7fe832a T-012 route DhanBroker data calls through DhanTransport
+=== STAT ===
+ ntrade/brokers/dhan.py           | 517 ++++-----------------------------------
+ ntrade/brokers/dhan_mapper.py    |  11 +-
+ ntrade/brokers/dhan_transport.py |  13 +-
+ tests/test_dhan_broker.py        |  36 +--
+ tests/test_gap_closure.py        |   8 +-
+ tests/test_live_execution.py     |   2 +
+ tests/test_mission_gaps.py       |   4 +
+ tests/test_options_analytics.py  |   4 +-
+ 8 files changed, 103 insertions(+), 492 deletions(-)
+=== DIFF ===
+diff --git a/ntrade/brokers/dhan.py b/ntrade/brokers/dhan.py
+index 88f7edb..0a9140e 100644
+--- a/ntrade/brokers/dhan.py
++++ b/ntrade/brokers/dhan.py
+@@ -10,40 +10,36 @@ Follows the dhan-tradehull skill patterns:
+ Provider decomposition (Phase E):
+   - DhanAuthProvider: authentication lifecycle
+   - DhanMapper: pure data mapping/normalization
+   - DhanTransport: TSL API calls with retry/error handling
  """
  
  from __future__ import annotations
  
- from datetime import datetime, timezone
+-import time
+-from datetime import date, datetime, timedelta
++from datetime import datetime
+ from typing import TYPE_CHECKING
  
--from ntrade.events.market import CandleClosedEvent, TickEvent
-+from ntrade.events.market import CandleClosedEvent, QuoteEvent, TickEvent
+ import pandas as pd
  
- _INTERVAL_SECONDS = {
-     "1s": 1, "5s": 5, "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400,
- }
+ from ntrade.brokers.base import BrokerAdapter
+ from ntrade.brokers.capabilities import capability
+-from ntrade.brokers.dhan_auth import get_tradehull
+ from ntrade.brokers.dhan_auth_provider import DhanAuthProvider
+ from ntrade.brokers.dhan_mapper import (
+     DhanMapper,
+     chain_from_dhan_df,
+-    to_records,
+-    _f,
+     _first_float,
+     _first_int,
+     _first_str,
+ )
+ from ntrade.brokers.dhan_transport import DhanTransport
+ from ntrade.domain.market.candles import CandleSeries
+-from ntrade.domain.market.depth import DepthLevel, MarketDepth
++from ntrade.domain.market.depth import MarketDepth
+ from ntrade.domain.market.quote import Quote
+-from ntrade.domain.orders.book import OrderBook, OrderBookEntry, TradeBook, TradeBookEntry
++from ntrade.domain.orders.book import OrderBook, TradeBook
+ from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
+ 
+ if TYPE_CHECKING:
+     from ntrade.domain.instruments.base import Instrument
  
  
- class CandleEngine:
-     def __init__(self, context, timeframe: str = "1m", *, max_candles: int = 10_000):
-         if timeframe not in _INTERVAL_SECONDS:
-             raise ValueError(f"Unsupported timeframe {timeframe!r}; expected one of {sorted(_INTERVAL_SECONDS)}")
-         self.ctx = context
-         self.timeframe = timeframe
-         self.seconds = _INTERVAL_SECONDS[timeframe]
-         self._open: dict[str, dict] = {}
-         self._closed: dict[str, list[CandleClosedEvent]] = {}
-         self._max_candles = max_candles
-+        # last bucket seeded from a bar-shaped QuoteEvent (backtest only); the
-+        # paired close tick sharing that bucket is skipped to avoid double volume
-+        self._bar_seeded: dict[str, int] = {}
-         context.bus.subscribe(TickEvent, self.on_tick)
-+        context.bus.subscribe(QuoteEvent, self.on_quote)
+ _SEBI_FNO_EXCHANGES = {"NFO", "BFO"}
  
-     # ------------------------------------------------------------------ ingest
-     def _bucket(self, ts: datetime) -> int:
-         if ts.tzinfo is None:
-             ts = ts.replace(tzinfo=timezone.utc)  # naive -> UTC-pinned epoch
-         epoch = int(ts.timestamp())
-         return epoch - (epoch % self.seconds)
+@@ -100,196 +96,88 @@ class DhanBroker(BrokerAdapter):
+         self._clock = clock
+         transport = getattr(self, "_transport", None)
+         if transport is not None:
+             transport._clock = clock
+         return self
  
-     def on_tick(self, event: TickEvent) -> None:
-+        if self._bar_seeded.get(event.symbol) == self._bucket(event.ts):
-+            return  # same bucket already seeded from a bar-shaped quote; skip
-         self._ingest(event.symbol, event.exchange, event.price, event.ts, volume=event.quantity)
+     # ------------------------------------------------------------ market data
+     def get_quote(self, instrument: "Instrument", *, now: datetime | None = None) -> Quote:
+-        self._ensure_tsl()  # Ensure token is fresh before API call
+-        names = [dhan_symbol(instrument)]
+-        ltp = 0.0
+-        # Dhan's get_ltp_data intermittently returns None / failure dicts
+-        # (observed live ~50% of calls); retry a few times before giving up.
+-        # Space the attempts so the retry actually beats Dhan's rate limiter.
+-        for attempt in range(3):
+-            try:
+-                data = self.tsl.get_ltp_data(names=names)
+-                candidate = float(data.get(names[0], 0.0) or 0.0)
+-                if candidate > 0:
+-                    ltp = candidate
+-                    break
+-            except Exception:
+-                pass
+-            if attempt < 2:
+-                time.sleep(0.2)
+-        if ltp <= 0:
+-            raise RuntimeError(
+-                f"get_quote failed for {instrument.symbol}: "
+-                f"LTP is 0 after 3 retries"
+-            )
+-        quote = Quote(ltp=ltp, bid=ltp, ask=ltp, timestamp=self._ts(now))
+-        try:
+-            qd = self.tsl.get_quote_data(names=names).get(names[0], {})
+-            quote = quote.with_update(
+-                high=_f(qd.get("high")), low=_f(qd.get("low")),
+-                open=_f(qd.get("open")), prev_close=_f(qd.get("close_price")),
+-                volume=int(qd.get("volume") or 0), oi=int(qd.get("open_interest") or 0),
+-            )
+-        except Exception:
+-            pass
+-        return quote
++        self._ensure_tsl()
++        quote = self._transport.get_quote(dhan_symbol(instrument))
++        if quote.ltp <= 0:
++            raise RuntimeError(f"get_quote failed for {instrument.symbol}: LTP is 0")
++        return quote.with_update(timestamp=self._ts(now))
  
-+    def on_quote(self, event: QuoteEvent) -> None:
-+        if self.ctx.mode != "backtest":
-+            return  # live/replay quotes carry day-session OHLCV, not bars
-+        self._ingest_bar(event.symbol, event.exchange, event.open, event.high,
-+                         event.low, event.ltp, event.volume, event.ts)
+     def get_depth(self, instrument: "Instrument", timeout: float = 5.0, *, now: datetime | None = None) -> MarketDepth | None:
+         """20-level market depth for NSE/BSE/NFO/BFO (not indices).
+ 
+         Dhan streams depth over a websocket and returns an OrderedDict keyed
+         'SYMBOL|EXCH' -> depth_client; each client must be passed to
+         get_market_depth_df individually (the dict itself has no get_data).
+         The websocket snapshot can hang, so the frame read is bounded by a
+         timeout thread and returns None on expiry.
+         """
+         # Dhan only supports depth for NSE/BSE/NFO/BFO — not indices.
+         if instrument.KIND == "index":
+             return None
+-        try:
+-            dc = self.tsl.full_market_depth_data([(instrument.symbol, instrument.exchange)])
+-            key = f"{instrument.symbol.upper()}|{instrument.exchange.upper()}"
+-            client = dc.get(key) or next(iter(dc.values()), None)
+-            if client is None:
+-                return None
+-
+-            import threading
+-            result: dict = {}
+-
+-            def _read_frames():
+-                try:
+-                    result["frames"] = self.tsl.get_market_depth_df(client)
+-                except Exception as exc:  # noqa: BLE001
+-                    result["error"] = exc
+-
+-            t = threading.Thread(target=_read_frames, daemon=True)
+-            t.start()
+-            t.join(timeout)
+-            if "frames" not in result:
+-                return None  # websocket never delivered a snapshot in time
+-            bid_df, ask_df = result["frames"]
+-            if bid_df is None or bid_df.empty:
+-                return None
+-            # Dhan's frames use bid_price/bid_qty (and ask_*) columns.
+-            bids = tuple(DepthLevel(price=_f(r.get("bid_price") or r.get("price")),
+-                                    quantity=int(r.get("bid_qty") or r.get("quantity") or 0))
+-                         for _, r in bid_df.iterrows())
+-            asks = tuple(DepthLevel(price=_f(r.get("ask_price") or r.get("price")),
+-                                    quantity=int(r.get("ask_qty") or r.get("quantity") or 0))
+-                         for _, r in ask_df.iterrows())
+-            return MarketDepth(symbol=instrument.symbol, bids=bids, asks=asks, timestamp=self._ts(now))
+-        except Exception:
+-            return None
++        return self._transport.get_depth(instrument.symbol, instrument.exchange, timeout=timeout, now=now)
+ 
+     def get_historical(self, instrument, timeframe="5m", days=None, start=None, end=None) -> CandleSeries:
+-        tf = _dhan_timeframe(timeframe)  # raises ValueError for unsupported
+-        exchange = "INDEX" if instrument.KIND == "index" else instrument.exchange
+-        # Dhan's daily historical endpoint serves DAY OHLC for ALL segments
+-        # including MCX commodities (verified against the official docs); it is
+-        # only the library's intraday wrapper (get_historical_data) that rejects
+-        # FUT-type contracts client-side. Route DAY through the daily endpoint
+-        # exactly when the wrapper would block (mirrors its 'FUT' check);
+-        # everything else keeps the intraday path, which serves DAY fine.
+-        if tf == "DAY" and self._dhan_blocks_day(instrument):
++        self._ensure_tsl()
++        if DhanMapper.map_timeframe(timeframe) == "DAY" and self._dhan_blocks_day(instrument):
+             return self._historical_day_contract(instrument, days=days, start=start, end=end)
+-        try:
+-            df = self.tsl.get_historical_data(
+-                tradingsymbol=dhan_symbol(instrument), exchange=exchange, timeframe=tf
+-            )
+-        except Exception:
+-            return CandleSeries(pd.DataFrame(), symbol=instrument.symbol, timeframe=timeframe)
+-        df = _normalize_history(df)
+-        return CandleSeries(_filter_history(df, days=days, start=start, end=end, asof=self._ts()),
+-                            symbol=instrument.symbol, timeframe=timeframe)
++        exchange = "INDEX" if instrument.KIND == "index" else instrument.exchange
++        start_s = start.strftime("%Y-%m-%d") if hasattr(start, "strftime") else start
++        end_s = end.strftime("%Y-%m-%d") if hasattr(end, "strftime") else end
++        return self._transport.get_historical(
++            dhan_symbol(instrument), exchange, timeframe, days=days, start=start_s, end=end_s,
++        )
+ 
+     def _dhan_blocks_day(self, instrument) -> bool:
+-        """True when Dhan-Tradehull's intraday wrapper rejects DAY for a script.
+-
+-        The wrapper raises when the instrument's type contains 'FUT' (FUTIDX,
+-        FUTCOM, OPTFUT); index/stock options (OPTIDX, OPTSTK) and equities are
+-        served DAY fine by the intraday path, so they must NOT be routed. We
+-        mirror the check via the instrument file rather than guessing by
+-        exchange. Symbols that don't resolve (e.g. commodity names like GOLD,
+-        which the wrapper looks up by SM_SYMBOL_NAME) default to blocked on
+-        commodity/future exchanges.
+-        """
+-        try:
+-            sym = dhan_symbol(instrument)
+-            idf = self.tsl.instrument_df
+-            # The wrapper filters by the MAPPED exchange (NFO→NSE, BFO→BSE)
+-            # because Dhan's instrument file stores index derivatives under the
+-            # cash-exchange id — mirror it exactly so the check is faithful.
+-            exch = _DAY_BLOCK_MAPPED_EXCHANGE.get(instrument.exchange, instrument.exchange)
+-            df = idf[((idf["SEM_TRADING_SYMBOL"] == sym) | (idf["SEM_CUSTOM_SYMBOL"] == sym))
+-                     & (idf["SEM_EXM_EXCH_ID"] == exch)]
+-            if df.empty:
+-                return instrument.exchange in ("MCX", "NFO", "BFO")
+-            return "FUT" in str(df.iloc[-1]["SEM_INSTRUMENT_NAME"])
+-        except Exception:
+-            return instrument.exchange in ("MCX", "NFO", "BFO")
++        """True when Dhan-Tradehull's intraday wrapper rejects DAY for a script."""
++        return self._transport.blocks_day(dhan_symbol(instrument), instrument.exchange)
+ 
+     def _historical_day_contract(self, instrument, days=None, start=None, end=None) -> CandleSeries:
+-        """Daily candles for FUT-type contracts via Dhan's daily endpoint.
+-
+-        Dhan's official daily historical API (POST /charts/historical) returns
+-        DAY OHLC for every segment, including MCX commodities and NFO futures.
+-        Only Dhan-Tradehull's intraday wrapper blocks them; this routes through
+-        get_long_term_historical_data, which resolves the contract itself
+-        (front-month for commodities) and fetches daily data in chunks. Returns
+-        an empty frame if the range has no data (weekend/holiday) or the request
+-        fails.
+-        """
+-        to_date = end if end is not None else self._ts().date()
+-        from_date = start if start is not None else (to_date - timedelta(days=days or 365))
+-        try:
+-            df = self.tsl.get_long_term_historical_data(
+-                tradingsymbol=dhan_symbol(instrument), exchange=instrument.exchange,
+-                timeframe="DAY", from_date=from_date, to_date=to_date,
+-            )
+-        except Exception:
+-            return CandleSeries(pd.DataFrame(), symbol=instrument.symbol, timeframe="1d")
+-        return CandleSeries(_filter_history(_normalize_history(df), days=days, start=start, end=end, asof=self._ts()),
+-                            symbol=instrument.symbol, timeframe="1d")
++        start_s = start.strftime("%Y-%m-%d") if hasattr(start, "strftime") else start
++        end_s = end.strftime("%Y-%m-%d") if hasattr(end, "strftime") else end
++        df = self._transport.get_daily_historical(
++            dhan_symbol(instrument), instrument.exchange, days=days, start=start_s, end=end_s,
++        )
++        return CandleSeries(df, symbol=instrument.symbol, timeframe="1d")
+ 
+     def get_option_chain(self, underlying: "Instrument", expiry: int = 0, num_strikes: int = 10, **kwargs):
+         """Fetch an option chain, falling back to the next expiry on failure.
+ 
+         The Dhan library intermittently returns None / raises for a requested
+         week (its internal LTP call fails transiently), so we retry the next
+         expiries. `chain.expiry_index_used` records the index actually used
+         (out-of-range attempts clamp to Dhan's last available expiry), and
+         `chain.target_expiry` may be a placeholder — never assume the requested index.
+         """
+         from ntrade.domain.instruments.chain import OptionChain
+         exchange = "INDEX" if underlying.KIND == "index" else "NFO"
+         last_error: Exception | None = None
+         for attempt in (expiry, expiry + 1, expiry + 2):
+             try:
+-                result = self.tsl.get_option_chain(
+-                    Underlying=underlying.symbol, exchange=exchange,
++                result = self._transport.get_option_chain(
++                    dhan_symbol(underlying), exchange,
+                     expiry=attempt, num_strikes=num_strikes,
+                 )
+             except Exception as exc:
+                 last_error = exc
+                 continue
+             if result is None:
+                 last_error = RuntimeError(f"Dhan returned no option chain for {underlying.symbol} (expiry={attempt})")
+                 continue
+             atm, chain_df = result
+             if chain_df is None or chain_df.empty:
+                 last_error = RuntimeError(f"Dhan returned an empty option chain for {underlying.symbol} (expiry={attempt})")
+                 continue
+-            chain = _chain_from_dhan_df(underlying, chain_df, float(atm), asof=self._ts())
++            chain = chain_from_dhan_df(underlying, chain_df, float(atm), asof=self._ts())
+             # Expose which contract was actually used so callers can verify
+             # (the library does not return the real expiry date).
+             chain.expiry_index_used = attempt
+             # Resolve the REAL contract expiry from Dhan's expiry list so
+             # chain.target_expiry / chain.expiries() are no longer placeholders.
+             exp_dates = self.get_expiry_list(underlying)
+             if exp_dates:
+                 real = exp_dates[min(attempt, len(exp_dates) - 1)]
+@@ -434,440 +322,143 @@ class DhanBroker(BrokerAdapter):
+             price, ts = self.tsl.get_executed_price_and_time(orderid=order.order_id)
+             return float(price), str(ts)
+         except Exception:
+             return float(order.avg_price or 0.0), ""
+ 
+     def get_orderbook(self, *, now: datetime | None = None) -> OrderBook:
+         """Order book as a typed OrderBook domain object."""
+         try:
+-            records = _to_records(self.tsl.get_orderbook(debug="NO"))
+-            entries = tuple(
+-                OrderBookEntry(
+-                    symbol=str(r.get("tradingSymbol", r.get("symbol", ""))),
+-                    order_id=str(r.get("orderId", r.get("order_id", ""))),
+-                    side=str(r.get("transactionType", r.get("side", ""))).upper(),
+-                    quantity=int(r.get("quantity", r.get("qty", 0)) or 0),
+-                    price=float(r.get("price", r.get("pendingPrice", 0.0)) or 0.0),
+-                    status=str(r.get("status", r.get("orderState", ""))),
+-                    exchange=str(r.get("exchangeSegment", r.get("exchange", ""))),
+-                )
+-                for r in records
++            return DhanMapper.normalize_orderbook(
++                self._transport.get_orderbook(), now=self._ts(now),
+             )
+-            return OrderBook(entries=entries, timestamp=self._ts(now))
+         except Exception:
+             return OrderBook()
+ 
+     def get_trade_book(self, *, now: datetime | None = None) -> TradeBook:
+         """Trade book as a typed TradeBook domain object."""
+         try:
+-            records = _to_records(self.tsl.get_trade_book(debug="NO"))
+-            entries = tuple(
+-                TradeBookEntry(
+-                    symbol=str(r.get("tradingSymbol", r.get("symbol", ""))),
+-                    trade_id=str(r.get("tradeId", r.get("trade_id", ""))),
+-                    order_id=str(r.get("orderId", r.get("order_id", ""))),
+-                    side=str(r.get("transactionType", r.get("side", ""))).upper(),
+-                    quantity=int(r.get("quantity", r.get("qty", 0)) or 0),
+-                    price=float(r.get("price", r.get("tradePrice", 0.0)) or 0.0),
+-                )
+-                for r in records
++            return DhanMapper.normalize_tradebook(
++                self._transport.get_trade_book(), now=self._ts(now),
+             )
+-            return TradeBook(entries=entries, timestamp=self._ts(now))
+         except Exception:
+             return TradeBook()
+ 
+     def order_report(self):
+         """Order report normalized to a dict of row-dict lists."""
+-        try:
+-            report = self.tsl.order_report()
+-        except Exception:
+-            return {}
+-        if isinstance(report, dict):
+-            return {k: (_to_records(v) if not isinstance(v, (str, int, float)) else v)
+-                    for k, v in report.items()}
+-        if isinstance(report, (tuple, list)):
+-            names = ("orders", "positions", "trades")
+-            return {names[i]: _to_records(part) for i, part in enumerate(report)}
+-        return {}
++        return self._transport.order_report()
+ 
+     def get_live_pnl(self) -> float:
+-        try:
+-            return float(self.tsl.get_live_pnl() or 0.0)
+-        except Exception:
+-            return 0.0
++        return self._transport.get_live_pnl()
+ 
+     # ------------------------------------------------------------ portfolio
+     def get_balance(self) -> float:
+         self._ensure_tsl()  # Ensure token is fresh before balance fetch
+         # Deliberately NOT collapsed to 0.0 on failure: a 0.0 balance is
+         # indistinguishable from a genuine empty account, and silently zeroing
+         # the account on a network blip would corrupt PositionSyncEngine.
+         # Consumers that want defensive reads guard this themselves.
+-        return float(self.tsl.get_balance())
++        return self._transport.get_balance()
+ 
+     def get_positions(self):
+         """Return Position domain objects (Adapter: normalize broker API rows).
+ 
+         Raises on a failed fetch rather than returning []: an empty list means
+         "flat", so collapsing a transport error to [] would silently wipe the
+         kernel's portfolio during reconciliation (PositionSyncEngine keeps the
+         previous state when this raises)."""
+         self._ensure_tsl()  # Ensure token is fresh before position fetch
+-        df = self.tsl.get_positions()
+-        return _positions_from_df(df)
++        return self._transport.get_positions()
+ 
+     def get_holdings(self):
+         """Return Holding domain objects (Adapter: normalize broker API rows)."""
+         try:
+-            df = self.tsl.get_holdings()
++            return self._transport.get_holdings()
+         except Exception:
+             return []
+-        return _holdings_from_df(df)
+ 
+     # ------------------------------------------------------------ market data
+     def get_expiry_list(self, instrument: "Instrument"):
+         """Return the list of contract expiry dates for this underlying."""
+         exchange = "INDEX" if instrument.KIND == "index" else "NFO"
+         try:
+-            raw = self.tsl.get_expiry_list(Underlying=instrument.symbol, exchange=exchange)
++            return self._transport.get_expiry_list(instrument.symbol, exchange)
+         except Exception:
+             return []
+-        dates = []
+-        for item in raw or []:
+-            try:
+-                dates.append(pd.to_datetime(item).date())
+-            except Exception:
+-                continue
+-        return dates
+ 
+     def get_expiry_date(self, instrument: "Instrument", opt_fut: str = "OPTION") -> list:
+         """Resolve contract expiry dates for an option/future script.
+ 
+         Dhan's library takes opt_fut in ("OPTION", "FUTURE") and returns a
+         LIST of expiry date strings — we normalize to a list[date] (empty on
+         failure).
+         """
+         try:
+-            raw = self.tsl.get_expiry_date(Underlying=instrument.symbol, opt_fut=opt_fut)
++            return self._transport.get_expiry_date(instrument.symbol, opt_fut)
+         except Exception:
+             return []
+-        dates = []
+-        for item in raw or []:
+-            try:
+-                dates.append(pd.to_datetime(item).date())
+-            except Exception:
+-                continue
+-        return dates
+ 
+     def get_future_script(self, instrument: "Instrument", expiry: int):
+         """Resolve the Dhan tradingsymbol for a future of this underlying."""
+         try:
+-            return self.tsl.get_future_script(underlying=instrument.symbol, expiry=expiry)
++            return self._transport.get_future_script(instrument.symbol, expiry)
+         except Exception:
+             return None
+ 
+     def get_lot_size(self, instrument: "Instrument") -> int:
+         """Fetch the lot size for a derivative script (options/futures)."""
+         try:
+-            return int(self.tsl.get_lot_size(tradingsymbol=dhan_symbol(instrument)))
++            return self._transport.get_lot_size(dhan_symbol(instrument))
+         except Exception:
+             return 0
+ 
+     def get_long_term_historical(self, instrument, timeframe="1d", from_date=None, to_date=None) -> pd.DataFrame:
+         """Longer-dated history via Dhan's dedicated endpoint (dates required)."""
+-        tf = _dhan_timeframe(timeframe)
++        self._ensure_tsl()
+         exchange = "INDEX" if instrument.KIND == "index" else instrument.exchange
+-        try:
+-            df = self.tsl.get_long_term_historical_data(
+-                tradingsymbol=dhan_symbol(instrument), exchange=exchange,
+-                timeframe=tf, from_date=from_date, to_date=to_date,
+-            )
+-        except Exception:
+-            return pd.DataFrame()
+-        return _filter_history(_normalize_history(df), start=from_date, end=to_date)
++        from_s = from_date.strftime("%Y-%m-%d") if hasattr(from_date, "strftime") else from_date
++        to_s = to_date.strftime("%Y-%m-%d") if hasattr(to_date, "strftime") else to_date
++        return self._transport.get_long_term_historical(
++            dhan_symbol(instrument), exchange, timeframe, from_date=from_s, to_date=to_s,
++        )
+ 
+     def get_ohlc(self, instrument: "Instrument") -> dict:
+         """Intraday OHLC bundle from the tick-level endpoint."""
+         try:
+-            data = self.tsl.get_ohlc_data(names=[dhan_symbol(instrument)])
+-            return dict(data.get(dhan_symbol(instrument), {}) or {})
++            return self._transport.get_ohlc(dhan_symbol(instrument))
+         except Exception:
+             return {}
+ 
+     def get_start_date(self):
+         try:
+-            return self.tsl.get_start_date()
++            return self._transport.get_start_date()
+         except Exception:
+             return None
+ 
+     def get_instrument_file(self):
+         try:
+-            return self.tsl.get_instrument_file()
++            return self._transport.get_instrument_file()
+         except Exception:
+             return None
+ 
+     def get_instrument_metadata(self, instrument: "Instrument") -> dict:
+         """Hydrate tick size / lot size / freeze qty from Dhan's instrument file.
+ 
+         Falls back to the commodity FUTCOM row when the symbol only matches via
+         SM_SYMBOL_NAME (e.g. 'GOLD'); returns {} when nothing matches.
+         """
+         try:
+-            sym = dhan_symbol(instrument)
+-            idf = self.tsl.instrument_df
+-            # Filter by exchange (mapped like the wrapper: NFO→NSE) so symbols
+-            # listed on multiple exchanges resolve deterministically.
+-            exch = _DAY_BLOCK_MAPPED_EXCHANGE.get(instrument.exchange, instrument.exchange)
+-            df = idf[((idf["SEM_TRADING_SYMBOL"] == sym) | (idf["SEM_CUSTOM_SYMBOL"] == sym))
+-                     & (idf["SEM_EXM_EXCH_ID"] == exch)]
+-            if df.empty:
+-                df = idf[(idf["SM_SYMBOL_NAME"].astype(str) == instrument.symbol.upper())
+-                         & (idf["SEM_INSTRUMENT_NAME"] == "FUTCOM")]
+-            if df.empty:
+-                return {}
+-            row = df.iloc[-1]
+-            tick = _first_float(row, "SEM_TICK_SIZE") or None
+-            lot = _first_int(row, "SEM_LOT_UNITS") or None
+-            frz = _first_int(row, "SEM_FREEZE_QTY") or None
+-            return {"tick_size": tick, "lot_size": lot, "freeze_qty": frz}
++            return self._transport.get_instrument_metadata(
++                dhan_symbol(instrument), instrument.exchange,
++                underlying_symbol=instrument.symbol,
++            )
+         except Exception:
+             return {}
+ 
+ 
+-# ------------------------------------------------------------------ helpers
+-def _chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float, expiry: date | None = None, asof: datetime | None = None) -> "OptionChain":
+-    """Build an OptionChain from a Dhan-style chain dataframe.
+-
+-    Lives in the Dhan adapter (not the domain) so the domain layer stays
+-    broker-agnostic (mission: no broker-specific logic in domain objects).
+-    Dhan's chain frame has CE/PE columns per strike ("CE LTP", "CE OI", ...).
+-    """
+-    from ntrade.domain.analytics.greeks import Greeks
+-    from ntrade.domain.instruments.chain import OptionChain
+-    from ntrade.domain.instruments.derivatives import Option
+-
+-    options: list[Option] = []
+-    for _, row in df.iterrows():
+-        strike = float(row["Strike Price"])
+-        strike_label = int(strike) if strike == int(strike) else strike
+-        for leg, prefix, otype in (("CE", "CE", "CE"), ("PE", "PE", "PE")):
+-            ltp_col = f"{prefix} LTP"
+-            if ltp_col not in df.columns or pd.isna(row.get(ltp_col)):
+-                continue
+-            opt = Option(
+-                symbol=f"{underlying.symbol} {strike_label} {leg}",
+-                exchange="NFO",
+-                strike=strike,
+-                expiry=expiry or (asof or datetime.now()).date(),
+-                option_type=otype,
+-                underlying_symbol=underlying.symbol,
+-                broker=underlying._broker,
+-            )
+-            opt._quote = opt._quote.with_update(
+-                ltp=float(row.get(ltp_col, 0) or 0),
+-                oi=int(row.get(f"{prefix} OI", 0) or 0),
+-                volume=int(row.get(f"{prefix} Volume", 0) or 0),
+-            )
+-            iv = float(row.get(f"{prefix} IV", 0) or 0)
+-            if iv:
+-                opt.set_greeks(Greeks(
+-                    delta=float(row.get(f"{prefix} Delta", 0) or 0),
+-                    gamma=float(row.get(f"{prefix} Gamma", 0) or 0),
+-                    theta=float(row.get(f"{prefix} Theta", 0) or 0),
+-                    vega=float(row.get(f"{prefix} Vega", 0) or 0),
+-                    iv=iv,
+-                ))
+-            options.append(opt)
+-    return OptionChain(underlying, options, expiry=expiry, atm_strike=atm, chain_df=df)
+-
+-
+-def _f(v) -> float:
+-    try:
+-        return float(v or 0.0)
+-    except (TypeError, ValueError):
+-        return 0.0
+-
+-
+-def _to_records(value):
+-    """Normalize a DataFrame / dict / list into a list of row dicts.
+-
+-    Dhan's order/trade book endpoints return DataFrames (or dicts), which are
+-    ambiguous for truthiness (`bool(df)` raises) and unhelpful as raw returns.
+-    Symbol-keyed dicts (e.g. {"RELIANCE": {...}}) keep their key merged into
+-    each row as `symbol` so no data is silently lost.
+-    """
+-    if value is None:
+-        return []
+-    if isinstance(value, pd.DataFrame):
+-        return value.to_dict("records")
+-    if isinstance(value, dict):
+-        if not value:
+-            return []
+-        if all(isinstance(v, (dict, list, tuple)) for v in value.values()):
+-            out = []
+-            for k, v in value.items():
+-                if isinstance(v, (list, tuple)):
+-                    out.extend([{**r, "symbol": k} if isinstance(r, dict) else r for r in v])
+-                else:
+-                    out.append({**v, "symbol": k})
+-            return out
+-        return [value]
+-    if isinstance(value, (list, tuple)):
+-        return [dict(v) if isinstance(v, dict) else v for v in value]
+-    return []
+-
+-
+-# Mirrors Dhan-Tradehull's `instrument_exchange` mapping used in its
+-# instrument-file lookups: NFO/BFO derivatives are filed under the cash
+-# exchange id, CUR under NSE.
+-_DAY_BLOCK_MAPPED_EXCHANGE = {"NFO": "NSE", "BFO": "BSE", "CUR": "NSE"}
+-
+-
+-_DHAN_TIMEFRAMES = {
+-    "1m": "1", "2m": "2", "3m": "3", "4m": "4", "5m": "5",
+-    "15m": "15", "25m": "25", "60m": "60", "1h": "60",
+-    "day": "DAY", "1d": "DAY", "daily": "DAY",
+-}
+-
+-
+-def _dhan_timeframe(tf: str) -> str:
+-    """Map a user timeframe to Dhan's interval string, raising on unsupported.
+-
+-    Dhan only accepts ['1','2','3','4','5','15','25','60','DAY'] — there is no
+-    10-minute interval. Unknown values previously fell back to '5' silently,
+-    which returned the wrong data; now they raise so callers notice.
+-    """
+-    key = str(tf).strip().lower()
+-    if key not in _DHAN_TIMEFRAMES:
+-        raise ValueError(
+-            f"Unsupported timeframe {tf!r}; Dhan supports "
+-            f"1m/2m/3m/4m/5m/15m/25m/60m/DAY (not 10m)"
+-        )
+-    return _DHAN_TIMEFRAMES[key]
+-
+-
+-def _positions_from_df(df):
+-    """Map a Dhan positions DataFrame into Position domain objects (NaN-safe)."""
+-    from ntrade.domain.portfolio import Position
+-    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+-        return []
+-    out = []
+-    for _, r in df.iterrows():
+-        symbol = _first_str(r, "tradingSymbol", "tradingsymbol")
+-        if not symbol:
+-            continue
+-        out.append(Position(
+-            symbol=symbol,
+-            quantity=_position_quantity(r),
+-            avg_price=_first_float(r, "avgTradingPrice", "avgPrice"),
+-            ltp=_first_float(r, "ltp"),
+-            product=_first_str(r, "productType") or "MIS",
+-            exchange=_first_str(r, "exchangeSegment") or "NSE",
+-        ))
+-    return out
+-
+-
+-def _position_quantity(row) -> int:
+-    """netQty → quantity → (buyQty - sellQty) → 0, NaN-safe."""
+-    qty = _first_int(row, "netQty", "quantity")
+-    if qty == 0:
+-        qty = _first_int(row, "buyQty") - _first_int(row, "sellQty")
+-    return qty
+-
+-
+-def _holdings_from_df(df):
+-    """Map a Dhan holdings DataFrame into Holding domain objects (NaN-safe)."""
+-    from ntrade.domain.portfolio import Holding
+-    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+-        return []
+-    out = []
+-    for _, r in df.iterrows():
+-        symbol = _first_str(r, "tradingSymbol", "tradingsymbol")
+-        if not symbol:
+-            continue
+-        out.append(Holding(
+-            symbol=symbol,
+-            quantity=_first_int(r, "netQty", "quantity"),
+-            avg_price=_first_float(r, "avgTradingPrice", "avgPrice"),
+-            ltp=_first_float(r, "ltp"),
+-        ))
+-    return out
+-
+-
+-def _first_str(row, *keys) -> str:
+-    for k in keys:
+-        v = row.get(k)
+-        if v is not None and not (isinstance(v, float) and pd.isna(v)):
+-            return str(v)
+-    return ""
+-
+-
+-def _first_int(row, *keys) -> int:
+-    for k in keys:
+-        v = row.get(k)
+-        if v is None or (isinstance(v, float) and pd.isna(v)):
+-            continue
+-        try:
+-            return int(v)
+-        except (TypeError, ValueError):
+-            continue
+-    return 0
+-
+-
+-def _first_float(row, *keys) -> float:
+-    for k in keys:
+-        v = row.get(k)
+-        if v is None or (isinstance(v, float) and pd.isna(v)):
+-            continue
+-        try:
+-            return float(v)
+-        except (TypeError, ValueError):
+-            continue
+-    return 0.0
+-
+-
+-def _normalize_history(df: pd.DataFrame) -> pd.DataFrame:
+-    if df is None or df.empty:
+-        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+-    df = df.copy()
+-    df.columns = [str(c).lower() for c in df.columns]
+-    keep = [c for c in ("timestamp", "open", "high", "low", "close", "volume", "oi") if c in df.columns]
+-    return df[keep].reset_index(drop=True)
+-
+-
+-def _filter_history(df: pd.DataFrame, days=None, start=None, end=None, asof=None) -> pd.DataFrame:
+-    """Apply days/start/end filters the Dhan library does not support itself.
+-
+-    Dhan returns tz-aware timestamps (IST), so the cutoffs are localized to the
+-    series' own timezone before comparing. ``asof`` anchors the ``days`` cutoff
+-    (injected clock for replay determinism; wall clock when not given).
+-    """
+-    if df.empty or "timestamp" not in df:
+-        return df
+-    ts = pd.to_datetime(df["timestamp"], errors="coerce")
+-    tz = ts.dt.tz
+-    mask = pd.Series(True, index=df.index)
+-
+-    def _cutoff(value):
+-        cut = pd.Timestamp(value)
+-        if tz is not None and cut.tzinfo is None:
+-            cut = cut.tz_localize(tz)
+-        return cut
+-
+-    if start is not None:
+-        mask &= ts >= _cutoff(start)
+-    if end is not None:
+-        mask &= ts <= _cutoff(end)
+-    if days is not None:
+-        anchor = asof if asof is not None else datetime.now()
+-        mask &= ts >= _cutoff(anchor - timedelta(days=days))
+-    return df[mask].reset_index(drop=True)
+-
+-
+ # ------------------------------------------------------------------ capabilities
+ @capability("depth20", brokers=("dhan",))
+ def _depth20(instrument, levels: int = 20) -> MarketDepth:
+     broker = instrument.broker_adapter
+     if not isinstance(broker, DhanBroker):
+         raise AttributeError("depth20 requires a DhanBroker")
+     depth = broker.get_depth(instrument)
+     if depth is None:
+diff --git a/ntrade/brokers/dhan_mapper.py b/ntrade/brokers/dhan_mapper.py
+index 5cb18a9..798f445 100644
+--- a/ntrade/brokers/dhan_mapper.py
++++ b/ntrade/brokers/dhan_mapper.py
+@@ -107,18 +107,24 @@ class DhanMapper:
+         return df[keep].reset_index(drop=True)
+ 
+     @staticmethod
+     def filter_history(
+         df: pd.DataFrame,
+         days: int | None = None,
+         start: str | None = None,
+         end: str | None = None,
++        *,
++        asof: datetime | None = None,
+     ) -> pd.DataFrame:
+-        """Apply days/start/end filters to a normalized history frame."""
++        """Apply days/start/end filters to a normalized history frame.
 +
-+    def _ingest_bar(self, symbol, exchange, open_, high, low, close, volume, ts) -> None:
-+        bucket = self._bucket(ts)
-+        candle = self._open.get(symbol)
-+        if candle is None or candle["bucket"] != bucket:
-+            if candle is not None:
-+                self._close(symbol, candle)
-+            candle = self._open[symbol] = {
-+                "bucket": bucket, "exchange": exchange,
-+                "open": open_, "high": high, "low": low, "close": close, "volume": 0,
-+            }
-+        candle["open"], candle["high"] = open_, high
-+        candle["low"], candle["close"] = low, close
-+        candle["volume"] = volume
-+        self._bar_seeded[symbol] = bucket
-+
-     def _ingest(self, symbol, exchange, price, ts, volume: int = 0) -> None:
-         bucket = self._bucket(ts)
-         candle = self._open.get(symbol)
-         if candle is None or candle["bucket"] != bucket:
-             if candle is not None:
-                 self._close(symbol, candle)
-             candle = self._open[symbol] = {
-                 "bucket": bucket, "exchange": exchange,
-                 "open": price, "high": price, "low": price, "close": price, "volume": 0,
-             }
-diff --git a/tests/test_candle_engine.py b/tests/test_candle_engine.py
-new file mode 100644
-index 0000000..f6eda5f
---- /dev/null
-+++ b/tests/test_candle_engine.py
-@@ -0,0 +1,74 @@
-+"""CandleEngine backtest-ohlcv tests (Task Group 2, B-007 / F-005).
-+
-+Backtest bars carry real OHLCV via QuoteEvent; the paired close tick must not
-+double-count volume. CandleEngine must ignore live/replay QuoteEvents (they
-+carry day-session OHLCV, not bar shapes).
-+"""
-+
-+from datetime import datetime, timedelta
-+
-+import pandas as pd
-+import pytest
-+
-+from ntrade.events.market import QuoteEvent, TickEvent
-+from ntrade.kernel.clock import ReplayClock
-+from ntrade.kernel.session import TradingKernel
-+
-+
-+def _ohlcv(bars: int = 20, step_price: float = 1.0) -> pd.DataFrame:
-+    start = datetime(2026, 1, 1, 9, 15)
-+    rows = []
-+    for i in range(bars):
-+        rows.append({
-+            "timestamp": start + timedelta(minutes=5 * i),
-+            "open": 100 + i * step_price, "high": 102 + i * step_price,
-+            "low": 99 + i * step_price, "close": 101 + i * step_price,
-+            "volume": 1000,
-+        })
-+    return pd.DataFrame(rows)
-+
-+
-+def _backtest():
-+    from ntrade.backtest.simulator import BacktestSimulator
-+    return BacktestSimulator(timeframe="5m", initial_cash=100_000.0, statutory=None)
-+
-+
-+def test_backtest_candles_carry_real_ohlcv():
-+    sim = _backtest()
-+    sim.run(_ohlcv())
-+    candles = sim.kernel.candle_engine.candles("NIFTY")
-+    assert len(candles) == 20
-+    for i, candle in enumerate(candles):
-+        assert candle.open == pytest.approx(100 + i)
-+        assert candle.high == pytest.approx(102 + i)
-+        assert candle.low == pytest.approx(99 + i)
-+        assert candle.close == pytest.approx(101 + i)
-+        assert candle.volume == 1000
-+    # not degenerate (open=high=low=close)
-+    for candle in candles[1:]:
-+        assert candle.open != candle.close
-+
-+
-+def test_backtest_indicators_populated_with_real_candles():
-+    sim = _backtest()
-+    sim.run(_ohlcv())
-+    indicators = sim.kernel.ctx.instrument("NIFTY")._indicators
-+    assert "rsi_14" in indicators
-+    assert "atr_14" in indicators
-+    assert "stx_10_3" in indicators
-+    # real high-low range (3.0) must drive ATR near 3.0; degenerate candles
-+    # (open=high=low=close) collapse it to ~1.0 and fail this check
-+    assert indicators["atr_14"] == pytest.approx(3.0, abs=0.5)
-+
-+
-+def test_candle_engine_ignores_live_quote_events():
-+    """Live/replay QuoteEvents carry day-session OHLCV and must not mint bars."""
-+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="5m")
-+    k.bus.publish(QuoteEvent(
-+        symbol="NIFTY", exchange="NSE", ltp=101.0, open=100.0, high=102.0,
-+        low=99.0, volume=1000, oi=0,
-+        ts=datetime(2026, 1, 1, 9, 15),
-+    ))
-+    assert k.candle_engine.candles("NIFTY") == []
-+    k.candle_engine.flush()
-+    assert k.candle_engine.candles("NIFTY") == []
++        ``asof`` anchors the ``days`` cutoff (injected clock for replay
++        determinism); it falls back to the wall clock when not supplied.
++        """
+         if df.empty or "timestamp" not in df:
+             return df
+         ts = pd.to_datetime(df["timestamp"], errors="coerce")
+         tz = ts.dt.tz
+         mask = pd.Series(True, index=df.index)
+ 
+         def _cutoff(value):
+             cut = pd.Timestamp(value)
+@@ -126,17 +132,18 @@ class DhanMapper:
+                 cut = cut.tz_localize(tz)
+             return cut
+ 
+         if start is not None:
+             mask &= ts >= _cutoff(start)
+         if end is not None:
+             mask &= ts <= _cutoff(end)
+         if days is not None:
+-            mask &= ts >= _cutoff(datetime.now() - timedelta(days=days))
++            anchor = asof if asof is not None else datetime.now()
++            mask &= ts >= _cutoff(anchor - timedelta(days=days))
+         return df[mask].reset_index(drop=True)
+ 
+     # ---- order/trade book normalization ------------------------------------
+ 
+     @staticmethod
+     def normalize_orderbook(records: list[dict], *, now: datetime | None = None) -> OrderBook:
+         """Normalize raw records into an OrderBook."""
+         entries = tuple(
+diff --git a/ntrade/brokers/dhan_transport.py b/ntrade/brokers/dhan_transport.py
+index 5d57296..beacd9a 100644
+--- a/ntrade/brokers/dhan_transport.py
++++ b/ntrade/brokers/dhan_transport.py
+@@ -14,16 +14,17 @@ from __future__ import annotations
+ import threading
+ from datetime import date, datetime, timedelta
+ from typing import TYPE_CHECKING, Any
+ 
+ import pandas as pd
+ 
+ from ntrade.execution.retry import RetryPolicy
+ from ntrade.brokers.dhan_mapper import (
++    DAY_BLOCK_MAPPED_EXCHANGE,
+     DhanMapper,
+     chain_from_dhan_df,
+     to_records,
+     _f,
+     _first_float,
+     _first_int,
+     _first_str,
+ )
+@@ -110,17 +111,17 @@ class DhanTransport:
+                 high=_f(qd.get("high")), low=_f(qd.get("low")),
+                 open=_f(qd.get("open")), prev_close=_f(qd.get("close_price")),
+                 volume=int(qd.get("volume") or 0), oi=int(qd.get("open_interest") or 0),
+             )
+         except Exception:
+             pass
+         return quote
+ 
+-    def get_depth(self, symbol: str, exchange: str, timeout: float = 5.0) -> MarketDepth | None:
++    def get_depth(self, symbol: str, exchange: str, timeout: float = 5.0, *, now: datetime | None = None) -> MarketDepth | None:
+         """20-level market depth via websocket snapshot (timeout-bounded)."""
+         try:
+             dc = self._tsl.full_market_depth_data([(symbol, exchange)])
+             key = f"{symbol.upper()}|{exchange.upper()}"
+             client = dc.get(key) or next(iter(dc.values()), None)
+             if client is None:
+                 return None
+             result: dict = {}
+@@ -134,50 +135,51 @@ class DhanTransport:
+             t = threading.Thread(target=_read_frames, daemon=True)
+             t.start()
+             t.join(timeout)
+             if "frames" not in result:
+                 return None
+             bid_df, ask_df = result["frames"]
+             if bid_df is None or bid_df.empty:
+                 return None
+-            return DhanMapper.normalize_depth(symbol, bid_df, ask_df)
++            return DhanMapper.normalize_depth(symbol, bid_df, ask_df, now=now or self._ts())
+         except Exception:
+             return None
+ 
+     def get_historical(
+         self, symbol: str, exchange: str, timeframe: str,
+         days: int | None = None, start: str | None = None, end: str | None = None,
+     ) -> CandleSeries:
+         """Fetch historical data with normalization and filtering."""
+         tf = DhanMapper.map_timeframe(timeframe)
+         try:
+             df = self._tsl.get_historical_data(
+                 tradingsymbol=symbol, exchange=exchange, timeframe=tf,
+             )
+         except Exception:
+             return CandleSeries(pd.DataFrame(), symbol=symbol, timeframe=timeframe)
+         df = DhanMapper.normalize_history(df)
+-        return CandleSeries(DhanMapper.filter_history(df, days=days, start=start, end=end), symbol=symbol, timeframe=timeframe)
++        return CandleSeries(DhanMapper.filter_history(df, days=days, start=start, end=end, asof=self._ts()), symbol=symbol, timeframe=timeframe)
+ 
+     def get_long_term_historical(
+         self, symbol: str, exchange: str, timeframe: str = "DAY",
+         from_date: str | None = None, to_date: str | None = None,
+     ) -> pd.DataFrame:
+         """Longer-dated history via Dhan's dedicated endpoint."""
+         tf = DhanMapper.map_timeframe(timeframe)
+         try:
+             df = self._tsl.get_long_term_historical_data(
+                 tradingsymbol=symbol, exchange=exchange,
+                 timeframe=tf, from_date=from_date, to_date=to_date,
+             )
+         except Exception:
+             return pd.DataFrame()
+         return DhanMapper.filter_history(
+             DhanMapper.normalize_history(df), start=from_date, end=to_date,
++            asof=self._ts(),
+         )
+ 
+     def get_daily_historical(
+         self, symbol: str, exchange: str,
+         days: int | None = None, start: str | None = None, end: str | None = None,
+     ) -> pd.DataFrame:
+         """Daily candles via Dhan's daily endpoint (for FUT-type contracts)."""
+         to_date = end if end is not None else self._ts().date()
+@@ -186,16 +188,17 @@ class DhanTransport:
+             df = self._tsl.get_long_term_historical_data(
+                 tradingsymbol=symbol, exchange=exchange,
+                 timeframe="DAY", from_date=from_date, to_date=to_date,
+             )
+         except Exception:
+             return pd.DataFrame()
+         return DhanMapper.filter_history(
+             DhanMapper.normalize_history(df), days=days, start=start, end=end,
++            asof=self._ts(),
+         )
+ 
+     # ---- option chain ------------------------------------------------------
+ 
+     def get_option_chain(
+         self, underlying: str, exchange: str,
+         expiry: int = 0, num_strikes: int = 10,
+     ):
+@@ -361,17 +364,17 @@ class DhanTransport:
+ 
+     def get_instrument_metadata(self, symbol: str, exchange: str,
+                                 underlying_symbol: str = "") -> dict:
+         """Hydrate tick size / lot size / freeze qty from Dhan's instrument file."""
+         try:
+             idf = self.instrument_df
+             if idf is None:
+                 return {}
+-            exch = DhanMapper.DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
++            exch = DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
+             df = idf[
+                 ((idf["SEM_TRADING_SYMBOL"] == symbol) | (idf["SEM_CUSTOM_SYMBOL"] == symbol))
+                 & (idf["SEM_EXM_EXCH_ID"] == exch)
+             ]
+             if df.empty and underlying_symbol:
+                 df = idf[
+                     (idf["SM_SYMBOL_NAME"].astype(str) == underlying_symbol.upper())
+                     & (idf["SEM_INSTRUMENT_NAME"] == "FUTCOM")
+@@ -387,17 +390,17 @@ class DhanTransport:
+             return {}
+ 
+     def blocks_day(self, symbol: str, exchange: str) -> bool:
+         """True when Dhan's intraday wrapper rejects DAY for this instrument."""
+         try:
+             idf = self.instrument_df
+             if idf is None:
+                 return exchange in ("MCX", "NFO", "BFO")
+-            exch = DhanMapper.DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
++            exch = DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
+             df = idf[
+                 ((idf["SEM_TRADING_SYMBOL"] == symbol) | (idf["SEM_CUSTOM_SYMBOL"] == symbol))
+                 & (idf["SEM_EXM_EXCH_ID"] == exch)
+             ]
+             if df.empty:
+                 return exchange in ("MCX", "NFO", "BFO")
+             return "FUT" in str(df.iloc[-1]["SEM_INSTRUMENT_NAME"])
+         except Exception:
+diff --git a/tests/test_dhan_broker.py b/tests/test_dhan_broker.py
+index 4750f12..1ce1db6 100644
+--- a/tests/test_dhan_broker.py
++++ b/tests/test_dhan_broker.py
+@@ -2,25 +2,27 @@
+ 
+ import types
+ from datetime import date
+ 
+ import pandas as pd
+ import pytest
+ 
+ from ntrade.brokers.dhan import DhanBroker, dhan_symbol
++from ntrade.brokers.dhan_transport import DhanTransport
+ from ntrade.domain.instruments.cash import Equity, Index
+ from ntrade.domain.instruments.derivatives import Option
+ from ntrade.domain.orders.order import Order, OrderSide, OrderType, TradeType
+ 
+ 
+ def make_broker(**tsl_methods):
+     broker = DhanBroker.__new__(DhanBroker)
+     broker._connected = True
+     broker.tsl = types.SimpleNamespace(**tsl_methods)
++    broker._transport = DhanTransport(broker.tsl)
+     return broker
+ 
+ 
+ def test_dhan_symbol_mapping():
+     opt = Option("NIFTY 24400 CE", exchange="NFO", strike=24400,
+                  expiry=date(2026, 8, 1), option_type="CE", underlying_symbol="NIFTY")
+     assert "NIFTY" in dhan_symbol(opt)
+     assert "24400" in dhan_symbol(opt)
+@@ -78,46 +80,46 @@ def test_get_quote_no_duplicate_kwargs():
+     assert quote.volume == 1000
+     assert quote.oi == 500
+     assert quote.prev_close == 24350.0
+ 
+ 
+ def test_get_quote_raises_on_failure():
+     broker = make_broker(get_ltp_data=lambda names: (_ for _ in ()).throw(RuntimeError("boom")))
+     nifty = Index("NIFTY")
+-    with pytest.raises(RuntimeError, match="LTP is 0"):
++    with pytest.raises(RuntimeError, match="LTP fetch failed"):
+         broker.get_quote(nifty)
+ 
+ 
+ def test_dhan_timeframe_mapping():
+-    from ntrade.brokers.dhan import _dhan_timeframe
+-    assert _dhan_timeframe("5m") == "5"
+-    assert _dhan_timeframe("1m") == "1"
+-    assert _dhan_timeframe("15m") == "15"
+-    assert _dhan_timeframe("25m") == "25"
+-    assert _dhan_timeframe("60m") == "60"
+-    assert _dhan_timeframe("1h") == "60"
+-    assert _dhan_timeframe("1d") == "DAY"
+-    assert _dhan_timeframe("DAY") == "DAY"
++    from ntrade.brokers.dhan_mapper import DhanMapper
++    assert DhanMapper.map_timeframe("5m") == "5"
++    assert DhanMapper.map_timeframe("1m") == "1"
++    assert DhanMapper.map_timeframe("15m") == "15"
++    assert DhanMapper.map_timeframe("25m") == "25"
++    assert DhanMapper.map_timeframe("60m") == "60"
++    assert DhanMapper.map_timeframe("1h") == "60"
++    assert DhanMapper.map_timeframe("1d") == "DAY"
++    assert DhanMapper.map_timeframe("DAY") == "DAY"
+ 
+ 
+ def test_dhan_timeframe_rejects_10m():
+     """Dhan has NO 10-minute interval — must raise, not silently fall back to 5."""
+-    from ntrade.brokers.dhan import _dhan_timeframe
++    from ntrade.brokers.dhan_mapper import DhanMapper
+     with pytest.raises(ValueError):
+-        _dhan_timeframe("10m")
++        DhanMapper.map_timeframe("10m")
+     with pytest.raises(ValueError):
+-        _dhan_timeframe("daily-x")
++        DhanMapper.map_timeframe("daily-x")
+ 
+ 
+ def test_dhan_timeframe_accepts_2_3_4m():
+-    from ntrade.brokers.dhan import _dhan_timeframe
+-    assert _dhan_timeframe("2m") == "2"
+-    assert _dhan_timeframe("3m") == "3"
+-    assert _dhan_timeframe("4m") == "4"
++    from ntrade.brokers.dhan_mapper import DhanMapper
++    assert DhanMapper.map_timeframe("2m") == "2"
++    assert DhanMapper.map_timeframe("3m") == "3"
++    assert DhanMapper.map_timeframe("4m") == "4"
+ 
+ 
+ def test_get_historical_rejects_unsupported_timeframe():
+     broker = make_broker(get_historical_data=lambda **kw: pd.DataFrame())
+     rel = Equity("RELIANCE")
+     with pytest.raises(ValueError):
+         broker.get_historical(rel, timeframe="10m")
+ 
+diff --git a/tests/test_gap_closure.py b/tests/test_gap_closure.py
+index 3cac099..46d04cc 100644
+--- a/tests/test_gap_closure.py
++++ b/tests/test_gap_closure.py
+@@ -6,27 +6,29 @@ Every test is offline: Dhan is stubbed with a SimpleNamespace Tradehull.
+ 
+ import types
+ from datetime import date
+ 
+ import pandas as pd
+ import pytest
+ 
+ from ntrade.brokers.dhan import DhanBroker
++from ntrade.brokers.dhan_transport import DhanTransport
+ from ntrade.brokers.paper import PaperBroker
+ from ntrade.domain.instruments.cash import Equity, Index
+ from ntrade.domain.instruments.derivatives import Option
+ from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType, TradeType
+ from ntrade.domain.portfolio import Portfolio
+ 
+ 
+ def make_broker(**tsl_methods):
+     broker = DhanBroker.__new__(DhanBroker)
+     broker._connected = True
+     broker.tsl = types.SimpleNamespace(**tsl_methods)
++    broker._transport = DhanTransport(broker.tsl)
+     return broker
+ 
+ 
+ def _dhan_order(order_id="ORD-1"):
+     broker = make_broker(
+         cancel_order=lambda **kw: None,
+         modify_order=lambda **kw: None,
+         get_order_status=lambda orderid: "TRADED",
+@@ -176,19 +178,19 @@ def test_dhan_orderbook_dataframe_normalized():
+     # order_report still returns raw dicts (not typed) — only books are typed
+     assert len(report["orders"]) == 2
+     assert len(report["positions"]) == 2
+     assert len(report["trades"]) == 2
+ 
+ 
+ def test_to_records_symbol_keyed_dict_keeps_keys():
+     """Symbol-keyed dicts must keep their key merged into each row."""
+-    from ntrade.brokers.dhan import _to_records
+-    rows = _to_records({"RELIANCE": {"qty": 10, "ltp": 100.0},
+-                        "TCS": [{"qty": 5, "ltp": 50.0}, {"qty": 2, "ltp": 51.0}]})
++    from ntrade.brokers.dhan_mapper import to_records
++    rows = to_records({"RELIANCE": {"qty": 10, "ltp": 100.0},
++                       "TCS": [{"qty": 5, "ltp": 50.0}, {"qty": 2, "ltp": 51.0}]})
+     assert rows[0]["symbol"] == "RELIANCE"
+     assert rows[1]["symbol"] == "TCS"
+     assert rows[2]["symbol"] == "TCS"
+     assert rows[2]["qty"] == 2
+ 
+ 
+ def test_start_date_and_instrument_file_capabilities():
+     from ntrade.brokers.capabilities import registered_capabilities
+diff --git a/tests/test_live_execution.py b/tests/test_live_execution.py
+index c99ef99..1a804e5 100644
+--- a/tests/test_live_execution.py
++++ b/tests/test_live_execution.py
+@@ -7,16 +7,17 @@ simulated path, and broker position/balance reconciliation.
+ 
+ import types
+ from datetime import datetime, timedelta
+ 
+ import pandas as pd
+ import pytest
+ 
+ from ntrade.brokers.dhan import DhanBroker
++from ntrade.brokers.dhan_transport import DhanTransport
+ from ntrade.domain.instruments.cash import Equity
+ from ntrade.domain.portfolio import Position
+ from ntrade.events.market import TickEvent
+ from ntrade.events.order import (
+     OrderAcceptedEvent, OrderFilledEvent, OrderIntentEvent, OrderRejectedEvent,
+ )
+ from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
+ from ntrade.engines.strategy_engine import Strategy
+@@ -51,16 +52,17 @@ def _tick(minute: int = 0):
+     return TickEvent(symbol="NIFTY", exchange="NSE", price=100.0, ts=_ts(minute))
+ 
+ 
+ def make_broker(**tsl_methods) -> DhanBroker:
+     """A real DhanBroker wired to a stubbed Tradehull (like test_dhan_broker)."""
+     broker = DhanBroker.__new__(DhanBroker)
+     broker._connected = True
+     broker.tsl = types.SimpleNamespace(**tsl_methods)
++    broker._transport = DhanTransport(broker.tsl)
+     return broker
+ 
+ 
+ def _completed_order_status():
+     """A stub whose orders go PENDING on placement, then COMPLETE on poll."""
+     state = {"filled": False}
+ 
+     def order_placement(**kw):
+diff --git a/tests/test_mission_gaps.py b/tests/test_mission_gaps.py
+index c1fe6cc..42b196a 100644
+--- a/tests/test_mission_gaps.py
++++ b/tests/test_mission_gaps.py
+@@ -191,37 +191,41 @@ def test_refresh_hydrates_metadata_once():
+     rel.refresh()
+     assert rel.tick_size == 0.05
+     assert calls["n"] == 1  # hydrated exactly once
+ 
+ 
+ def test_dhan_get_instrument_metadata_from_file():
+     import types
+     from ntrade.brokers.dhan import DhanBroker
++    from ntrade.brokers.dhan_transport import DhanTransport
+     idf = pd.DataFrame([{
+         "SEM_TRADING_SYMBOL": "RELIANCE",
+         "SEM_CUSTOM_SYMBOL": "RELIANCE",
+         "SEM_EXM_EXCH_ID": "NSE",
+         "SEM_TICK_SIZE": 0.05, "SEM_LOT_UNITS": 1, "SEM_FREEZE_QTY": 5000,
+     }])
+     broker = DhanBroker.__new__(DhanBroker)
+     broker._connected = True
+     broker.tsl = types.SimpleNamespace(instrument_df=idf)
++    broker._transport = DhanTransport(broker.tsl)
+     meta = broker.get_instrument_metadata(Equity("RELIANCE"))
+     assert meta == {"tick_size": 0.05, "lot_size": 1, "freeze_qty": 5000}
+ 
+ 
+ def test_dhan_get_instrument_metadata_empty_when_unknown():
+     import types
+     from ntrade.brokers.dhan import DhanBroker
++    from ntrade.brokers.dhan_transport import DhanTransport
+     idf = pd.DataFrame({"SEM_TRADING_SYMBOL": ["SOMETHING"], "SEM_CUSTOM_SYMBOL": ["X"],
+                         "SEM_EXM_EXCH_ID": ["NSE"]})
+     broker = DhanBroker.__new__(DhanBroker)
+     broker._connected = True
+     broker.tsl = types.SimpleNamespace(instrument_df=idf)
++    broker._transport = DhanTransport(broker.tsl)
+     assert broker.get_instrument_metadata(Equity("RELIANCE")) == {}
+ 
+ 
+ def test_base_broker_metadata_default_empty():
+     broker = PaperBroker()
+     assert broker.get_instrument_metadata(Equity("RELIANCE")) == {}
+ 
+ 
+diff --git a/tests/test_options_analytics.py b/tests/test_options_analytics.py
+index fda7635..7866b0c 100644
+--- a/tests/test_options_analytics.py
++++ b/tests/test_options_analytics.py
+@@ -9,17 +9,17 @@ from ntrade.brokers.paper import PaperBroker
+ from ntrade.domain.analytics.greeks import BlackScholes, Greeks
+ from ntrade.domain.instruments.cash import Equity, Index
+ from ntrade.domain.instruments.chain import OptionChain
+ from ntrade.domain.instruments.derivatives import Option
+ 
+ 
+ # Dhan-specific chain parsing now lives in the Dhan adapter (domain stays
+ # broker-agnostic); alias here so the test reads naturally.
+-from ntrade.brokers.dhan import _chain_from_dhan_df  # noqa: E402
++from ntrade.brokers.dhan_mapper import chain_from_dhan_df  # noqa: E402
+ 
+ 
+ def test_black_scholes_call_price_bounds():
+     price = BlackScholes.price(spot=100, strike=100, years=0.5, risk_free=0.065, sigma=0.2, option_type="CE")
+     assert 0 < price < 100
+     put = BlackScholes.price(spot=100, strike=100, years=0.5, risk_free=0.065, sigma=0.2, option_type="PE")
+     assert 0 < put < 100
+ 
+@@ -91,17 +91,17 @@ def test_chain_from_dhan_df():
+         for leg in ("CE", "PE"):
+             rows.append({
+                 "Strike Price": strike,
+                 f"{leg} LTP": 50.0, f"{leg} OI": 10000 + strike, f"{leg} Volume": 500,
+                 f"{leg} IV": 0.15, f"{leg} Delta": 0.5, f"{leg} Gamma": 0.001,
+                 f"{leg} Theta": -0.2, f"{leg} Vega": 0.1,
+             })
+     df = pd.DataFrame(rows)
+-    chain = _chain_from_dhan_df(underlying, df, atm=24550)
++    chain = chain_from_dhan_df(underlying, df, atm=24550)
+     assert len(chain) == 6
+     assert len(chain.calls) == 3
+     assert len(chain.puts) == 3
+     assert chain.atm.strike == 24550
+     assert chain[24550.0] is not None
+     # domain itself must stay broker-agnostic: no from_dhan_df on the chain
+     assert not hasattr(OptionChain, "from_dhan_df")
+ 

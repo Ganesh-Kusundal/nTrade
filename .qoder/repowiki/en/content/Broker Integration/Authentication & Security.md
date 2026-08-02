@@ -8,10 +8,20 @@
 - [base.py](file://ntrade/brokers/base.py)
 - [dhan_transport.py](file://ntrade/brokers/dhan_transport.py)
 - [retry.py](file://ntrade/execution/retry.py)
+- [live_runner.py](file://ntrade/runner/live_runner.py)
 - [auth.md](file://.agents/skills/dhan-tradehull/references/auth.md)
 - [check_connection.py](file://check_connection.py)
 - [test_dhan_auth_unit.py](file://tests/test_dhan_auth_unit.py)
+- [test_dhan_broker.py](file://tests/test_dhan_broker.py)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Enhanced authentication lifecycle management with proper shutdown handling
+- Added DhanBroker.stop() method to cancel auth provider's proactive refresh timer during shutdown
+- Updated LiveRunner.stop() to iterate through instruments and call their broker's stop method
+- Improved cleanup of background processes and timers including DhanAuthProvider.stop() method
+- Added comprehensive testing for authentication lifecycle management
 
 ## Table of Contents
 1. Introduction
@@ -35,9 +45,11 @@ The authentication and security logic is implemented as a layered system:
 - base.py: Abstract broker adapter defining the interface for all brokers.
 - dhan_transport.py: Transport layer wrapping Tradehull API calls with retry and normalization.
 - retry.py: Retry policy and rate limiter utilities used by the transport.
+- live_runner.py: Live runner orchestration with proper shutdown handling for broker lifecycle management.
 - check_connection.py: CLI utility to validate connection using the same auth flow.
 - auth.md: Reference documentation for Tradehull modes and behavior.
 - test_dhan_auth_unit.py: Unit tests validating auth helpers without live network calls.
+- test_dhan_broker.py: Tests for broker-level functionality including authentication lifecycle management.
 
 ```mermaid
 graph TB
@@ -53,11 +65,15 @@ subgraph "Transport Layer"
 Transport["DhanTransport<br/>dhan_transport.py"]
 Retry["RetryPolicy<br/>retry.py"]
 end
+subgraph "Orchestration Layer"
+LiveRunner["LiveRunner<br/>live_runner.py"]
+end
 Base --> DhanBroker
 DhanBroker --> AuthProvider
 AuthProvider --> AuthHelper
 DhanBroker --> Transport
 Transport --> Retry
+LiveRunner --> DhanBroker
 ```
 
 **Diagram sources**
@@ -67,6 +83,7 @@ Transport --> Retry
 - [dhan_auth.py:114-167](file://ntrade/brokers/dhan_auth.py#L114-L167)
 - [dhan_transport.py:48-77](file://ntrade/brokers/dhan_transport.py#L48-L77)
 - [retry.py:19-56](file://ntrade/execution/retry.py#L19-L56)
+- [live_runner.py:139-149](file://ntrade/runner/live_runner.py#L139-L149)
 
 **Section sources**
 - [base.py:25-70](file://ntrade/brokers/base.py#L25-L70)
@@ -75,35 +92,40 @@ Transport --> Retry
 - [dhan_auth.py:114-167](file://ntrade/brokers/dhan_auth.py#L114-L167)
 - [dhan_transport.py:48-77](file://ntrade/brokers/dhan_transport.py#L48-L77)
 - [retry.py:19-56](file://ntrade/execution/retry.py#L19-L56)
+- [live_runner.py:139-149](file://ntrade/runner/live_runner.py#L139-L149)
 
 ## Core Components
-- DhanAuthProvider: Manages authentication lifecycle, caches the authenticated Tradehull instance, and schedules proactive background refreshes before token expiry.
+- DhanAuthProvider: Manages authentication lifecycle, caches the authenticated Tradehull instance, and schedules proactive background refresh with proper shutdown handling.
 - dhan_auth.get_tradehull: Implements the multi-step authentication flow: prefer shared token store, then .env access token, then PIN+TOTP fallback with cooldown protection.
-- DhanBroker: Composes the auth provider and transport, ensures token freshness before critical operations, and updates transport when tokens change.
+- DhanBroker: Composes the auth provider and transport, ensures token freshness before critical operations, updates transport when tokens change, and provides proper shutdown lifecycle management.
 - DhanTransport: Wraps Tradehull API calls with retry policies and error normalization.
 - RetryPolicy: Provides exponential backoff and jitter for resilient API calls.
+- LiveRunner: Orchestrates the live trading session with proper broker lifecycle management and shutdown handling.
 
 Key responsibilities:
 - Credential loading from environment variables and shared token files.
 - JWT expiry parsing and proactive buffer to avoid mid-session expiry.
 - PIN+TOTP fallback with cooldown enforcement.
-- Background timer to refresh tokens silently.
+- Background timer to refresh tokens silently with proper cancellation.
 - Per-request checks to ensure fresh tokens before API calls.
+- Comprehensive shutdown lifecycle management for background processes.
 
 **Section sources**
-- [dhan_auth_provider.py:28-101](file://ntrade/brokers/dhan_auth_provider.py#L28-L101)
+- [dhan_auth_provider.py:28-141](file://ntrade/brokers/dhan_auth_provider.py#L28-L141)
 - [dhan_auth.py:42-167](file://ntrade/brokers/dhan_auth.py#L42-L167)
-- [dhan.py:69-95](file://ntrade/brokers/dhan.py#L69-L95)
+- [dhan.py:69-101](file://ntrade/brokers/dhan.py#L69-L101)
 - [dhan_transport.py:48-116](file://ntrade/brokers/dhan_transport.py#L48-L116)
 - [retry.py:19-56](file://ntrade/execution/retry.py#L19-L56)
+- [live_runner.py:139-149](file://ntrade/runner/live_runner.py#L139-L149)
 
 ## Architecture Overview
-The authentication architecture follows a layered pattern:
+The authentication architecture follows a layered pattern with enhanced lifecycle management:
 - BrokerAdapter defines the abstract interface for brokers.
 - DhanBroker implements broker-specific functionality and composes DhanAuthProvider and DhanTransport.
-- DhanAuthProvider encapsulates authentication lifecycle and proactive refresh scheduling.
+- DhanAuthProvider encapsulates authentication lifecycle and proactive refresh scheduling with proper shutdown handling.
 - dhan_auth provides the core authentication logic and shared token management.
 - DhanTransport wraps Tradehull API calls with retry and normalization.
+- LiveRunner orchestrates the complete session lifecycle including proper broker cleanup.
 
 ```mermaid
 classDiagram
@@ -134,6 +156,7 @@ class DhanBroker {
 +__init__(env_path, env, connect, clock)
 +connect()
 +_ensure_tsl()
++stop()
 +set_clock(clock)
 +get_quote(instrument, now)
 +get_depth(instrument, timeout, now)
@@ -217,21 +240,37 @@ class DhanTransport {
 +get_instrument_metadata(symbol, exchange, underlying_symbol) dict
 +blocks_day(symbol, exchange) bool
 }
+class LiveRunner {
++start()
++step()
++run(duration)
++stop(reason)
++_evaluate_risk()
++_emit_heartbeat_if_due()
++_check_feed_watchdog()
++_on_heartbeat(event)
++_on_feed_disconnected(event)
++_on_order_timeout(event)
++_on_fill(event)
++_on_risk_halted(event)
+}
 BrokerAdapter <|-- DhanBroker
 DhanBroker --> DhanAuthProvider : "composes"
 DhanBroker --> DhanTransport : "composes"
+LiveRunner --> DhanBroker : "orchestrates"
 ```
 
 **Diagram sources**
 - [base.py:25-163](file://ntrade/brokers/base.py#L25-L163)
-- [dhan.py:54-634](file://ntrade/brokers/dhan.py#L54-L634)
+- [dhan.py:54-101](file://ntrade/brokers/dhan.py#L54-L101)
 - [dhan_auth_provider.py:28-141](file://ntrade/brokers/dhan_auth_provider.py#L28-L141)
 - [dhan_transport.py:48-405](file://ntrade/brokers/dhan_transport.py#L48-L405)
+- [live_runner.py:22-218](file://ntrade/runner/live_runner.py#L22-L218)
 
 ## Detailed Component Analysis
 
 ### DhanAuthProvider
-Manages the authentication lifecycle for Dhan with automatic token refresh. It caches the authenticated Tradehull instance, performs per-request freshness checks, and schedules a background timer to proactively refresh tokens before expiry.
+Manages the authentication lifecycle for Dhan with automatic token refresh and proper shutdown handling. It caches the authenticated Tradehull instance, performs per-request freshness checks, and schedules a background timer to proactively refresh tokens before expiry.
 
 Key behaviors:
 - authenticate(): Initializes or refreshes the Tradehull instance via get_tradehull and schedules proactive refresh.
@@ -239,6 +278,7 @@ Key behaviors:
 - time_until_expiry(): Computes remaining seconds until token expiry.
 - _schedule_proactive_refresh(): Schedules a threading.Timer to call authenticate() before expiry.
 - _proactive_refresh(): Logs success or failure without raising exceptions.
+- stop(): Cancels the proactive refresh timer during shutdown to prevent daemon thread leaks.
 
 ```mermaid
 sequenceDiagram
@@ -297,11 +337,12 @@ end
 end
 Provider-->>Broker : TSL
 Broker-->>Client : Quote
+Note over Provider : During shutdown : <br/>Provider.stop() cancels<br/>background refresh timer
 ```
 
 **Diagram sources**
-- [dhan.py:75-95](file://ntrade/brokers/dhan.py#L75-L95)
-- [dhan_auth_provider.py:47-74](file://ntrade/brokers/dhan_auth_provider.py#L47-L74)
+- [dhan.py:75-101](file://ntrade/brokers/dhan.py#L75-L101)
+- [dhan_auth_provider.py:47-78](file://ntrade/brokers/dhan_auth_provider.py#L47-L78)
 - [dhan_auth.py:114-167](file://ntrade/brokers/dhan_auth.py#L114-L167)
 
 **Section sources**
@@ -354,14 +395,21 @@ SharedLoginOk --> |No| CheckEnvToken
 **Section sources**
 - [dhan_auth.py:42-167](file://ntrade/brokers/dhan_auth.py#L42-L167)
 
-### DhanBroker._ensure_tsl
-Ensures token freshness before critical operations by calling DhanAuthProvider.refresh_if_needed(). If a new token is obtained, it updates both the broker’s tsl reference and the transport’s tsl reference.
+### DhanBroker._ensure_tsl and Lifecycle Management
+Ensures token freshness before critical operations by calling DhanAuthProvider.refresh_if_needed(). If a new token is obtained, it updates both the broker's tsl reference and the transport's tsl reference. The broker now includes proper shutdown lifecycle management.
+
+Updated lifecycle management:
+- _ensure_tsl(): Ensures token freshness before critical operations.
+- stop(): Cancels the auth provider's proactive refresh timer during shutdown.
+- Integration with LiveRunner for comprehensive session cleanup.
 
 ```mermaid
 sequenceDiagram
 participant Broker as "DhanBroker"
 participant Auth as "DhanAuthProvider"
 participant Transport as "DhanTransport"
+participant Runner as "LiveRunner"
+Note over Broker,Runner : Normal Operation
 Broker->>Auth : refresh_if_needed()
 alt Token fresh
 Auth-->>Broker : return current TSL
@@ -372,15 +420,21 @@ end
 alt New TSL obtained
 Broker->>Transport : tsl = new TSL
 end
-Broker-->>Broker : continue operation
+Note over Broker,Runner : Shutdown Process
+Runner->>Broker : stop()
+Broker->>Auth : stop()
+Auth->>Auth : _cancel_proactive_refresh()
+Auth-->>Broker : timer cancelled
+Broker-->>Runner : cleanup complete
 ```
 
 **Diagram sources**
-- [dhan.py:75-95](file://ntrade/brokers/dhan.py#L75-L95)
-- [dhan_auth_provider.py:58-74](file://ntrade/brokers/dhan_auth_provider.py#L58-L74)
+- [dhan.py:75-101](file://ntrade/brokers/dhan.py#L75-L101)
+- [dhan_auth_provider.py:58-78](file://ntrade/brokers/dhan_auth_provider.py#L58-L78)
+- [live_runner.py:139-149](file://ntrade/runner/live_runner.py#L139-L149)
 
 **Section sources**
-- [dhan.py:75-95](file://ntrade/brokers/dhan.py#L75-L95)
+- [dhan.py:75-101](file://ntrade/brokers/dhan.py#L75-L101)
 
 ### DhanTransport and RetryPolicy
 DhanTransport wraps Tradehull API calls with retry logic and normalization. RetryPolicy provides exponential backoff with jitter to handle transient failures.
@@ -445,13 +499,49 @@ DhanTransport --> RetryPolicy : "uses"
 - [dhan_transport.py:48-116](file://ntrade/brokers/dhan_transport.py#L48-L116)
 - [retry.py:19-56](file://ntrade/execution/retry.py#L19-L56)
 
+### LiveRunner Session Lifecycle Management
+The LiveRunner now includes comprehensive broker lifecycle management during shutdown. It iterates through all instruments in the kernel context and calls their broker's stop method if available, ensuring proper cleanup of background processes and timers.
+
+Key enhancements:
+- Proper iteration through instruments_snapshot() during shutdown.
+- Safe checking for broker_adapter existence and stop method availability.
+- Comprehensive cleanup of DhanAuthProvider.stop() methods.
+- Prevention of daemon thread leaks during session termination.
+
+```mermaid
+flowchart TD
+Start(["LiveRunner.start()"]) --> Connect["Connect feed and kernel"]
+Connect --> RunLoop["Run main loop"]
+RunLoop --> StopTrigger{"Stop triggered?"}
+StopTrigger --> |No| RunLoop
+StopTrigger --> |Yes| StopProcess["Stop process"]
+StopProcess --> FeedStop["Feed.stop()"]
+FeedStop --> KernelStop["Kernel.stop()"]
+KernelStop --> InstrumentCleanup["Iterate instruments_snapshot()"]
+InstrumentCleanup --> CheckBroker{"Has broker_adapter<br/>with stop method?"}
+CheckBroker --> |Yes| BrokerStop["broker.stop()"]
+CheckBroker --> |No| NextInstrument["Next instrument"]
+BrokerStop --> NextInstrument
+NextInstrument --> InstrumentCleanup
+InstrumentCleanup --> CleanupComplete["Cleanup complete"]
+CleanupComplete --> PublishEvent["Publish RunnerStoppedEvent"]
+PublishEvent --> End(["Session ended"])
+```
+
+**Diagram sources**
+- [live_runner.py:139-149](file://ntrade/runner/live_runner.py#L139-L149)
+
+**Section sources**
+- [live_runner.py:139-149](file://ntrade/runner/live_runner.py#L139-L149)
+
 ### Conceptual Overview
-The authentication system follows a layered approach:
+The authentication system follows a layered approach with enhanced lifecycle management:
 - Environment variables provide credentials (DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN, DHAN_PIN, DHAN_TOTP_SECRET).
 - Shared token store persists tokens securely with restrictive permissions.
 - Proactive refresh avoids mid-session expiry by scheduling background timers.
 - PIN+TOTP fallback ensures automated authentication for long-running processes.
 - Retry policies handle transient failures gracefully.
+- Comprehensive shutdown lifecycle management prevents resource leaks.
 
 ```mermaid
 flowchart TD
@@ -464,16 +554,18 @@ ScheduleRefresh --> RunOps["Run Operations"]
 RunOps --> EnsureFresh["Ensure Token Freshness"]
 EnsureFresh --> CallAPI["Call Tradehull API"]
 CallAPI --> HandleErrors["Handle Errors with RetryPolicy"]
-HandleErrors --> End(["Complete"])
+HandleErrors --> SessionEnd{"Session ending?"}
+SessionEnd --> |No| RunOps
+SessionEnd --> |Yes| Cleanup["Cleanup lifecycle:<br/>Cancel timers,<br/>Close connections"]
+Cleanup --> End(["Complete"])
 ```
 
-[No sources needed since this diagram shows conceptual workflow, not actual code structure]
-
 ## Dependency Analysis
-The authentication system has clear dependencies:
+The authentication system has clear dependencies with enhanced lifecycle management:
 - DhanBroker depends on DhanAuthProvider and DhanTransport.
 - DhanAuthProvider depends on dhan_auth.get_tradehull.
 - DhanTransport depends on RetryPolicy.
+- LiveRunner orchestrates DhanBroker lifecycle management.
 - All components rely on environment variables and shared token files.
 
 ```mermaid
@@ -482,32 +574,35 @@ DhanBroker["DhanBroker<br/>dhan.py"] --> DhanAuthProvider["DhanAuthProvider<br/>
 DhanBroker --> DhanTransport["DhanTransport<br/>dhan_transport.py"]
 DhanAuthProvider --> DhanAuth["dhan_auth.get_tradehull<br/>dhan_auth.py"]
 DhanTransport --> RetryPolicy["RetryPolicy<br/>retry.py"]
+LiveRunner["LiveRunner<br/>live_runner.py"] --> DhanBroker
 DhanAuth --> Env[".env Variables"]
 DhanAuth --> SharedStore["Shared Token Store"]
 ```
 
 **Diagram sources**
-- [dhan.py:54-95](file://ntrade/brokers/dhan.py#L54-L95)
+- [dhan.py:54-101](file://ntrade/brokers/dhan.py#L54-L101)
 - [dhan_auth_provider.py:28-56](file://ntrade/brokers/dhan_auth_provider.py#L28-L56)
 - [dhan_auth.py:114-167](file://ntrade/brokers/dhan_auth.py#L114-L167)
 - [dhan_transport.py:48-77](file://ntrade/brokers/dhan_transport.py#L48-L77)
 - [retry.py:19-56](file://ntrade/execution/retry.py#L19-L56)
+- [live_runner.py:139-149](file://ntrade/runner/live_runner.py#L139-L149)
 
 **Section sources**
-- [dhan.py:54-95](file://ntrade/brokers/dhan.py#L54-L95)
-- [dhan_auth_provider.py:28-56](file://ntrade/brokers/dhan_auth_provider.py#L28-L56)
+- [dhan.py:54-101](file://ntrade/brokers/dhan.py#L54-L101)
+- [dhan_auth_provider.py:28-56](file://ntrade/brokers/dhan_auth_provider.py#L28-56)
 - [dhan_auth.py:114-167](file://ntrade/brokers/dhan_auth.py#L114-L167)
 - [dhan_transport.py:48-77](file://ntrade/brokers/dhan_transport.py#L48-L77)
 - [retry.py:19-56](file://ntrade/execution/retry.py#L19-L56)
+- [live_runner.py:139-149](file://ntrade/runner/live_runner.py#L139-L149)
 
 ## Performance Considerations
 - Proactive token refresh minimizes latency spikes caused by expired tokens.
 - RetryPolicy with exponential backoff and jitter reduces load on flaky endpoints.
 - Shared token store avoids repeated PIN+TOTP authentication.
 - Cooldown mechanism prevents excessive TOTP attempts.
-- Thread-safe operations ensure concurrent access doesn’t cause race conditions.
-
-[No sources needed since this section provides general guidance]
+- Thread-safe operations ensure concurrent access doesn't cause race conditions.
+- Proper shutdown lifecycle management prevents daemon thread leaks and resource exhaustion.
+- Efficient instrument iteration during cleanup avoids unnecessary overhead.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -516,18 +611,21 @@ Common issues and resolutions:
 - TOTP cooldown active: Wait approximately 90 seconds before retrying.
 - Network errors: RetryPolicy handles transient failures; check logs for details.
 - Permission errors on token files: Ensure files have 0o600 permissions.
+- Daemon thread leaks: Verify proper shutdown lifecycle management is called.
+- Background timer not cancelling: Check that DhanBroker.stop() is called during session termination.
 
 Debugging techniques:
 - Use check_connection.py to validate authentication and connectivity.
 - Review logs for proactive refresh status and failures.
 - Verify shared token store contents and expiration times.
 - Test PIN+TOTP flow independently to confirm credentials.
+- Monitor background timer activity during normal operation and shutdown.
+- Use test_broker_stop_cancels_auth_timer to verify lifecycle management.
 
 **Section sources**
 - [check_connection.py:17-38](file://check_connection.py#L17-L38)
 - [test_dhan_auth_unit.py:114-147](file://tests/test_dhan_auth_unit.py#L114-L147)
+- [test_dhan_broker.py:499-506](file://tests/test_dhan_broker.py#L499-L506)
 
 ## Conclusion
-The authentication and security system for broker integrations provides a robust, multi-layered approach with PIN+TOTP verification, secure token management, and proactive refresh mechanisms. The design emphasizes resilience through retry policies, thread safety, and graceful error handling. By following the documented patterns and best practices, developers can implement custom authentication providers and manage multiple broker sessions effectively while maintaining security and compliance requirements.
-
-[No sources needed since this section summarizes without analyzing specific files]
+The authentication and security system for broker integrations provides a robust, multi-layered approach with PIN+TOTP verification, secure token management, and proactive refresh mechanisms. The design emphasizes resilience through retry policies, thread safety, and graceful error handling. With the enhanced authentication lifecycle management, the system now properly handles background timer cancellation during shutdown, preventing resource leaks and ensuring clean session termination. By following the documented patterns and best practices, developers can implement custom authentication providers and manage multiple broker sessions effectively while maintaining security and compliance requirements.

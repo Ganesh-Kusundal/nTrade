@@ -1,0 +1,1 @@
+Pure-Python domain layer modeling instruments, market data, orders, analytics, and portfolio state as immutable value objects composed into the nTrade SDK core without external dependencies.

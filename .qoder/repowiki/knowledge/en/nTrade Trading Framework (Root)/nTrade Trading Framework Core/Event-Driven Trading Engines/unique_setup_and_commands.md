@@ -1,1 +1,0 @@
-Engines are instantiated by passing a shared `context` object (providing `bus`, `instrument`, `portfolio`, `account`, `now`) plus optional dependencies like `router` for `OrderEngine` or `broker` for `PositionSyncEngine`. Timeframe-constrained engines (`CandleEngine`, `IndicatorEngine`) must be configured with matching timeframes so events flow correctly between them.

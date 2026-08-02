@@ -1,7 +1,0 @@
-Four cooperating modules form the infrastructure layer:
-- `storage/event_store.py` implements `EventStore`, an append-only JSONL-backed event log with in-memory caching, type-dispatched serialization (`_encode`/`_decode` via a `_EVENT_TYPES` registry auto-populated from `ntrade.events.*`), and recovery helpers (`recovery_events`, `open_order_deltas`) that reconstruct kernel state deterministically.
-- `registry.py` exposes two flyweight/singletons: `SymbolMaster` caches `Instrument` instances by `(kind, symbol, exchange)` behind an `RLock`, and `BrokerRegistry` maps broker names to factory callables with lazy default registration (dhan/paper) guarded by class-level locking.
-- `factories.py` defines `InstrumentFactory` (and `OptionFactory` for analytics/testing) which delegates creation to `SymbolMaster.get`, injecting optional `broker` kwargs.
-- `facade.py` provides the backward-compatible `Market` class that resolves a broker through `BrokerRegistry`, wraps a `TradingSession`, and forwards every domain method (equity/index/option/balance/positions/…) to it.
-
-Dependency direction is one-way outward: facade → factories + registry; factories → registry; storage → `ntrade.events.*`. No cross-imports back into these modules from higher layers.

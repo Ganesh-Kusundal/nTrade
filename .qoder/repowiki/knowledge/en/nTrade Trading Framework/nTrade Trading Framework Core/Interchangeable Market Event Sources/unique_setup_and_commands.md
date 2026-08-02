@@ -1,0 +1,1 @@
+No build or setup script is required. Running the Dhan live feed requires the `dhanhq` package (shipped with Dhan-Tradehull) and credentials resolved through `ntrade.brokers.dhan_auth.get_tradehull()` at runtime; the `dhan_payload_to_events` mapper is fully testable offline by passing a mock `feed_factory`.

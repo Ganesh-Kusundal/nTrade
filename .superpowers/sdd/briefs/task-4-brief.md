@@ -1,14 +1,56 @@
-## Task Group 4 — B-009 / HF-001: on_tick broadcasts the tick's own price
+# Task 4 (T-015): Wire DhanAuthProvider.stop() into shutdown
 
-**Finding:** `MarketEngine.on_tick` (ntrade/engines/market_engine.py:25-37) publishes `QuoteUpdatedEvent(ltp=instrument._quote.ltp, ...)` — a read of the instrument's mutable quote after `ingest_tick`, not the tick's authoritative `event.price`. Empirically verified: the broadcast is correct for `trade`/`quote` kinds only because `ingest_tick` mutates `_quote.ltp` first; for a `depth`-kind tick the broadcast is `0.0` (LiveStream.ingest_tick, ntrade/domain/market/stream.py:106-122, only updates `_quote` for `quote`/`trade`). This ordering dependence is fragile and wrong by construction — the tick event owns the price.
+**Goal:** Complete T-011 — the proactive token-refresh timer was built (DhanAuthProvider.stop() exists, `ntrade/brokers/dhan_auth_provider.py:76`) but its shutdown hook was never wired. Add `DhanBroker.stop()` that cancels it, and call it from `LiveRunner.stop()` so the daemon refresh thread never outlives the session.
 
-**Files:** `ntrade/engines/market_engine.py`, `tests/test_kernel_engines.py`
+(No YAGNI concern: this removes a real daemon-thread leak on session shutdown.)
 
-- [ ] `on_tick`: broadcast `ltp=event.price` (the tick's own price), not `instrument._quote.ltp`. Bid/ask can stay `instrument._quote.bid/ask` (best-effort snapshot).
-- [ ] **Tests first, then impl:**
-  - [ ] Failing test: publish a `TickEvent(..., kind="depth")` and assert the emitted `QuoteUpdatedEvent.ltp == event.price` (today it is `0.0`).
-  - [ ] Existing `test_market_engine_projects_tick` (tests/test_kernel_engines.py:27) still passes — default kind is `trade`, `event.price == 2500.5`.
-- [ ] Full suite green: `./.venv/bin/python -m pytest -q`.
+## Changes
 
----
+### 1. `ntrade/brokers/dhan.py` — add `stop()`
+Add a method (place it near `connect()` / `set_clock()`):
+```python
+def stop(self) -> None:
+    """Cancel the auth provider's proactive refresh timer (shutdown hook)."""
+    auth = getattr(self, "_auth", None)
+    if auth is not None and hasattr(auth, "stop"):
+        auth.stop()
+```
 
+### 2. `ntrade/runner/live_runner.py` — call it in `stop()`
+In `def stop(self, reason: str = "") -> None:` (currently ~line 135, calls `self.kernel.stop(reason=reason)`), after the kernel stop, iterate the session's brokers and stop them:
+```python
+for instrument in self.kernel.ctx.instruments_snapshot():
+    broker = getattr(instrument, "broker_adapter", None)
+    if broker is not None and hasattr(broker, "stop"):
+        broker.stop()
+```
+Reuse the same snapshot iteration pattern the file already uses in `_on_risk_halted` (line 184). Do not introduce a new snapshot method. Keep the rest of `stop()` unchanged.
+
+## Tests
+Add to `tests/test_dhan_auth_unit.py` (or the file that best fits; if that file is for lower-level auth helpers and a broker-level test doesn't belong there, put it in `tests/test_dhan_broker.py`):
+```python
+def test_broker_stop_cancels_auth_timer():
+    from unittest.mock import Mock
+    from ntrade.brokers import DhanBroker
+    broker = DhanBroker(connect=False)
+    broker._auth = Mock()
+    broker.stop()
+    broker._auth.stop.assert_called_once()
+```
+Check that `DhanBroker(connect=False)` is constructible offline (it is — connect is skipped). Prefer `tests/test_dhan_auth_unit.py` per the plan; if imports are awkward there, use `tests/test_dhan_broker.py` and say so in the report.
+
+## Verify
+```
+./.venv/bin/python -m pytest -q
+```
+Expected: 626 passing (baseline) + 1 new = 627.
+
+## Commit
+```
+git add ntrade/brokers/dhan.py ntrade/runner/live_runner.py tests/<the test file you used>
+git commit -m "T-015 wire DhanAuthProvider.stop into LiveRunner shutdown"
+```
+Only stage files you actually changed. Subject exactly `T-015 wire DhanAuthProvider.stop into LiveRunner shutdown`.
+
+## Report
+Write to `.superpowers/sdd/briefs/task-4-report.md`: commit hash, `git show --stat`, full-suite count, and which test file you added the test to (and why).

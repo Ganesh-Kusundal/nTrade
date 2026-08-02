@@ -1,0 +1,1 @@
+Pytest-based unit, integration, and benchmark tests covering the nTrade trading kernel, Dhan broker adapter, event pipeline, candle/indicator engines, risk/OMS, portfolio accounting, and end-to-end feed-to-portfolio flows.

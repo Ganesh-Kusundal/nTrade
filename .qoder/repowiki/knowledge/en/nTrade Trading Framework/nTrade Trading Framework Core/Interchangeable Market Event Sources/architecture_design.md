@@ -1,0 +1,6 @@
+The module is built around the `MarketFeedSource` ABC in `market_feed.py`, which defines the `start()`/`stop()` lifecycle, an `attach(kernel)` method for lazy kernel injection, and a `bus` property for event publishing. Three concrete implementations plug into this abstraction:
+- `SimulatedFeedSource`: deterministic tick generation from a raw price list or OHLCV DataFrame, used for offline replay.
+- `SyntheticMarketFeedSource`: extrapolates 1m OHLCV bars into per-second ticks via `ntrade.sim.tick_simulator.synthesize_1m_ticks`, running in a daemon thread with a `_stopping` flag for clean shutdown.
+- `DhanMarketFeedSource`: thin websocket adapter over `dhanhq.MarketFeed`; payload parsing is delegated to the pure function `dhan_payload_to_events` so it can be unit-tested without a live connection.
+
+Dependency direction is one-way: concrete sources depend on `ntrade.events.market` (TickEvent/QuoteEvent/DepthEvent) and optionally on `ntrade.kernel.session.TradingKernel` (imported lazily under `TYPE_CHECKING`). The `__init__.py` re-exports all public classes and the `dhan_payload_to_events` mapper as the single import surface. Each source sets a `name` attribute (`simulated`, `synthetic`, `dhan`) so the kernel can identify the active feed.

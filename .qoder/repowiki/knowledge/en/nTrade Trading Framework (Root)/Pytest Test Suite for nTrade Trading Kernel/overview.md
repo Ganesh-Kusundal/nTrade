@@ -1,1 +1,0 @@
-Comprehensive pytest-based test suite covering the nTrade trading kernel, including unit tests for brokers/indicators/events, integration tests for the full feed→kernel→strategy→risk→execution pipeline, and live/replay runner orchestration.

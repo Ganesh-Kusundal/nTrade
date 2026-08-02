@@ -1,1 +1,0 @@
-No top-level CLI; the framework is imported as a library. Entry points are `TradingSession.connect("dhan")` for live mode or `BacktestSimulator` / `ReplayEngine` for offline runs. Default brokers are registered lazily on first `BrokerRegistry.get()` call.

@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: ntrade_core/core_api
+title: Core API Surface & Registration Layer
+scope:
+    - ntrade/__init__.py
+    - ntrade/facade.py
+    - ntrade/factories.py
+    - ntrade/registry.py
+source_files: []
+depends_on: []
+related_to:
+    - path: docs_plans

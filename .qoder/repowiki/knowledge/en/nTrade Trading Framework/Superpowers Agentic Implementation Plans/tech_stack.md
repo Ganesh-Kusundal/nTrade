@@ -1,0 +1,1 @@
+Python 3.10+ with pandas, stdlib threading/dataclasses/logging; pytest as the test runner (`./.venv/bin/python -m pytest -q`); Dhan-Tradehull SDK for broker connectivity; Kanban CLI (`kanban.py`) for tracking K-001..K-019 / B-006..B-009 / T-012..T-021 cards.

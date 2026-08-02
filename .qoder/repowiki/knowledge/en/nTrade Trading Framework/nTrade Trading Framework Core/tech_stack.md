@@ -1,0 +1,1 @@
+Pure Python with dataclasses for immutable events, threading.RLock for thread-safe registries, and optional Dhan-Tradehull integration behind a capability-driven broker adapter interface.

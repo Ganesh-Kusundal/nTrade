@@ -1,0 +1,1 @@
+In-process event-driven engines that transform raw market data into candles, indicators, risk-screened signals, orders, and portfolio updates via a shared bus, with strategy dispatch and broker state reconciliation.

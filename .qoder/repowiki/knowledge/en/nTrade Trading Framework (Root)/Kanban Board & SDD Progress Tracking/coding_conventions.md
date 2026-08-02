@@ -1,4 +1,0 @@
-- Task cards use a stable ID scheme with prefixes: K-### for kanban items, D-### for debt, B-### for bugs, R-### for risks, T-### for tasks, each with priority (P0–P3), kind, lane, and file associations.
-- All generated files carry a machine-generated header/footer with timestamps, commit hashes, and explicit 'DO NOT EDIT' or regeneration instructions.
-- Progress tracking uses numbered phases (F1–F6, G1–G15) with per-task completion notes that include passing test counts and review outcome ('review clean').
-- Component descriptions in `board.json` and `scan.json` follow a consistent pattern: path prefix → concise one-line summary of responsibilities and key classes.

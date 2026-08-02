@@ -1,0 +1,1 @@
+Python trading framework that unifies a zero-parity event-driven kernel, interchangeable broker adapters, replay/backtest engines, agent-facing skills, and validation scripts under a single Clean Architecture package.

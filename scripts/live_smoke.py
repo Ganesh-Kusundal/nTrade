@@ -20,7 +20,7 @@ def main() -> int:
     # 1) Quote
     nifty = session.index("NIFTY")
     nifty.refresh()
-    print(f"NIFTY quote -> ltp={nifty.ltp} spread={nifty.spread()} mid={nifty.mid_price()}")
+    print(f"NIFTY quote -> ltp={nifty.market.ltp()} spread={nifty.market.spread()} mid={nifty.market.mid_price()}")
 
     # 2) History
     series = nifty.market.history()("5m", days=1)
@@ -28,21 +28,21 @@ def main() -> int:
     print(f"last close={series.df['close'].iloc[-1] if not series.df.empty else 'n/a'}")
 
     # 3) Indicators over live history
-    nifty.compute_indicators()
-    print(f"indicators -> rsi={nifty.rsi():.2f} atr={nifty.atr():.2f} vwap={nifty.vwap():.2f}")
+    nifty.analytics.compute()
+    print(f"indicators -> rsi={nifty.analytics.rsi():.2f} atr={nifty.analytics.atr():.2f} vwap={nifty.market.vwap():.2f}")
 
     # 4) Option chain (read-only)
-    chain = nifty.option_chain(expiry=0, num_strikes=5)
+    chain = nifty.derivatives.option_chain(expiry=0, num_strikes=5)
     print(f"chain -> {len(chain)} options, atm_strike={chain.atm_strike}, pcr={chain.pcr()}")
     if chain.atm is not None:
         atm = chain.atm
-        print(f"atm -> {atm.symbol} ltp={atm.ltp} greeks.delta={atm.delta} iv={atm.iv}")
+        print(f"atm -> {atm.symbol} ltp={atm.market.ltp()} greeks.delta={atm.delta} iv={atm.iv}")
 
     # 5) Balance (read-only)
     print(f"balance -> {session.balance()}")
 
     # 6) Statistics
-    stats = nifty.statistics()
+    stats = nifty.analytics.statistics()
     print(f"statistics -> last={stats.get('last')}, total_return_pct={stats.get('total_return_pct')}%")
 
     # 7) New endpoints (read-only)

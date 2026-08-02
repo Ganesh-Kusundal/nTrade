@@ -1,1 +1,0 @@
-No build or test commands are required — the module is imported directly. The `STATUTORY_DEFAULT` sentinel lets callers opt into realistic Indian statutory costs or explicitly pass `None` for a zero-cost backtest mode.

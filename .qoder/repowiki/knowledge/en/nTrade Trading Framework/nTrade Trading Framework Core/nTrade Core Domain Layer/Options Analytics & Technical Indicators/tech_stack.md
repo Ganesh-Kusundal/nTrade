@@ -1,0 +1,1 @@
+Pure Python with only `math` for greeks and `pandas` for indicators/surface wrappers; no external TA libraries — all indicators are hand-implemented using pandas rolling/ewm operations.

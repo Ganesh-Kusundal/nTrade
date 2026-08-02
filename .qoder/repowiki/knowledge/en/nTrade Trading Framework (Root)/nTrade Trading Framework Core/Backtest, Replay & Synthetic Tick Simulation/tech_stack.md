@@ -1,1 +1,0 @@
-Pure Python with pandas DataFrames for OHLCV input; uses `random.Random(seed)` for deterministic tick synthesis; no external simulation libraries — the kernel's own `SimulationClock`/`ReplayClock` and `SimulatedExecution` provide the engine.

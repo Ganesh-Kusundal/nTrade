@@ -1,5 +1,0 @@
-- Each package exports only its public classes/functions through `__all__` in `__init__.py`, keeping internal modules private.
-- All three engines construct a `TradingKernel` with an explicit `mode` (`"backtest"` or `"replay"`) and inject a deterministic clock (`SimulationClock` or `ReplayClock`) rather than using a live clock.
-- Deterministic behavior is enforced via seed parameters (e.g. `seed=0` in `synthesize_1m_ticks`) so repeated runs produce identical outputs.
-- Pluggable behavior is provided through constructor kwargs with sensible defaults (e.g. `slippage`, `commission`, `fill_policy`, `clock`, `kernel`), allowing override without subclassing.
-- Results and synthetic objects are lightweight data containers (`BacktestResult` with properties, `SimTick` as a frozen dataclass) rather than full domain models.

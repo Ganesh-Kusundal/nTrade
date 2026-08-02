@@ -1,20 +1,101 @@
-## Task Group 5 — D-017: gate.py equity derives from the portfolio read model
+# Task 5 (T-014): Attach consumers for R-006 observability events in LiveRunner
 
-**Finding:** `gate.py::_equity_trace` (ntrade/runner/gate.py:10-34) re-derives equity from raw `OrderFilledEvent` (cash) + `TickEvent`/`QuoteEvent` (LTP mark) — a third owner of the money state. `RiskEngine.equity` (ntrade/engines/risk_engine.py:44-47) = `account.balance + Σ Position.market_value`, and `Position.market_value = round(quantity * ltp, 2)` (domain/portfolio.py:30-31) where `ltp` is set at fill (portfolio_engine.py:27/46) or broker sync (position_sync.py:56) — never from raw quotes. The gate's LTP mark therefore diverges from the portfolio read model. Fix: the gate must consume the canonical `PositionUpdatedEvent` + `BalanceChangedEvent` stream (published by `PortfolioEngine`, portfolio_engine.py:60-70) so its equity equals `RiskEngine.equity` at every step.
+**Goal:** Give R-004/R-005/R-006 events real consumers so none publish to zero subscribers. LiveRunner already publishes `HeartbeatEvent` (`_emit_heartbeat_if_due`) and watches the feed (`_check_feed_watchdog`), but nothing consumes `HeartbeatEvent`/`FeedDisconnectedEvent`/`OrderTimeoutEvent`. Attach handlers that (a) log heartbeats, (b) trip a risk halt on feed-disconnect, (c) cancel a stale PENDING order on timeout.
 
-**Files:** `ntrade/runner/gate.py`, `tests/test_paper_gate.py`
+Do all work in `ntrade/runner/live_runner.py`. Do NOT touch risk_engine or broker_executor unless a hard blocker forces it (report if so).
 
-- [ ] Rewrite `_equity_trace` to reconstruct from the portfolio read-model events in `kernel.bus.history`:
-  - [ ] Start `cash = float(initial_cash)`; keep a `positions: dict[str, Position]`-style map (symbol → quantity/ltp).
-  - [ ] On `PositionUpdatedEvent` (events/portfolio.py:13-20: `symbol/quantity/avg_price/ltp`): update the map (quantity 0 → drop).
-  - [ ] On `BalanceChangedEvent` (events/portfolio.py:25-27: `balance`): set `cash = event.balance`.
-  - [ ] `eq = cash + sum(q * ltp for ...)`; track `peak`, yield `(peak, eq)` — identical semantics to today but on the same MTM basis as `RiskEngine.equity`.
-  - [ ] Remove the `TickEvent`/`QuoteEvent` LTP mark and the fill-by-fill cash math. Drop now-unused `QuoteEvent`/`TickEvent` imports from gate.py.
-- [ ] `build_paper_report` (gate.py:37+) keeps reading `OrderFilledEvent` for `fills`/`total_charges` — unchanged. `final_equity` already uses `ctx.portfolio` + `account.balance` (gate.py:49-54); leave as-is (it matches `RiskEngine.equity`).
-- [ ] **Tests first, then impl:**
-  - [ ] Failing test: after a replay run with one BUY fill at `100.0`, `build_paper_report(...)` `max_drawdown_pct` is consistent with the portfolio read model — assert `report["final_equity"]` equals `kernel.risk_engine.equity()` to 2dp.
-  - [ ] Existing `test_paper_gate.py` assertions stay green: `fills[0].statutory > 0.0` (default statutory wiring on the sim target), `trade["commission"] == fills[0].commission`, `checklist["total_charges"]` sum, and the empty-run `final_equity == 100_000.0` (no BalanceChangedEvent/PositionUpdatedEvent → trace yields `(100000, 100000)`).
-- [ ] Full suite green: `./.venv/bin/python -m pytest -q`.
+## Context facts (verified — READ these before coding)
+- `LiveRunner.__init__` already subscribes `RiskHaltedEvent → self._on_risk_halted` and `OrderFilledEvent → self._on_fill` (lines 50-52). Add three more `subscribe` calls + three handlers.
+- `self.kernel` is a `TradingKernel` with `.bus`, `.clock`, `.cancel_order(order_id)` (ntrade/kernel/session.py:186), `.open_orders()`. So `_on_order_timeout` can call `self.kernel.cancel_order(event.order_id)` directly.
+- `self.logger` is the module logger (`logging.getLogger("ntrade.runner")`).
+- Events live in: `ntrade.events.lifecycle.HeartbeatEvent(tick_count, open_orders)`, `.FeedDisconnectedEvent(reason)`; `ntrade.events.order.OrderTimeoutEvent(order_id, symbol, exchange, side, quantity, age_seconds, ...)`; `ntrade.events.risk.RiskHaltedEvent(reason, ts)`.
+- There is NO `_make_runner()` helper in tests/test_live_runner.py — those tests build `TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")` + `LiveRunner(k, _source())`. Write any new tests in that same style.
+- The plan's suggested tests are WRONG for this file: they reference `_make_runner()` (doesn't exist) and monkeypatch `runner._on_feed_disconnected`/`runner._on_order_timeout` after construction — but the bus captured the **bound method at subscribe-time**, so a later attribute rebind does NOT change what gets dispatched. Use the corrected tests in the Brief's "Tests" section instead.
 
----
+## Implementation
 
+### subscribe (in `__init__`, after the existing OrderFilledEvent subscribe)
+Add top-of-file imports:
+```python
+from ntrade.events.lifecycle import HeartbeatEvent, FeedDisconnectedEvent, RunnerStartedEvent, RunnerStoppedEvent
+from ntrade.events.order import OrderFilledEvent
+from ntrade.events.risk import RiskHaltedEvent
+```
+Adjust the existing `from ntrade.events.lifecycle import ...` line 15 and the local `from ntrade.events.order import OrderFilledEvent` (line 51) to consolidate. Then:
+```python
+self.kernel.bus.subscribe(HeartbeatEvent, self._on_heartbeat)
+self.kernel.bus.subscribe(FeedDisconnectedEvent, self._on_feed_disconnected)
+self.kernel.bus.subscribe(OrderTimeoutEvent, self._on_order_timeout)
+```
+(Import `OrderTimeoutEvent` where needed.)
+
+### Add three handlers (place near `_on_fill` / `_on_risk_halted`)
+```python
+def _on_heartbeat(self, event) -> None:
+    self.logger.info("heartbeat tick_count=%d open_orders=%d",
+                     event.tick_count, event.open_orders)
+
+def _on_feed_disconnected(self, event) -> None:
+    self.logger.warning("feed disconnected: %s — halting", event.reason)
+    self.kernel.bus.publish(RiskHaltedEvent(
+        reason=f"feed disconnected: {event.reason}", ts=self.kernel.clock.now()))
+
+def _on_order_timeout(self, event) -> None:
+    self.logger.warning("order timeout: %s %s x%d aged %.0fs — cancelling",
+                        event.side, event.symbol, event.quantity, event.age_seconds)
+    self.kernel.cancel_order(event.order_id)
+```
+Do not import `RiskHaltedEvent` twice. `_on_order_timeout` cancel goes through the kernel (order reconciliation stays on the broker/tsl path; the kernel.cancel_order already delegates appropriately — do not change that path).
+
+## Tests (tests/test_live_runner.py) — use these CORRECT versions
+Append to the file (import `TradingKernel`, `ReplayClock`, `LiveRunner`, `_source` all already available):
+```python
+def test_feed_disconnected_halts_runner():
+    from ntrade.events.lifecycle import FeedDisconnectedEvent
+    from ntrade.events.risk import RiskHaltedEvent
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    runner.kernel.bus.publish(FeedDisconnectedEvent(
+        reason="ws drop", ts=runner.kernel.clock.now()))
+    assert runner.halted
+    assert any(isinstance(e, RiskHaltedEvent) for e in k.bus.history)
+
+
+def test_order_timeout_cancels_stale_order():
+    from ntrade.events.order import OrderTimeoutEvent
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    cancelled = []
+    runner.kernel.cancel_order = lambda oid: cancelled.append(oid)
+    runner.kernel.bus.publish(OrderTimeoutEvent(
+        order_id="O1", symbol="TCS", exchange="NSE", side="BUY",
+        quantity=10, age_seconds=120.0, ts=runner.kernel.clock.now()))
+    assert cancelled == ["O1"]
+
+
+def test_heartbeat_event_is_logged(caplog):
+    import logging
+    from ntrade.events.lifecycle import HeartbeatEvent
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    with caplog.at_level(logging.INFO, logger="ntrade.runner"):
+        k.bus.publish(HeartbeatEvent(tick_count=5, open_orders=2, ts=k.clock.now()))
+    assert "tick_count=5" in caplog.text and "open_orders=2" in caplog.text
+```
+If `k.bus.history` does not record broadcast events (verify), fall back to subscribing a collecting callback, but confirm first — the existing `test_step_evaluates_risk_breakers_between_signals` reads `k.bus.history`, so it should work. Each test must actually exercise the real handler (not a rebind), so do NOT monkeypatch `runner._on_*`. `test_heartbeat_event_is_logged` requires pytest `caplog` — confirm pytest-capture has `caplog` (it is built into pytest).
+
+## Verify
+```
+./.venv/bin/python -m pytest -q
+```
+Expected: 627 passing (baseline) + 3 new = 630.
+
+## Commit
+```
+git add ntrade/runner/live_runner.py tests/test_live_runner.py
+git commit -m "T-014 attach consumers for heartbeat/feed-drop/order-timeout events"
+```
+Stage only files you changed. Subject exactly `T-014 attach consumers for heartbeat/feed-drop/order-timeout events`.
+
+## Report
+Write `.superpowers/sdd/briefs/task-5-report.md`: commit hash, `git show --stat`, full-suite count, and a note if you had to touch any file beyond live_runner.py/test_live_runner.py (and why).

@@ -1,0 +1,1 @@
+Python dataclasses with `frozen=True` for immutable value objects, `str`-based `Enum`s for domain constants, and `TYPE_CHECKING` guards to break the circular dependency between orders and instruments.

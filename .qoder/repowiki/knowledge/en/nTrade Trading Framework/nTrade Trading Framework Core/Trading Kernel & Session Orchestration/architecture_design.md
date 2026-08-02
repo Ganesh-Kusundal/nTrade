@@ -1,0 +1,9 @@
+The module is a thin coordination layer over `ntrade.engines`, `ntrade.events`, `ntrade.execution` and `ntrade.domain`:
+- `event_bus.py` implements a synchronous, reentrant-lock-protected EventBus with MRO-based dispatch and a bounded deque history; handler exceptions are swallowed so one faulty subscriber cannot crash the kernel.
+- `clock.py` defines the `TradingClock` interface with three implementations: `LiveClock` (wall time), `ReplayClock` (deterministic timestamp jumps via `set`/`advance`), and `SimulationClock` (speed-scaled replay).
+- `context.py` holds shared mutable state (`bus`, `clock`, `instruments`, `portfolio`, `account`) protected by an `RLock`; all engines read/write through it.
+- `session.py` (`TradingKernel`) constructs the full engine pipeline (`MarketEngine → CandleEngine → IndicatorEngine → StrategyEngine → RiskEngine → PortfolioEngine → OrderEngine`) and wires the `ExecutionRouter` with either `BrokerExecution` or `SimulatedExecution`. It exposes `start/stop`, `run_replay`, and OMS helpers.
+- `trading_session.py` (`TradingSession`) is the unified SDK entry point combining broker connection (via `BrokerRegistry`), instrument factory, kernel and strategy runner, with class-method constructors `connect`, `paper`, `replay`.
+- `runner.py` (`StrategyRunner`) manages multiple strategies per kernel with per-strategy scoped `RiskEngine`s, hot attach/detach, and a reference-counted global-risk pause to avoid double-approval.
+- `resilient.py` (`ResilientKernel`) extends `TradingKernel` with crash recovery: replays a causal `EventStore` stream to rebuild state deterministically before resuming live trading, then reseeds execution sequence numbers and open-order trackers.
+Dependency direction is strictly inward: kernel components depend on `engines.*`, `events.*`, `execution.*`, and `domain.*`, but never the reverse. The only interchangeable pieces are the clock, execution target, and broker adapter.

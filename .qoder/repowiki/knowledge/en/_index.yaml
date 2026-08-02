@@ -1,23 +1,23 @@
 # 知识卡导出索引文件
 schema_version: 1
 locale: en-US
-branch: main
+branch: integration-completeness
 nodes_managed: true
-exported_at: "2026-08-01T19:31:20Z"
+exported_at: "2026-08-02T04:40:39Z"
 modules:
     "":
-        dir_name: nTrade Trading Framework (Root)
-        title: nTrade Trading Framework (Root)
+        dir_name: nTrade Trading Framework
+        title: nTrade Trading Framework
         scope:
             - ARCHITECTURE.md
-            - pyproject.toml
             - .gitignore
+            - pyproject.toml
             - skills-lock.json
             - check_connection.py
         source_files: []
         children:
             - agents_skills
-            - benchmarks_and_cache
+            - docs_plans
             - ntrade_core
             - scripts
             - tests
@@ -31,17 +31,19 @@ modules:
         source_files: []
         children: []
         depends_on: []
-        related_to: []
-    benchmarks_and_cache:
-        dir_name: Kanban Board & SDD Progress Tracking
-        title: Kanban Board & SDD Progress Tracking
+        related_to:
+            - path: ntrade_core/brokers
+    docs_plans:
+        dir_name: Superpowers Agentic Implementation Plans
+        title: Superpowers Agentic Implementation Plans
         scope:
-            - .kanban/
-            - .superpowers/
+            - docs/
         source_files: []
         children: []
         depends_on: []
-        related_to: []
+        related_to:
+            - path: ntrade_core/core_api
+            - path: tests
     ntrade_core:
         dir_name: nTrade Trading Framework Core
         title: nTrade Trading Framework Core
@@ -49,44 +51,45 @@ modules:
             - ntrade/
         source_files: []
         children:
-            - ntrade_core/backtest_replay_sim
+            - ntrade_core/backtest
             - ntrade_core/brokers
-            - ntrade_core/core_infrastructure
-            - ntrade_core/domain_models
+            - ntrade_core/core_api
+            - ntrade_core/domain
             - ntrade_core/engines
-            - ntrade_core/execution_pipeline
-            - ntrade_core/kernel_event_bus
-            - ntrade_core/market_data_sources
-            - ntrade_core/runner_scanners
+            - ntrade_core/events
+            - ntrade_core/execution
+            - ntrade_core/kernel
+            - ntrade_core/runner
+            - ntrade_core/sources
         depends_on: []
         related_to: []
-    ntrade_core/backtest_replay_sim:
-        dir_name: Backtest, Replay & Synthetic Tick Simulation
-        title: Backtest, Replay & Synthetic Tick Simulation
+    ntrade_core/backtest:
+        dir_name: Backtest Engine — Bar-Driven Zero-Parity Simulation
+        title: Backtest Engine — Bar-Driven Zero-Parity Simulation
         scope:
             - ntrade/backtest/
-            - ntrade/replay/
-            - ntrade/sim/
         source_files: []
         children: []
         depends_on: []
-        related_to:
-            - path: ntrade_core/kernel_event_bus
+        related_to: []
     ntrade_core/brokers:
-        dir_name: Broker Adapters & Dhan Integration
-        title: Broker Adapters & Dhan Integration
+        dir_name: Broker Adapter & Dhan Integration
+        title: Broker Adapter & Dhan Integration
         scope:
             - ntrade/brokers/
         source_files: []
         children: []
         depends_on: []
         related_to:
+            - path: agents_skills
+            - path: ntrade_core/execution
             - path: scripts
-    ntrade_core/core_infrastructure:
-        dir_name: Core Infrastructure — Event Store, Broker & Instrument Registries
-        title: Core Infrastructure — Event Store, Broker & Instrument Registries
+            - path: tests
+    ntrade_core/core_api:
+        dir_name: Core API Surface & Registration Layer
+        title: Core API Surface & Registration Layer
         scope:
-            - ntrade/storage/
+            - ntrade/__init__.py
             - ntrade/facade.py
             - ntrade/factories.py
             - ntrade/registry.py
@@ -94,74 +97,141 @@ modules:
         children: []
         depends_on: []
         related_to:
-            - path: ntrade_core/kernel_event_bus
-    ntrade_core/domain_models:
-        dir_name: Trading Domain Models
-        title: Trading Domain Models
+            - path: docs_plans
+    ntrade_core/domain:
+        dir_name: nTrade Core Domain Layer
+        title: nTrade Core Domain Layer
         scope:
             - ntrade/domain/
+        source_files: []
+        children:
+            - ntrade_core/domain/analytics
+            - ntrade_core/domain/core_domain
+            - ntrade_core/domain/instruments
+            - ntrade_core/domain/market
+            - ntrade_core/domain/orders
+        depends_on: []
+        related_to: []
+    ntrade_core/domain/analytics:
+        dir_name: Options Analytics & Technical Indicators
+        title: Options Analytics & Technical Indicators
+        scope:
+            - ntrade/domain/analytics/
         source_files: []
         children: []
         depends_on: []
         related_to: []
+    ntrade_core/domain/core_domain:
+        dir_name: Core Domain Layer — Portfolio, Scanner Facade & Market Session State
+        title: Core Domain Layer — Portfolio, Scanner Facade & Market Session State
+        scope:
+            - ntrade/domain/portfolio.py
+            - ntrade/domain/scanner.py
+            - ntrade/domain/session.py
+            - ntrade/domain/__init__.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    ntrade_core/domain/instruments:
+        dir_name: Instrument Domain Model & Capability Composition
+        title: Instrument Domain Model & Capability Composition
+        scope:
+            - ntrade/domain/instruments/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/domain/market
+    ntrade_core/domain/market:
+        dir_name: Market Domain Models & Live Streaming
+        title: Market Domain Models & Live Streaming
+        scope:
+            - ntrade/domain/market/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/domain/instruments
+    ntrade_core/domain/orders:
+        dir_name: Order Domain Model & Order Book Value Objects
+        title: Order Domain Model & Order Book Value Objects
+        scope:
+            - ntrade/domain/orders/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/execution
     ntrade_core/engines:
-        dir_name: Event-Driven Trading Engines
-        title: Event-Driven Trading Engines
+        dir_name: Event-Processing Trading Engines
+        title: Event-Processing Trading Engines
         scope:
             - ntrade/engines/
         source_files: []
         children: []
         depends_on: []
-        related_to: []
-    ntrade_core/execution_pipeline:
-        dir_name: Execution Pipeline & Order Routing
-        title: Execution Pipeline & Order Routing
+        related_to:
+            - path: ntrade_core/events
+            - path: ntrade_core/kernel
+    ntrade_core/events:
+        dir_name: Trading Kernel Event Model
+        title: Trading Kernel Event Model
         scope:
-            - ntrade/execution/
-        source_files: []
-        children: []
-        depends_on: []
-        related_to: []
-    ntrade_core/kernel_event_bus:
-        dir_name: Trading Kernel Event Bus & Event Model
-        title: Trading Kernel Event Bus & Event Model
-        scope:
-            - ntrade/kernel/
             - ntrade/events/
         source_files: []
         children: []
         depends_on: []
         related_to:
-            - path: ntrade_core/backtest_replay_sim
-            - path: ntrade_core/core_infrastructure
-            - path: ntrade_core/runner_scanners
+            - path: ntrade_core/engines
+    ntrade_core/execution:
+        dir_name: Interchangeable Order Execution Targets & Cost Models
+        title: Interchangeable Order Execution Targets & Cost Models
+        scope:
+            - ntrade/execution/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/brokers
+            - path: ntrade_core/domain/orders
+    ntrade_core/kernel:
+        dir_name: Trading Kernel & Session Orchestration
+        title: Trading Kernel & Session Orchestration
+        scope:
+            - ntrade/kernel/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/engines
+            - path: scripts
             - path: tests
-    ntrade_core/market_data_sources:
-        dir_name: Market Data Feed Sources
-        title: Market Data Feed Sources
+    ntrade_core/runner:
+        dir_name: Live Trading Runner & Orchestration
+        title: Live Trading Runner & Orchestration
+        scope:
+            - ntrade/runner/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: ntrade_core/sources
+            - path: scripts
+    ntrade_core/sources:
+        dir_name: Interchangeable Market Event Sources
+        title: Interchangeable Market Event Sources
         scope:
             - ntrade/sources/
         source_files: []
         children: []
         depends_on: []
         related_to:
-            - path: ntrade_core/runner_scanners
-            - path: scripts
-    ntrade_core/runner_scanners:
-        dir_name: Live Runner & Built-in Market Scanners
-        title: Live Runner & Built-in Market Scanners
-        scope:
-            - ntrade/runner/
-            - ntrade/scanners/
-        source_files: []
-        children: []
-        depends_on: []
-        related_to:
-            - path: ntrade_core/kernel_event_bus
-            - path: ntrade_core/market_data_sources
+            - path: ntrade_core/runner
+            - path: tests
     scripts:
-        dir_name: Trading Kernel Scripts & Runners
-        title: Trading Kernel Scripts & Runners
+        dir_name: Trading Kernel Scripts & Live Validation Harness
+        title: Trading Kernel Scripts & Live Validation Harness
         scope:
             - scripts/
         source_files: []
@@ -169,14 +239,18 @@ modules:
         depends_on: []
         related_to:
             - path: ntrade_core/brokers
-            - path: ntrade_core/market_data_sources
+            - path: ntrade_core/kernel
+            - path: ntrade_core/runner
     tests:
-        dir_name: Pytest Test Suite for nTrade Trading Kernel
-        title: Pytest Test Suite for nTrade Trading Kernel
+        dir_name: nTrade Test Suite (pytest)
+        title: nTrade Test Suite (pytest)
         scope:
             - tests/
         source_files: []
         children: []
         depends_on: []
         related_to:
-            - path: ntrade_core/kernel_event_bus
+            - path: docs_plans
+            - path: ntrade_core/brokers
+            - path: ntrade_core/kernel
+            - path: ntrade_core/sources

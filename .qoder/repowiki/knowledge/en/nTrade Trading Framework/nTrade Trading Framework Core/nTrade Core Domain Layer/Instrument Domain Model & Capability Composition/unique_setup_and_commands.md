@@ -1,0 +1,1 @@
+No build or test commands are required for this leaf module; it is a pure Python package imported by other layers. Instruments can be instantiated without a broker adapter (broker-free mode) and later wired via `broker_factory`.

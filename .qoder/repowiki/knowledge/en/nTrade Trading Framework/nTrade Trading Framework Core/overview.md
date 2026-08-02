@@ -1,0 +1,1 @@
+Python trading framework that wires immutable domain models, an event-driven kernel, interchangeable brokers and market feeds, execution targets, backtesting, replay and live orchestration into a single zero-parity SDK surface.

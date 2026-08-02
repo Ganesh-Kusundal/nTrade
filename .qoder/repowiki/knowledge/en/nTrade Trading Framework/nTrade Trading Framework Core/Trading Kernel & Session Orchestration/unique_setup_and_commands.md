@@ -1,0 +1,1 @@
+No build step — the package is imported directly. Recovery mode requires an `EventStore` instance passed to `ResilientKernel.recover()`, which must run before any strategies are registered to avoid re-trading during replay.

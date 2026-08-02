@@ -1,1 +1,0 @@
-Markdown-based agent skill manifests consumed by an agent framework; the dhan-tradehull skill targets Python with the `Dhan-Tradehull` pip package (v3.3.2) and TA-Lib for indicators, while the graphify skill targets the `graphifyy` Python package with optional Gemini LLM backend and supports Neo4j/FalkorDB export.

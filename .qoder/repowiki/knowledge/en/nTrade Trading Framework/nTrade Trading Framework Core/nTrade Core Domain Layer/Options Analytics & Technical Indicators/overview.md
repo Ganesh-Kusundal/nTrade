@@ -1,0 +1,1 @@
+Pure-math Black-Scholes pricing engine with Greeks and implied volatility, plus a suite of pandas-based technical indicators (RSI, ATR, EMA, SMA, VWAP, SuperTrend, Heikin-Ashi, Renko) and domain-typed wrappers over option-chain DataFrames.

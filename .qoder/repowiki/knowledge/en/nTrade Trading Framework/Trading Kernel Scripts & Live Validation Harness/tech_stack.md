@@ -1,0 +1,1 @@
+Pure Python with argparse CLIs; uses the ntrade internal packages (`ntrade.kernel`, `ntrade.engines`, `ntrade.sources`, `ntrade.runner`) plus pandas DataFrames for OHLCV history. Live connectivity goes through the Dhan broker SDK accessed via `TradingSession.connect('dhan')`. Results are persisted as JSON (`.benchmarks/latency.json`, paper gate report) rather than logs.

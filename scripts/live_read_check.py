@@ -59,8 +59,8 @@ def main() -> int:
     rel = session.index("RELIANCE")
 
     # ------------------------------------------------------------ market data
-    check("quote.ltp (NIFTY)", lambda: nifty.refresh() and nifty.ltp, sane=lambda v: v > 0)
-    check("quote.full (get_quote_data)", lambda: nifty.quote.as_dict(),
+    check("quote.ltp (NIFTY)", lambda: nifty.refresh() and nifty.market.ltp(), sane=lambda v: v > 0)
+    check("quote.full (get_quote_data)", lambda: nifty.market.quote().as_dict(),
           sane=lambda d: isinstance(d, dict) and d.get("ltp", 0) > 0)
     check("quote.ohlc (get_ohlc_data)", lambda: nifty.broker.ohlc(),
           sane=lambda d: isinstance(d, dict) and bool(d))
@@ -92,7 +92,7 @@ def main() -> int:
     chain_ref = {}
 
     def fetch_chain():
-        chain = nifty.option_chain(expiry=0, num_strikes=5)
+        chain = nifty.derivatives.option_chain(expiry=0, num_strikes=5)
         chain_ref["chain"] = chain
         return f"options={len(chain)} atm={chain.atm_strike} expiry={chain.target_expiry} idx_used={chain.expiry_index_used}"
 

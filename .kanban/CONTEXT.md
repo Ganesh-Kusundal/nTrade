@@ -1,4 +1,4 @@
-# nTrade — kanban digest (2026-08-01T13:16:58Z)
+# nTrade — kanban digest (2026-08-02T04:12:41Z)
 
 nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). It provides an instrument-centric API where every market entity (Equity, Future, Option, Index, Commodity) owns its own state (quote, depth, history, stream) and broker transport is hidden behind a BrokerAdapter. Currently integrated with Dhan via Dhan-Tradehull. Architecture: event-driven kernel with engine pipeline (Market→Candle→Indicator→Strategy→Risk→Portfolio), typed EventBus, execution router supporting live/paper/replay modes. 75 source files, 7269 LOC, 40 test files, 361 passing tests.
 
@@ -12,50 +12,54 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - none
 
 ## Recently completed
-- T-011 [task/done] Auto-refresh Dhan token on expiry — proactive buffer + background timer + _ensure_tsl() in critical paths (completed 2026-08-01)
-- B-009 [bug/done] HF-001 MarketEngine.on_tick broadcasts read-model _quote.ltp instead of event.price (stale 0.0 for depth-kind ticks; fragile ordering dependence) (completed 2026-08-01)
-- D-017 [debt/done] gate.py re-derives equity/drawdown with divergent MTM vs RiskEngine.equity/Position.market_value (completed 2026-08-01)
-- B-006 [bug/done] F-004 live fills carry zero commission/statutory — parity gap (completed 2026-08-01)
-- B-007 [bug/done] F-005 backtest candles degenerate (open=high=low=close) — QuoteEvent OHLCV ignored by CandleEngine (completed 2026-08-01)
-- B-008 [bug/done] Scanner reads indicator keys pipeline never produces (avg_volume/rsi/supertrend vs rsi_14/atr_14/stx_10_3) — 3 dead branches (completed 2026-08-01)
-- D-002 [debt/done] DhanBroker is 1095 lines mixing auth, mapping, transport, capabilities, normalization (completed 2026-08-01)
-- D-003 [debt/done] BrokerAdapter.get_historical() returns pd.DataFrame — leaks pandas at broker boundary (completed 2026-08-01)
-- D-004 [debt/done] get_orderbook/get_trade_book return list[dict] — no domain types (completed 2026-08-01)
-- D-005 [debt/done] Provider SDK (TradeHull) leaks through capability layer — no transport abstraction (completed 2026-08-01)
+- T-021 [task/done] StrategyRunner full surface or trim to documented API (completed 2026-08-02)
+- T-013 [task/done] Wire capability layer into production reads — finish T-002/D-001 (use .market/.history/.stream instead of inst._quote) (completed 2026-08-02)
+- T-017 [task/done] Arm ScannerFacade M6 throttle on a built-in scanner (completed 2026-08-02)
+- T-019 [task/done] Wire DhanFeed mode matrix (ticker/quote/depth) for the live streaming plan (completed 2026-08-02)
+- T-018 [task/done] Wire feed watchdog reconnection (LiveStream reconnect events) — finish R-004 (completed 2026-08-02)
+- T-014 [task/done] Attach consumers for R-006 observability events (Heartbeat/FeedDisconnected/OrderTimeout) — watchdog + alerting (completed 2026-08-02)
+- T-015 [task/done] Wire DhanAuthProvider.stop() into LiveRunner shutdown path — finish T-011 token refresh (completed 2026-08-02)
+- T-016 [task/done] Arm RateLimiter/RetryPolicy in hot paths — finish D-006 resilience infrastructure (completed 2026-08-02)
+- T-012 [task/done] Route DhanBroker data calls through DhanTransport — finish T-005/D-005 provider decomposition (completed 2026-08-02)
+- T-020 [task/done] Remove fake streaming no-ops (market_feed/order_update_stream stubs) from capability surface (completed 2026-08-01)
 
 ## Tests
-- last pytest run: 1 failing (as of 2026-08-01T13:15:43Z)
-  - tests/test_indicators.py::test_vwap_between_low_and_high
+- last pytest run: 0 failing
 
 ## Drift since previous scan
-- added: docs/superpowers/plans/2026-08-01-parity-complexity-batch.md
-- added: tests/test_candle_engine.py
+- added: Dependencies/token_1106251237_2026-08-02.txt
+- added: Dependencies\all_instrument 2026-08-02.csv
+- added: docs/backtest-replay-guide.md
+- added: docs/broker-guide.md
+- added: docs/how-to-write-a-strategy.md
+- added: docs/superpowers/plans/2026-08-02-integration-completeness-batch.md
+- modified: .gitignore
 - modified: Dependencies/log_files/logs2026-08-01.log
 - modified: Dependencies\all_instrument 2026-08-01.csv
+- modified: check_connection.py
+- modified: docs/superpowers/plans/2026-08-01-findings-hardening.md
+- modified: docs/superpowers/plans/2026-08-01-parity-complexity-batch.md
+- modified: ntrade/brokers/dhan.py
+- modified: ntrade/brokers/dhan_auth.py
+- modified: ntrade/brokers/dhan_auth_provider.py
+- modified: ntrade/brokers/dhan_mapper.py
+- modified: ntrade/brokers/dhan_transport.py
 - modified: ntrade/domain/analytics/indicators.py
-- modified: ntrade/engines/candle_engine.py
-- modified: ntrade/engines/market_engine.py
-- modified: ntrade/execution/broker_executor.py
-- modified: ntrade/kernel/session.py
-- modified: ntrade/runner/gate.py
-- modified: ntrade/scanners/builtin.py
-- modified: tests/test_indicators.py
-- modified: tests/test_kernel_engines.py
-- modified: tests/test_live_execution.py
-- modified: tests/test_paper_gate.py
-- modified: tests/test_scanner.py
+- modified: ntrade/domain/instruments/__init__.py
+- modified: ntrade/domain/instruments/base.py
+- … +31 more
 
 ## Recent commits
-- a3e9f28 Final review: guard BreakoutScanner stx type; gate zero-peak + docstring; scanner integration test
-- 2c2d4e3 D-017 gate equity: settle at balance events (no pre-fill spike)
-- 7e38917 H6 task-5 report: gate equity derives from portfolio read-model events (D-017)
-- 8cbf69a gate equity derives from portfolio read-model events (D-017)
-- 88572d9 H6 task-3 report: scanners read canonical indicator keys (B-008)
-- 42cbbf5 scanners read canonical indicator keys; emit avg_volume (B-008)
-- 954c20e B-009 on_tick broadcasts the tick's own price (HF-001)
-- be18e1d F-005 review: document bar-authoritative tick-skip; drop unused import
+- 66f1bb7 T-021 trim StrategyRunner to the documented add/release surface
+- 4aedfc7 T-013 route reads through canonical accessors; retire unused capability facades
+- 4c8c3e1 T-017 arm M6 scanner throttle; dedupe Scanner.top ranking
+- 362842d T-019 retire speculative feed mode codes; hardcode full data code 21
+- 614075f T-018 wire feed watchdog reconnect on disconnect
+- 9d899a5 T-014 attach consumers for heartbeat/feed-drop/order-timeout events
+- b2cf7df T-015 wire DhanAuthProvider.stop into LiveRunner shutdown
+- b2f8f11 T-016 arm RateLimiter in transport and feed hot paths
 
-(25 uncommitted changes in working tree)
+(184 uncommitted changes in working tree)
 
 ## Architecture & components
 - **ntrade/backtest/** (0 files): Backtest simulator: uses TradingKernel in replay mode with SimulatedExecution. Zero parity with live
@@ -78,19 +82,19 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - none
 
 ## Knowledge graph (graphify)
-- 2824 nodes · 7004 edges · 129 communities (built 2026-08-01T07:34:33Z)
-- hubs: Equity(224), PaperBroker(147), TradingKernel(144), ReplayClock(132), TickEvent(98), Instrument(88), Option(87), TradingSession(83)
-- STALE (44 modified, 25 deleted, 8 new since build) — refresh with `/graphify update`
-  - modified: ntrade/__init__.py
-  - modified: ntrade/backtest/simulator.py
-  - modified: ntrade/brokers/base.py
+- 2694 nodes · 7378 edges · 110 communities (built 2026-08-01T15:06:45Z)
+- hubs: Equity(245), TradingKernel(154), ReplayClock(150), PaperBroker(147), TickEvent(103), Option(102), TradingSession(95), Instrument(88)
+- STALE (25 modified, 3 deleted, 8 new since build) — refresh with `/graphify update`
   - modified: ntrade/brokers/dhan.py
-  - modified: ntrade/brokers/dhan_auth.py
-  - modified: ntrade/brokers/dhan_auth_provider.py
   - modified: ntrade/brokers/dhan_mapper.py
   - modified: ntrade/brokers/dhan_transport.py
-  - modified: ntrade/brokers/paper.py
-  - modified: ntrade/domain/analytics/greeks.py
+  - modified: ntrade/domain/instruments/__init__.py
+  - modified: ntrade/domain/instruments/base.py
+  - modified: ntrade/domain/instruments/capabilities.py
+  - modified: ntrade/domain/scanner.py
+  - modified: ntrade/engines/market_engine.py
+  - modified: ntrade/engines/risk_engine.py
+  - modified: ntrade/kernel/runner.py
 - AUTO-REFRESH: run `/graphify update` now, then re-run `kanban.py update` to refresh this digest.
 
 ## Data / execution flows

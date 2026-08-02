@@ -1,1 +1,0 @@
-`build_source(kernel, feed='synth'|'live', ...)` selects the feed implementation at runtime; synthetic mode requires a non-empty pandas OHLCV DataFrame passed as `frame`. Live mode passes kwargs through to `DhanMarketFeedSource`. Benchmarks are run via `measure_tick_throughput(kernel, n_ticks=1000)` which publishes synthetic `TickEvent`s and reports events/sec.

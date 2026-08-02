@@ -1,0 +1,1 @@
+Defines the nTrade SDK's core domain value objects (Position, Holding), composite portfolio/account aggregates with broker-backed refresh, a pluggable scanner subsystem with rate-limited facaded execution, and market session state for instruments.

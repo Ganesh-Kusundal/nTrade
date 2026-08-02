@@ -1,19 +1,71 @@
-## Task Group 3 — B-008: scanners read canonical indicator keys
+# Task 3 (T-016): Arm RateLimiter in transport + broker + feed hot paths
 
-**Finding:** `compute_bundle` (ntrade/domain/analytics/indicators.py:148-190) emits `rsi_14`/`atr_14`/`vwap`/`stx_10_3`/`ema_9`/`ema_21` (and `sma_N` when configured) — never `avg_volume`, `rsi`, `supertrend`, or `atr`. The built-in scanners read the phantom keys:
-- `VolumeSpikeScanner` reads `indicators.get("avg_volume", 0)` (ntrade/scanners/builtin.py:92) — dead branch.
-- `MomentumScanner` reads `indicators.get("rsi")` (builtin.py:131) — dead branch.
-- `BreakoutScanner` reads `indicators.get("supertrend")` (builtin.py:174) and `indicators.get("atr")` (builtin.py:201) — dead branches.
+**Goal:** Give Dhan transport/broker/feed a real configurable API rate ceiling (D-006). `RateLimiter` exists (`ntrade/execution/retry.py:70`) with zero production references. `DhanTransport` uses `RetryPolicy` but throttles nothing. Arm it.
 
-**Files:** `ntrade/scanners/builtin.py`, `ntrade/domain/analytics/indicators.py`, `tests/test_scanner.py`, `tests/test_indicators.py`
+## Changes
 
-- [ ] `MomentumScanner`: read `rsi_14` (canonical; the IndicatorEngine default `rsi_period=14`). Keep the price-change fallback unchanged.
-- [ ] `BreakoutScanner`: read `stx_10_3` instead of `supertrend`; keep the high/low fallback. For the `indicator_values` summary, read `atr_14` instead of `atr`.
-- [ ] `VolumeSpikeScanner`: the pipeline has no average-volume key. **Add `avg_volume` to `compute_bundle`** (mean of the `volume` column over the window, e.g. `float(df["volume"].mean())`) so the spike-multiplier branch is genuinely reachable; keep the absolute-`min_volume` fallback. (Alternative if the maintainer prefers: delete the `avg_volume` branch and rely on the absolute fallback — but emitting the key keeps the documented spike feature working.)
-- [ ] **Tests first, then impl:**
-  - [ ] Update `tests/test_scanner.py` fixtures (L221-276) from phantom keys to canonical: `{"avg_volume": 100_000}` stays (now produced), `{"rsi": 72.0}` → `{"rsi_14": 72.0}`, `{"supertrend": 1650.0}` → `{"stx_10_3": 1650.0}`. Assert each scan still returns the expected single result and condition.
-  - [ ] Add `"avg_volume" in bundle` to `test_compute_bundle` (tests/test_indicators.py:67-72).
-- [ ] Full suite green: `./.venv/bin/python -m pytest -q`.
+### 1. `ntrade/brokers/dhan_transport.py`
+Add a `rate_limiter` param to `__init__` (default `None`) and store it:
+```python
+def __init__(self, tsl, retry_policy=None, rate_limiter=None, clock=None):
+    ...
+    self._rate_limiter = rate_limiter   # new attribute
+```
+Add a helper and call it at the top of the LTP call inside the retry closure (the only hot per-tick path):
+```python
+def _throttled(self) -> None:
+    """Respect the shared Dhan API rate ceiling, if configured."""
+    if self._rate_limiter is not None:
+        self._rate_limiter.wait()
+```
+In `_try_ltp` (the fn passed to `RetryPolicy.execute` inside `get_ltp`), call `self._throttled()` before `self._tsl.get_ltp_data(...)`. RetryPolicy already exists; do not alter it.
 
----
+### 2. `ntrade/brokers/dhan.py`
+Import `RateLimiter` (from `ntrade.execution.retry`). In `connect()` construct one shared limiter and hand it to the transport:
+```python
+def connect(self) -> "DhanBroker":
+    self.tsl = self._auth.authenticate()
+    self._rate_limiter = RateLimiter(calls_per_second=10.0)  # Dhan API ceiling
+    self._transport = DhanTransport(self.tsl, rate_limiter=self._rate_limiter,
+                                    clock=getattr(self, "_clock", None))
+    self._connected = True
+    return self
+```
+(Keep the method's existing docstring/return contract.)
 
+### 3. `ntrade/sources/dhan_feed.py` — rate-limit restart/reconnect
+The feed has NO manual reconnect loop (dhanhq owns the socket); a "reconnect" is a fresh `start()` after `stop()` (proven by `test_source_restart_after_stop_rebuilds_feed`). Arm it:
+- In `__init__`, add `self._reconnect_limiter = RateLimiter(calls_per_second=0.5)` (import `RateLimiter` from `ntrade.execution.retry`). Set it in the same style as the existing `self._sleep = time.sleep` / `self._timer = time.monotonic` lines.
+- In `start()`, before calling `self._build_feed()`, call `self._reconnect_limiter.wait()` so rapid `stop()`→`start()` cycles (reconnect storms) respect a 0.5/s ceiling. Keep the rest of `start()` unchanged.
+- If the review/you find a real reconnect loop elsewhere in the file, gate that instead/additionally — but this file's current shape has no such loop.
+
+## Tests
+Add ONE test to `tests/test_retry.py` (in the `TestTransport`-style section, mirroring the existing `test_default_policy_used` / `test_get_ltp_*` tests):
+```python
+def test_transport_rate_limiter_throttles_ltp(self, mock_sleep):
+    from ntrade.execution.retry import RateLimiter
+    tsl = Mock()
+    tsl.get_ltp_data.return_value = {"TCS": 100.0}
+    limiter = RateLimiter(calls_per_second=100.0)
+    transport = DhanTransport(tsl, rate_limiter=limiter)
+    transport.get_ltp("TCS")
+    assert limiter._last_time > 0  # the limiter was actually consulted
+```
+Use `Mock` or the existing imports/stubs already in test_retry.py — match the file's existing style. If `mock_sleep` is not needed, omit it; write the test in the file's prevailing style.
+
+## Verify
+```
+./.venv/bin/python -m pytest -q
+```
+Expected: 625 passing (baseline). The new test adds one.
+
+## Commit
+Stage only files you changed:
+```
+git add ntrade/brokers/dhan_transport.py ntrade/brokers/dhan.py ntrade/sources/dhan_feed.py tests/test_retry.py
+git commit -m "T-016 arm RateLimiter in transport and feed hot paths"
+```
+Only `git add` files you actually touched. Commit subject must be exactly `T-016 arm RateLimiter in transport and feed hot paths`.
+
+## Report
+Write to `.superpowers/sdd/briefs/task-3-report.md`: commit hash, `git show --stat HEAD`, full-suite count, and a one-line note on where the feed rate-limited (the `start()` restart gating) given dhanhq owns reconnection.

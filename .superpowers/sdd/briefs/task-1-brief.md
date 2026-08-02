@@ -27,10 +27,17 @@ Append to `tests/test_dhan_broker.py`:
 
 ```python
 def test_no_fake_streaming_capabilities():
-    from ntrade.brokers.dhan import DhanBroker
-    assert not hasattr(DhanBroker, "_market_feed")
-    assert not hasattr(DhanBroker, "_order_update_stream")
+    import ntrade.brokers.dhan as dhan_mod
+    from ntrade.brokers.capabilities import registered_capabilities
+
+    assert not hasattr(dhan_mod, "_market_feed")
+    assert not hasattr(dhan_mod, "_order_update_stream")
+    caps = registered_capabilities()
+    assert "market_feed" not in caps
+    assert "order_update_stream" not in caps
 ```
+
+Note: `_market_feed`/`_order_update_stream` are module-level `@capability` functions (registered in `_CAPABILITIES`), not `DhanBroker` methods — assert against the module and the capability registry, not `hasattr(DhanBroker, ...)` (that would be vacuous).
 
 ### Step 2: Run test to verify it fails
 

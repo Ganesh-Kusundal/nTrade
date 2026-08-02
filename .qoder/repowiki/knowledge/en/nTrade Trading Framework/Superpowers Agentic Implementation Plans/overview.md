@@ -1,0 +1,1 @@
+Versioned, task-structured implementation plans that guide agentic workers through the nTrade trading platform's live-harness, risk hardening, parity fixes, and integration-completeness batches using a failing-test-first discipline.

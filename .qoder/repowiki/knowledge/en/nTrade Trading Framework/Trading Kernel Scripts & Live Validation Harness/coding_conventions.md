@@ -1,0 +1,5 @@
+- Each script exposes a `main() -> int` function and invokes it via `if __name__ == '__main__': sys.exit(main())`.
+- Scripts prepend the repository root to `sys.path` with `sys.path.insert(0, str(Path(__file__).resolve().parent.parent))` before any ntrade imports.
+- Replay-mode scripts construct a `TradingKernel(mode='replay', clock=ReplayClock(), timeframe=...)`, register an `Index` instrument and a strategy via `k.register()` / `k.register_strategy()`, start the kernel, inject a feed source, then call `k.stop(reason=...)`.
+- Live-read scripts wrap every endpoint call in a `check(name, fn, sane=predicate)` helper that records PASS/FAIL/DEGRADED outcomes based on optional sanity predicates rather than raising.
+- CLI arguments are parsed with `argparse.ArgumentParser`, using descriptive defaults (e.g. `NIFTY`, 15 days, 100_000 initial cash) and writing outputs under `.benchmarks/` or printing structured summaries.

@@ -1,36 +1,27 @@
-# Task Group 4 Report — B-009 / HF-001: on_tick broadcasts the tick's own price
+# Task 4 (T-015) Report — wire DhanAuthProvider.stop() into shutdown
 
-## What changed
+**Commit:** `b2cf7dfe876fde2068ed115c08afdb0eb19856c3`
 
-**Bug:** `MarketEngine.on_tick` published `QuoteUpdatedEvent(ltp=instrument._quote.ltp, ...)` — a read of the instrument's mutable quote *after* `ingest_tick`. `LiveStream.ingest_tick` only mutates `_quote.ltp` for `quote`/`trade`-kind ticks (ntrade/domain/market/stream.py:106-122); for a `depth`-kind tick the broadcast was `0.0`. The broadcast's correctness depended on stream ordering, which is fragile and wrong by construction — the tick event owns the price.
-
-**Fix** (ntrade/engines/market_engine.py:36): broadcast `ltp=event.price` (the tick's own authoritative price). `bid`/`ask` stay as `instrument._quote.bid/ask` (best-effort snapshot).
-
-**Test added** (tests/test_kernel_engines.py, after `test_market_engine_projects_tick`):
-`test_market_engine_broadcasts_tick_own_price_for_depth_kind` — publishes `TickEvent(..., price=2498.75, kind="depth")` and asserts the emitted `QuoteUpdatedEvent.ltp == tick.price`. Reuses existing `_kernel()` helper.
-
-TDD flow: wrote the failing test first and confirmed it failed with `ltp=0.0` (broadcast of the unmutated `_quote.ltp`), then applied the one-line fix and watched it pass.
-
-## Test commands and output
-
-Failing test (before impl), from /Users/apple/Downloads/nTrade:
+## `git show --stat HEAD`
 ```
-$ ./.venv/bin/python -m pytest -q tests/test_kernel_engines.py::test_market_engine_broadcasts_tick_own_price_for_depth_kind -q
-F                                                                    [100%]
-... AssertionError: assert ([QuoteUpdatedEvent(..., ltp=0.0, ...)] and 0.0 == 2498.75)
+commit b2cf7dfe876fde2068ed115c08fd0eb19856c3
+ ntrade/brokers/dhan.py       | 6 ++++++   (add DhanBroker.stop())
+ ntrade/runner/live_runner.py | 4 ++++    (stop brokers in LiveRunner.stop())
+ tests/test_dhan_broker.py    | 9 ++++++++ (new test)
+ 3 files changed, 19 insertions(+)
 ```
 
-Full suite (after impl):
-```
-$ ./.venv/bin/python -m pytest -q
-[......................................................................]
-622 passed in 5.82s
-```
+## Changes
+- `ntrade/brokers/dhan.py:97` — added `DhanBroker.stop()` beside `connect()`/`set_clock()`; it calls `auth.stop()` on `_auth` when present, cancelling the DhanAuthProvider proactive refresh timer (`dhan_auth_provider.py:76`).
+- `ntrade/runner/live_runner.py:140` — in `stop()`, after `kernel.stop(reason=reason)`, iterate `kernel.ctx.instruments_snapshot()` (same pattern as `_on_risk_halted`) and call `broker.stop()` on any `broker_adapter` exposing it.
 
-## Commit
+## Test file choice
 
-- `954c20e` — "B-009 on_tick broadcasts the tick's own price (HF-001)" — only `ntrade/engines/market_engine.py` and `tests/test_kernel_engines.py` staged (explicit `git add` of the two files, no `git add -A`).
+Added `test_broker_stop_cancels_auth_timer` to **`tests/test_dhan_broker.py`**, not `tests/test_dhan_auth_unit.py`. That file's docstring says it covers the lower-level `dhan_auth` helpers (module-level `dhan_auth` imports, monkeypatched Tradehull), so a broker-level test doesn't belong there. `tests/test_dhan_broker.py` already imports `DhanBroker` and has no network requirement.
 
-## Concerns
+## Verification
 
-None. Pre-existing uncommitted changes to `ntrade/brokers/dhan*.py` and scratch files were left untouched and not committed.
+- Offline construction confirmed: `DhanBroker(connect=False)` (from `ntrade.brokers.dhan`) succeeds; the test stubs `_auth` with a `Mock` and asserts `stop.assert_called_once()`.
+- Note: `from ntrade.brokers import DhanBroker` does **not** work — `ntrade/brokers/__init__.py` does not re-export it — so the test uses `DhanBroker` already imported in the file (`from ntrade.brokers.dhan import DhanBroker`), matching the brief's allowed alternative.
+
+**Full-suite count:** `627 passed` (baseline 626 + 1 new).

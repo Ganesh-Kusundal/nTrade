@@ -15,6 +15,13 @@
 - [test_strategy_runner.py](file://tests/test_strategy_runner.py)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated StrategyRunner section to reflect the simplified interface with only `add()` and `release()` methods
+- Removed references to hot-detaching strategies and runtime enable/disable operations
+- Updated diagrams and examples to show the current minimal API surface
+- Clarified that strategy lifecycle management is now handled through the kernel's StrategyEngine directly
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -54,6 +61,7 @@ RE["RiskEngine"]
 end
 subgraph "Runner"
 LR["LiveRunner"]
+SR["StrategyRunner"]
 end
 subgraph "Execution"
 BE["BrokerExecution"]
@@ -77,6 +85,8 @@ LR --> E4
 LR --> BE
 RE --> P
 E1 --> RE
+SR --> SE
+SR --> RE
 ```
 
 **Diagram sources**
@@ -87,6 +97,7 @@ E1 --> RE
 - [broker_executor.py:46-262](file://ntrade/execution/broker_executor.py#L46-L262)
 - [portfolio.py:63-173](file://ntrade/domain/portfolio.py#L63-L173)
 - [risk.py:11-52](file://ntrade/events/risk.py#L11-L52)
+- [runner.py:16-135](file://ntrade/kernel/runner.py#L16-L135)
 
 **Section sources**
 - [session.py:38-101](file://ntrade/kernel/session.py#L38-L101)
@@ -96,24 +107,25 @@ E1 --> RE
 - [broker_executor.py:46-262](file://ntrade/execution/broker_executor.py#L46-L262)
 - [portfolio.py:63-173](file://ntrade/domain/portfolio.py#L63-L173)
 - [risk.py:11-52](file://ntrade/events/risk.py#L11-L52)
+- [runner.py:16-135](file://ntrade/kernel/runner.py#L16-L135)
 
 ## Core Components
 - RiskEngine: Screens SignalGeneratedEvent, enforces static limits (allowlist, quantity, notional, position count), and applies circuit breakers (daily loss, drawdown, price deviation). Publishes SignalApprovedEvent or SignalRejectedEvent; publishes RiskHaltedEvent/RiskResumedEvent on state changes.
-- StrategyRunner: Creates per-strategy RiskEngine instances scoped by strategy name, pausing the global RiskEngine to avoid double-screening. Exposes status and enable/disable controls.
+- StrategyRunner: Creates per-strategy RiskEngine instances scoped by strategy name, pausing the global RiskEngine to avoid double-screening. Exposes status and lifecycle controls through a minimal API surface.
 - LiveRunner: Calls engine.check() every loop iteration to detect mid-session breaches; subscribes to RiskHaltedEvent to trigger broker kill switch; monitors feed health and can publish its own RiskHaltedEvent if ticks freeze.
 - BrokerExecution: Manages order submission, lifecycle polling, timeouts, and cancellation; integrates with broker adapters for live execution.
 - Portfolio/Account: Provides balance, positions, and market values used to compute equity and drawdown.
 
 Key responsibilities:
 - RiskEngine: signal screening, circuit breaker evaluation, halt/resume semantics, per-strategy position counting.
-- StrategyRunner: per-strategy risk scoping, global risk pause/unpause, hot attach/detach.
+- StrategyRunner: per-strategy risk scoping, global risk pause/unpause, strategy lifecycle management.
 - LiveRunner: continuous risk evaluation, kill switch activation, watchdog for stale feeds.
 - BrokerExecution: order lifecycle and cancellation.
 - Portfolio/Account: equity and MTM calculations.
 
 **Section sources**
 - [risk_engine.py:19-141](file://ntrade/engines/risk_engine.py#L19-L141)
-- [runner.py:16-161](file://ntrade/kernel/runner.py#L16-L161)
+- [runner.py:16-135](file://ntrade/kernel/runner.py#L16-L135)
 - [live_runner.py:21-196](file://ntrade/runner/live_runner.py#L21-L196)
 - [broker_executor.py:46-262](file://ntrade/execution/broker_executor.py#L46-L262)
 - [portfolio.py:63-173](file://ntrade/domain/portfolio.py#L63-L173)
@@ -130,6 +142,7 @@ The risk architecture is event-driven and layered:
 sequenceDiagram
 participant Strat as "Strategy"
 participant SE as "StrategyEngine"
+participant SR as "StrategyRunner"
 participant Bus as "EventBus"
 participant RE as "RiskEngine"
 participant OE as "OrderEngine"
@@ -165,9 +178,9 @@ end
 - [strategy_engine.py:37-45](file://ntrade/engines/strategy_engine.py#L37-L45)
 - [risk_engine.py:73-111](file://ntrade/engines/risk_engine.py#L73-L111)
 - [session.py:103-102](file://ntrade/kernel/session.py#L103-L102)
-- [broker_executor.py:58-95](file://ntrade/execution/broker_executor.py#L58-L95)
-- [live_runner.py:96-104](file://ntrade/runner/live_runner.py#L96-L104)
-- [live_runner.py:181-196](file://ntrade/runner/live_runner.py#L181-L196)
+- [broker_executor.py:58-95](file://ntrade/execution/broker_executor.py#L58-95)
+- [live_runner.py:96-104](file://ntrade/runner/live_runner.py#L96-104)
+- [live_runner.py:181-196](file://ntrade/runner/live_runner.py#L181-196)
 
 ## Detailed Component Analysis
 
@@ -227,21 +240,23 @@ Approve --> EndApprove["End"]
 - [risk_engine.py:19-141](file://ntrade/engines/risk_engine.py#L19-L141)
 - [test_risk_breakers.py:30-111](file://tests/test_risk_breakers.py#L30-L111)
 
-### StrategyRunner: Per-Strategy Risk Isolation
+### StrategyRunner: Simplified Interface and Per-Strategy Risk Isolation
+**Updated** The StrategyRunner interface has been simplified to focus on core functionality. Hot-detaching strategies and runtime enable/disable operations are no longer supported through the StrategyRunner API.
+
+- **Minimal Public API**: Only `add()` and `release()` methods remain in the public interface.
 - Each added strategy gets a unique name and a dedicated RiskEngine instance scoped to that name.
 - Global RiskEngine is paused while runner owns strategies to prevent double-screening.
 - Status API exposes per-strategy limits and approve/reject counts.
-- Hot detach/remove and enable/disable operations supported.
+- Strategy lifecycle management is handled through the kernel's StrategyEngine directly.
 
 ```mermaid
 classDiagram
 class StrategyRunner {
 +add(strategy, name, risk) string
-+remove(name) bool
-+enable(name) bool
-+disable(name) bool
-+status() list[dict]
 +release() void
++names() string[]
++status() dict[]
++running(name) bool
 -_unique_name(base) string
 -_pause_global_risk() void
 }
@@ -266,12 +281,12 @@ StrategyRunner --> Strategy : "manages lifecycle"
 ```
 
 **Diagram sources**
-- [runner.py:16-161](file://ntrade/kernel/runner.py#L16-L161)
+- [runner.py:16-135](file://ntrade/kernel/runner.py#L16-L135)
 - [risk_engine.py:19-141](file://ntrade/engines/risk_engine.py#L19-L141)
 - [strategy_engine.py:18-46](file://ntrade/engines/strategy_engine.py#L18-L46)
 
 **Section sources**
-- [runner.py:16-161](file://ntrade/kernel/runner.py#L16-L161)
+- [runner.py:16-135](file://ntrade/kernel/runner.py#L16-L135)
 - [test_strategy_runner.py:72-243](file://tests/test_strategy_runner.py#L72-L243)
 
 ### LiveRunner: Kill Switch Integration and Feed Watchdog
@@ -301,9 +316,9 @@ Note over LR : If feed stalls, LR publishes RiskHaltedEvent
 ```
 
 **Diagram sources**
-- [live_runner.py:96-104](file://ntrade/runner/live_runner.py#L96-L104)
-- [live_runner.py:181-196](file://ntrade/runner/live_runner.py#L181-L196)
-- [live_runner.py:154-174](file://ntrade/runner/live_runner.py#L154-L174)
+- [live_runner.py:96-104](file://ntrade/runner/live_runner.py#L96-104)
+- [live_runner.py:181-196](file://ntrade/runner/live_runner.py#L181-196)
+- [live_runner.py:154-174](file://ntrade/runner/live_runner.py#L154-174)
 
 **Section sources**
 - [live_runner.py:21-196](file://ntrade/runner/live_runner.py#L21-L196)
@@ -335,9 +350,9 @@ Terminal --> |PENDING & Stale| Timeout["Emit OrderTimeoutEvent"]
 ```
 
 **Diagram sources**
-- [broker_executor.py:58-95](file://ntrade/execution/broker_executor.py#L58-L95)
-- [broker_executor.py:106-169](file://ntrade/execution/broker_executor.py#L106-L169)
-- [broker_executor.py:221-238](file://ntrade/execution/broker_executor.py#L221-L238)
+- [broker_executor.py:58-95](file://ntrade/execution/broker_executor.py#L58-95)
+- [broker_executor.py:106-169](file://ntrade/execution/broker_executor.py#L106-169)
+- [broker_executor.py:221-238](file://ntrade/execution/broker_executor.py#L221-238)
 
 **Section sources**
 - [broker_executor.py:46-262](file://ntrade/execution/broker_executor.py#L46-L262)
@@ -403,16 +418,16 @@ RE --> PORT["Portfolio/Account"]
 
 **Diagram sources**
 - [risk_engine.py:19-141](file://ntrade/engines/risk_engine.py#L19-L141)
-- [runner.py:16-161](file://ntrade/kernel/runner.py#L16-L161)
+- [runner.py:16-135](file://ntrade/kernel/runner.py#L16-L135)
 - [live_runner.py:21-196](file://ntrade/runner/live_runner.py#L21-L196)
 - [broker_executor.py:46-262](file://ntrade/execution/broker_executor.py#L46-L262)
 - [portfolio.py:63-173](file://ntrade/domain/portfolio.py#L63-L173)
 
 **Section sources**
 - [risk_engine.py:19-141](file://ntrade/engines/risk_engine.py#L19-L141)
-- [runner.py:16-161](file://ntrade/kernel/runner.py#L16-L161)
+- [runner.py:16-135](file://ntrade/kernel/runner.py#L16-L135)
 - [live_runner.py:21-196](file://ntrade/runner/live_runner.py#L21-L196)
-- [broker_executor.py:46-262](file://ntrade/execution/broker_executor.py#46-L262)
+- [broker_executor.py:46-262](file://ntrade/execution/broker_executor.py#L46-L262)
 - [portfolio.py:63-173](file://ntrade/domain/portfolio.py#L63-L173)
 
 ## Performance Considerations
@@ -420,8 +435,6 @@ RE --> PORT["Portfolio/Account"]
 - Position counting is O(N) over positions; consider indexing by strategy metadata if portfolios grow large.
 - LiveRunner poll_interval and sync_interval should balance responsiveness with broker rate limits.
 - BrokerExecution stale detection prevents memory leaks on failed polls; tune stale limit based on network reliability.
-
-[No sources needed since this section provides general guidance]
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -445,8 +458,6 @@ Operational steps:
 
 ## Conclusion
 The risk management system provides robust protection through layered circuit breakers, per-strategy isolation, and automatic trading suspension with broker kill switch integration. Continuous evaluation ensures mid-session risks are caught, while event-driven design enables external monitoring and intervention. Proper configuration, monitoring, and manual override procedures are essential for safe production operation.
-
-[No sources needed since this section summarizes without analyzing specific files]
 
 ## Appendices
 
@@ -481,7 +492,7 @@ The risk management system provides robust protection through layered circuit br
 
 **Section sources**
 - [risk.py:39-52](file://ntrade/events/risk.py#L39-L52)
-- [live_runner.py:181-196](file://ntrade/runner/live_runner.py#L181-L196)
+- [live_runner.py:181-196](file://ntrade/runner/live_runner.py#L181-196)
 
 ### Relationship Between Risk Management, Portfolio Tracking, and Automated Decisions
 - RiskEngine uses Portfolio and Account to compute equity and drawdown.
@@ -492,3 +503,17 @@ The risk management system provides robust protection through layered circuit br
 - [portfolio.py:63-173](file://ntrade/domain/portfolio.py#L63-L173)
 - [session.py:103-102](file://ntrade/kernel/session.py#L103-L102)
 - [live_runner.py:96-104](file://ntrade/runner/live_runner.py#L96-L104)
+
+### StrategyRunner Interface Changes
+**Updated** The StrategyRunner interface has been significantly simplified to provide a cleaner, more focused API surface.
+
+- **Removed Methods**: `remove()`, `enable()`, and `disable()` methods have been removed from the public interface.
+- **Remaining Methods**: Only `add()` and `release()` methods remain in the public API surface.
+- **Hot-Detaching**: Runtime strategy removal and enable/disable operations are no longer supported through StrategyRunner.
+- **Lifecycle Management**: Strategy lifecycle is now managed through the kernel's StrategyEngine directly.
+
+This change simplifies the API surface and reduces complexity in strategy management, making the system more predictable and easier to maintain.
+
+**Section sources**
+- [runner.py:16-135](file://ntrade/kernel/runner.py#L16-L135)
+- [test_strategy_runner.py:109-118](file://tests/test_strategy_runner.py#L109-L118)

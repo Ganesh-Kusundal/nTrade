@@ -110,12 +110,16 @@ class DhanMarketFeedSource(MarketFeedSource):
 
     def __init__(self, kernel=None, *, symbols: list | None = None,
                  symbol_map: dict | None = None, feed_factory=None,
-                 dhan_context=None):
+                 dhan_context=None, gate=None):
         super().__init__(kernel)
         self.symbols = list(symbols or [])
         self.symbol_map = dict(symbol_map or {})
         self.feed_factory = feed_factory
         self.dhan_context = dhan_context
+        # Session BrokerRateGate (T-035): the login-time data-plane probe
+        # (get_tradehull -> _login_ok) respects Quote/Data quotas instead of
+        # bursting at feed construction. None keeps standalone callers safe.
+        self._gate = gate
         self._feed = None
         self._thread = None
         self.payloads_ingested = 0
@@ -153,7 +157,9 @@ class DhanMarketFeedSource(MarketFeedSource):
         from dhanhq import DhanContext
         from ntrade.brokers.dhan_auth import get_tradehull
 
-        tsl = get_tradehull()
+        # T-035: feed construction performs the same _login_ok probes the broker
+        # connect path does (B-012) — route them through the session gate too.
+        tsl = get_tradehull(gate=self._gate)
         return DhanContext(tsl.ClientCode, tsl.token_id)
 
     # ------------------------------------------------------------------ feed

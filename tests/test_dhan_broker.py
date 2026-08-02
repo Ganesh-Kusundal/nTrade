@@ -2,6 +2,7 @@
 
 import types
 from datetime import date
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -503,3 +504,83 @@ def test_broker_stop_cancels_auth_timer():
     broker._auth = Mock()
     broker.stop()
     broker._auth.stop.assert_called_once()
+
+
+# ------------------------------------------------------------- B-010
+
+
+def test_connect_uses_broker_rate_gate():
+    """connect() builds a shared BrokerRateGate (not the old 10/s RateLimiter)."""
+    from ntrade.brokers.dhan import DhanBroker
+    from ntrade.execution.rate_limit import BrokerRateGate
+    broker = DhanBroker(connect=False)
+    broker._auth = MagicMock()
+    broker._auth.authenticate.return_value = object()
+    broker.connect()
+    assert isinstance(broker._gate, BrokerRateGate)
+    assert broker._transport._gate is broker._gate
+    assert not hasattr(broker, "_rate_limiter")
+
+
+def test_place_order_routes_through_transport():
+    """Order placement goes through the throttled transport, never self.tsl."""
+    broker = make_broker(order_placement=lambda **kw: "O1")
+    broker._transport = MagicMock()
+    broker._transport.place_order.return_value = "O1"
+    rel = Equity("RELIANCE")
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=10,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=2500.0)
+    broker.place_order(order)
+    broker._transport.place_order.assert_called_once()
+    assert order.order_id == "O1"
+
+
+def test_cancel_routes_through_transport():
+    broker = make_broker()
+    broker._transport = MagicMock()
+    rel = Equity("RELIANCE")
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=1,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=10.0,
+                  order_id="ORD-1")
+    broker.cancel_order(order)
+    broker._transport.cancel_order.assert_called_once_with("ORD-1")
+    assert order.status.value == "CANCELLED"
+
+
+def test_get_order_status_routes_through_transport():
+    broker = make_broker()
+    broker._transport = MagicMock()
+    broker._transport.get_order_status.return_value = "COMPLETE"
+    rel = Equity("RELIANCE")
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=1,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS,
+                  price=10.0, order_id="ORD-2")
+    out = broker.get_order_status(order)
+    broker._transport.get_order_status.assert_called_once_with("ORD-2")
+    assert out.status.value == "COMPLETED"
+
+
+def test_order_status_rate_limited_not_swallowed():
+    """A DH-904 on order-status polling must propagate, not return a stale order."""
+    from ntrade.execution.rate_limit import Quota, RateLimited
+    broker = make_broker()
+    broker._transport = MagicMock()
+    broker._transport.get_order_status.side_effect = RateLimited(Quota.ORDER)
+    rel = Equity("RELIANCE")
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=1,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS,
+                  price=10.0, order_id="ORD-3")
+    with pytest.raises(RateLimited):
+        broker.get_order_status(order)
+
+
+def test_option_chain_rate_limited_does_not_retry_expiries():
+    """A DH-904 must not trigger the 3-expiry fallback loop (no quota amplification)."""
+    from ntrade.execution.rate_limit import Quota, RateLimited
+    broker = make_broker()
+    broker._transport = MagicMock()
+    broker._transport.get_option_chain.side_effect = RateLimited(Quota.DATA)
+    nifty = Index("NIFTY")
+    with pytest.raises(RateLimited):
+        broker.get_option_chain(nifty, expiry=0, num_strikes=2)
+    broker._transport.get_option_chain.assert_called_once()

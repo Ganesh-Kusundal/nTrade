@@ -165,7 +165,7 @@ session.register(many instruments)
 refresh quotes
         │
         ▼
-session.scanner().breakout(...) / .momentum(...) / ...
+session.scanner().breakout(...) / .momentum(...) / .gap(...) / .volume(...) / .imbalance(...)
         │
         ▼
 for r in results:   # ScannerResult

@@ -25,7 +25,6 @@ nifty.market.refresh()
 ## 1. Fetch a chain
 
 ```python
-# Via the derivatives capability (preferred)
 chain = nifty.derivatives.option_chain(expiry=0, num_strikes=10)
 
 # Or via the session helper
@@ -39,12 +38,13 @@ opt = session.option(nifty, strike=25000, expiry=date(2026, 8, 27), option_type=
 - `expiry=0` = nearest expiry, `1` = next, and so on.
 - `num_strikes` controls how many strikes around ATM to pull.
 - If the broker falls back to another expiry week, check
-  `chain.expiry_index_used` and `chain.expiry_list` before relying on dates.
+  `chain.expiry_index_used` and the real contract dates via
+  `nifty.broker.expiry_list()`.
 
 ```python
 print(len(chain), "options")
 print("nearest:", chain.nearest_expiry)
-print("expiry list:", chain.expiry_list)
+print("real expiries:", nifty.broker.expiry_list())   # list[date]
 print("strikes:", chain.strikes[:5], "...")
 ```
 

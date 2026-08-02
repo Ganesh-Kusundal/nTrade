@@ -85,20 +85,20 @@ chain.max_pain()
 
 ## 5. Orders
 
-Two styles, both routed through the broker adapter:
+Orders go through the instrument's order facade, which routes to the broker:
 
 ```python
 tcs = session.stock("TCS")
 
-# 1) Facade — reads naturally
 order = tcs.order.buy(75, price=2500, order_type="LIMIT")
+order = tcs.order.sell(75, price=2600)
 order = tcs.order.market("BUY", 10)
+order = tcs.order.limit("BUY", 10, price=2500)
+order = tcs.order.stop("SELL", 10, price=2450, trigger_price=2460)
+order = tcs.order.cover("SELL", 75, trigger=2500, trigger_price=2480)
 order = tcs.order.bracket(
     "BUY", 75, price=2500, target_price=2600, stop_loss_price=2450,
 )
-
-# 2) Fluent builder
-order = tcs.trade.buy().market().quantity(100).product("MIS").place()
 ```
 
 Inspect the returned `Order`: `order.order_id`, `order.status`,

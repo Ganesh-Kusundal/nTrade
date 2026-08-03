@@ -17,11 +17,13 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced authentication lifecycle management with proper shutdown handling
-- Added DhanBroker.stop() method to cancel auth provider's proactive refresh timer during shutdown
-- Updated LiveRunner.stop() to iterate through instruments and call their broker's stop method
-- Improved cleanup of background processes and timers including DhanAuthProvider.stop() method
-- Added comprehensive testing for authentication lifecycle management
+- Enhanced authentication flow with improved token management using actual data plane probes (LTP and historical data)
+- Added rate limit respect during login-time operations through BrokerRateGate integration
+- Implemented comprehensive login validation that verifies tokens against real market data endpoints
+- Updated DhanAuthProvider with proper lifecycle management and background timer cancellation
+- Enhanced DhanBroker._ensure_tsl() for better token freshness checking and transport updates
+- Improved LiveRunner.stop() for comprehensive broker cleanup including instrument iteration
+- Added robust error handling for invalid tokens and network failures during authentication
 
 ## Table of Contents
 1. Introduction
@@ -35,13 +37,13 @@
 9. Conclusion
 
 ## Introduction
-This document explains the authentication and security systems used across broker integrations, focusing on the Dhan integration. It covers a multi-layered authentication approach that includes PIN-based verification, TOTP (Time-based One-Time Password) generation, and secure token management. It also documents credential storage via environment variables, shared token files, and cooldown mechanisms; the authentication provider pattern for pluggable strategies; session management with proactive token refresh; automatic reconnection handling; and best practices for production deployments. Examples are provided to implement custom authentication providers, handle failures gracefully, and manage multiple broker sessions.
+This document explains the authentication and security systems used across broker integrations, focusing on the Dhan integration. It covers a multi-layered authentication approach that includes PIN-based verification, TOTP (Time-based One-Time Password) generation, and secure token management. The system has been enhanced with improved token management, login validation using actual data plane probes (LTP and historical data), and rate limit respect during login-time operations. It also documents credential storage via environment variables, shared token files, and cooldown mechanisms; the authentication provider pattern for pluggable strategies; session management with proactive token refresh; automatic reconnection handling; and best practices for production deployments. Examples are provided to implement custom authentication providers, handle failures gracefully, and manage multiple broker sessions.
 
 ## Project Structure
 The authentication and security logic is implemented as a layered system:
-- dhan_auth.py: Shared authentication helper for Dhan, including JWT expiry parsing, shared token store, PIN+TOTP fallback, and cooldown control.
-- dhan_auth_provider.py: Class-based wrapper over dhan_auth that manages lifecycle, caching, and proactive background refresh.
-- dhan.py: Broker implementation composing the auth provider and transport, ensuring token freshness before critical operations.
+- dhan_auth.py: Shared authentication helper for Dhan, including JWT expiry parsing, shared token store, PIN+TOTP fallback, and cooldown control with enhanced data plane validation.
+- dhan_auth_provider.py: Class-based wrapper over dhan_auth that manages lifecycle, caching, and proactive background refresh with proper shutdown handling.
+- dhan.py: Broker implementation composing the auth provider and transport, ensuring token freshness before critical operations with improved lifecycle management.
 - base.py: Abstract broker adapter defining the interface for all brokers.
 - dhan_transport.py: Transport layer wrapping Tradehull API calls with retry and normalization.
 - retry.py: Retry policy and rate limiter utilities used by the transport.
@@ -96,11 +98,11 @@ LiveRunner --> DhanBroker
 
 ## Core Components
 - DhanAuthProvider: Manages authentication lifecycle, caches the authenticated Tradehull instance, and schedules proactive background refresh with proper shutdown handling.
-- dhan_auth.get_tradehull: Implements the multi-step authentication flow: prefer shared token store, then .env access token, then PIN+TOTP fallback with cooldown protection.
+- dhan_auth.get_tradehull: Implements the multi-step authentication flow with enhanced data plane validation: prefer shared token store, then .env access token, then PIN+TOTP fallback with cooldown protection and rate limit respect.
 - DhanBroker: Composes the auth provider and transport, ensures token freshness before critical operations, updates transport when tokens change, and provides proper shutdown lifecycle management.
 - DhanTransport: Wraps Tradehull API calls with retry policies and error normalization.
 - RetryPolicy: Provides exponential backoff and jitter for resilient API calls.
-- LiveRunner: Orchestrates the live trading session with proper broker lifecycle management and shutdown handling.
+- LiveRunner: Orchestrates the complete session lifecycle including proper broker cleanup.
 
 Key responsibilities:
 - Credential loading from environment variables and shared token files.
@@ -109,6 +111,8 @@ Key responsibilities:
 - Background timer to refresh tokens silently with proper cancellation.
 - Per-request checks to ensure fresh tokens before API calls.
 - Comprehensive shutdown lifecycle management for background processes.
+- **Enhanced**: Data plane validation using LTP and historical data probes.
+- **Enhanced**: Rate limit respect during login-time operations.
 
 **Section sources**
 - [dhan_auth_provider.py:28-141](file://ntrade/brokers/dhan_auth_provider.py#L28-L141)
@@ -119,11 +123,11 @@ Key responsibilities:
 - [live_runner.py:139-149](file://ntrade/runner/live_runner.py#L139-L149)
 
 ## Architecture Overview
-The authentication architecture follows a layered pattern with enhanced lifecycle management:
+The authentication architecture follows a layered pattern with enhanced lifecycle management and data plane validation:
 - BrokerAdapter defines the abstract interface for brokers.
 - DhanBroker implements broker-specific functionality and composes DhanAuthProvider and DhanTransport.
 - DhanAuthProvider encapsulates authentication lifecycle and proactive refresh scheduling with proper shutdown handling.
-- dhan_auth provides the core authentication logic and shared token management.
+- dhan_auth provides the core authentication logic with enhanced data plane validation and shared token management.
 - DhanTransport wraps Tradehull API calls with retry and normalization.
 - LiveRunner orchestrates the complete session lifecycle including proper broker cleanup.
 
@@ -191,7 +195,8 @@ class DhanAuthProvider {
 -_tsl : Any
 -_refresh_timer : Timer|None
 -_lock : Lock
-+authenticate()
+-_gate : BrokerRateGate|None
++authenticate(gate)
 +refresh_if_needed()
 +stop()
 +tsl : Any
@@ -280,6 +285,8 @@ Key behaviors:
 - _proactive_refresh(): Logs success or failure without raising exceptions.
 - stop(): Cancels the proactive refresh timer during shutdown to prevent daemon thread leaks.
 
+**Updated** Enhanced with BrokerRateGate support for rate-limited login operations.
+
 ```mermaid
 sequenceDiagram
 participant Client as "Caller"
@@ -296,24 +303,24 @@ alt Token exists and fresh
 Provider-->>Broker : return cached TSL
 else Token missing or near-expiry
 Provider->>Provider : authenticate()
-Provider->>Helper : get_tradehull(env, env_path)
+Provider->>Helper : get_tradehull(env, env_path, gate)
 Helper->>Store : read token if present
 alt Shared token valid
 Helper-->>TSL : construct with access_token
-TSL-->>Helper : login_ok?
+TSL-->>Helper : login_ok? (with rate limiting)
 alt Success
 Helper-->>Provider : TSL
 else Fail
 Helper->>Env : read DHAN_ACCESS_TOKEN
 alt Valid and not expired
 Helper-->>TSL : construct with access_token
-TSL-->>Helper : login_ok?
+TSL-->>Helper : login_ok? (with rate limiting)
 alt Success
 Helper-->>Provider : TSL
 else Fail
 Helper->>Helper : PIN+TOTP fallback (cooldown check)
 Helper-->>TSL : construct with pin_totp
-TSL-->>Helper : login_ok?
+TSL-->>Helper : login_ok? (with rate limiting)
 alt Success
 Helper->>Store : persist token and cooldown
 Helper-->>Provider : TSL
@@ -324,7 +331,7 @@ end
 else Invalid/expired
 Helper->>Helper : PIN+TOTP fallback (cooldown check)
 Helper-->>TSL : construct with pin_totp
-TSL-->>Helper : login_ok?
+TSL-->>Helper : login_ok? (with rate limiting)
 alt Success
 Helper->>Store : persist token and cooldown
 Helper-->>Provider : TSL
@@ -350,16 +357,23 @@ Note over Provider : During shutdown : <br/>Provider.stop() cancels<br/>backgrou
 - [dhan_auth.py:42-167](file://ntrade/brokers/dhan_auth.py#L42-L167)
 
 ### dhan_auth.get_tradehull
-Implements the multi-step authentication flow:
+Implements the multi-step authentication flow with enhanced data plane validation:
 1. Prefer a valid token from the shared store (DHAN_TOKEN_PATH).
 2. Else use DHAN_ACCESS_TOKEN if not provably expired.
 3. Else fall back to PIN+TOTP (respecting cooldown file DHAN_COOLDOWN_PATH) and persist the fresh token back to the shared store.
+
+**Enhanced** Login validation now uses actual data plane probes:
+- First attempts LTP (Last Traded Price) query for NIFTY
+- Falls back to historical data query if LTP is unavailable (weekends/holidays)
+- Validates tokens against real market data endpoints, not just library state
+- Respects rate limits through BrokerRateGate integration
 
 Security features:
 - JWT expiry parsing to detect near-expiry tokens.
 - Cooldown enforcement to prevent rapid TOTP attempts.
 - Restrictive file permissions (0o600) for token and cooldown files.
 - Suppression of noisy library output during login.
+- **Enhanced**: Data plane validation prevents false-positive authentication.
 
 ```mermaid
 flowchart TD
@@ -374,17 +388,17 @@ SharedValid --> |No| CheckEnvToken["Check .env access token"]
 CheckEnvToken --> EnvValid{"Token parseable and not near-expiry?"}
 EnvValid --> |Yes| TryEnv["Try access_token mode"]
 EnvValid --> |No| TryPinTOTP["Try PIN+TOTP mode"]
-TryEnv --> EnvLoginOk{"Login ok?"}
+TryEnv --> EnvLoginOk{"Data plane validation:<br/>LTP + Historical"}
 EnvLoginOk --> |Yes| ReturnEnv["Return TSL"]
 EnvLoginOk --> |No| TryPinTOTP
 TryPinTOTP --> CooldownCheck{"Cooldown active?"}
 CooldownCheck --> |Yes| RaiseCooldown["Raise ConnectionError"]
 CooldownCheck --> |No| PinTOTPLogin["Authenticate with PIN+TOTP"]
-PinTOTPLogin --> PinOK{"Login ok?"}
+PinTOTPLogin --> PinOK{"Data plane validation:<br/>LTP + Historical"}
 PinOK --> |Yes| Persist["Persist token and cooldown"]
 Persist --> ReturnPin["Return TSL"]
 PinOK --> |No| RaisePinFail["Raise ConnectionError"]
-UseShared --> SharedLoginOk{"Login ok?"}
+UseShared --> SharedLoginOk{"Data plane validation:<br/>LTP + Historical"}
 SharedLoginOk --> |Yes| ReturnShared["Return TSL"]
 SharedLoginOk --> |No| CheckEnvToken
 ```
@@ -398,10 +412,11 @@ SharedLoginOk --> |No| CheckEnvToken
 ### DhanBroker._ensure_tsl and Lifecycle Management
 Ensures token freshness before critical operations by calling DhanAuthProvider.refresh_if_needed(). If a new token is obtained, it updates both the broker's tsl reference and the transport's tsl reference. The broker now includes proper shutdown lifecycle management.
 
-Updated lifecycle management:
-- _ensure_tsl(): Ensures token freshness before critical operations.
+**Updated** Enhanced lifecycle management:
+- _ensure_tsl(): Ensures token freshness before critical operations with improved error handling.
 - stop(): Cancels the auth provider's proactive refresh timer during shutdown.
 - Integration with LiveRunner for comprehensive session cleanup.
+- **Enhanced**: Better handling of test mocks and uninitialized states.
 
 ```mermaid
 sequenceDiagram
@@ -502,7 +517,7 @@ DhanTransport --> RetryPolicy : "uses"
 ### LiveRunner Session Lifecycle Management
 The LiveRunner now includes comprehensive broker lifecycle management during shutdown. It iterates through all instruments in the kernel context and calls their broker's stop method if available, ensuring proper cleanup of background processes and timers.
 
-Key enhancements:
+**Enhanced** Key improvements:
 - Proper iteration through instruments_snapshot() during shutdown.
 - Safe checking for broker_adapter existence and stop method availability.
 - Comprehensive cleanup of DhanAuthProvider.stop() methods.
@@ -535,13 +550,15 @@ PublishEvent --> End(["Session ended"])
 - [live_runner.py:139-149](file://ntrade/runner/live_runner.py#L139-L149)
 
 ### Conceptual Overview
-The authentication system follows a layered approach with enhanced lifecycle management:
+The authentication system follows a layered approach with enhanced lifecycle management and data plane validation:
 - Environment variables provide credentials (DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN, DHAN_PIN, DHAN_TOTP_SECRET).
 - Shared token store persists tokens securely with restrictive permissions.
 - Proactive refresh avoids mid-session expiry by scheduling background timers.
 - PIN+TOTP fallback ensures automated authentication for long-running processes.
 - Retry policies handle transient failures gracefully.
 - Comprehensive shutdown lifecycle management prevents resource leaks.
+- **Enhanced**: Data plane validation ensures tokens work against real market data endpoints.
+- **Enhanced**: Rate limit respect during login-time operations prevents quota exhaustion.
 
 ```mermaid
 flowchart TD
@@ -549,7 +566,8 @@ Start(["Application Start"]) --> LoadCreds["Load Credentials from .env"]
 LoadCreds --> InitBroker["Initialize DhanBroker"]
 InitBroker --> Connect["Connect via DhanAuthProvider"]
 Connect --> AuthFlow["Authentication Flow:<br/>Shared Store -> .env -> PIN+TOTP"]
-AuthFlow --> ScheduleRefresh["Schedule Proactive Refresh"]
+AuthFlow --> DataPlaneValidation["Data Plane Validation:<br/>LTP + Historical Data"]
+DataPlaneValidation --> ScheduleRefresh["Schedule Proactive Refresh"]
 ScheduleRefresh --> RunOps["Run Operations"]
 RunOps --> EnsureFresh["Ensure Token Freshness"]
 EnsureFresh --> CallAPI["Call Tradehull API"]
@@ -577,11 +595,12 @@ DhanTransport --> RetryPolicy["RetryPolicy<br/>retry.py"]
 LiveRunner["LiveRunner<br/>live_runner.py"] --> DhanBroker
 DhanAuth --> Env[".env Variables"]
 DhanAuth --> SharedStore["Shared Token Store"]
+DhanAuth --> RateGate["BrokerRateGate<br/>(B-012)"]
 ```
 
 **Diagram sources**
 - [dhan.py:54-101](file://ntrade/brokers/dhan.py#L54-L101)
-- [dhan_auth_provider.py:28-56](file://ntrade/brokers/dhan_auth_provider.py#L28-L56)
+- [dhan_auth_provider.py:28-56](file://ntrade/brokers/dhan_auth_provider.py#L28-56)
 - [dhan_auth.py:114-167](file://ntrade/brokers/dhan_auth.py#L114-L167)
 - [dhan_transport.py:48-77](file://ntrade/brokers/dhan_transport.py#L48-L77)
 - [retry.py:19-56](file://ntrade/execution/retry.py#L19-L56)
@@ -603,6 +622,8 @@ DhanAuth --> SharedStore["Shared Token Store"]
 - Thread-safe operations ensure concurrent access doesn't cause race conditions.
 - Proper shutdown lifecycle management prevents daemon thread leaks and resource exhaustion.
 - Efficient instrument iteration during cleanup avoids unnecessary overhead.
+- **Enhanced**: Data plane validation adds minimal overhead while ensuring token validity.
+- **Enhanced**: Rate limit respect during login prevents quota exhaustion and improves overall system stability.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -613,6 +634,8 @@ Common issues and resolutions:
 - Permission errors on token files: Ensure files have 0o600 permissions.
 - Daemon thread leaks: Verify proper shutdown lifecycle management is called.
 - Background timer not cancelling: Check that DhanBroker.stop() is called during session termination.
+- **Enhanced**: Data plane validation failures: Check network connectivity and market data endpoint availability.
+- **Enhanced**: Rate limit errors during login: Reduce concurrent authentication attempts or increase quota limits.
 
 Debugging techniques:
 - Use check_connection.py to validate authentication and connectivity.
@@ -621,6 +644,8 @@ Debugging techniques:
 - Test PIN+TOTP flow independently to confirm credentials.
 - Monitor background timer activity during normal operation and shutdown.
 - Use test_broker_stop_cancels_auth_timer to verify lifecycle management.
+- **Enhanced**: Monitor data plane validation logs to understand token validation failures.
+- **Enhanced**: Track rate limit acquisitions during login to identify quota exhaustion patterns.
 
 **Section sources**
 - [check_connection.py:17-38](file://check_connection.py#L17-L38)
@@ -628,4 +653,4 @@ Debugging techniques:
 - [test_dhan_broker.py:499-506](file://tests/test_dhan_broker.py#L499-L506)
 
 ## Conclusion
-The authentication and security system for broker integrations provides a robust, multi-layered approach with PIN+TOTP verification, secure token management, and proactive refresh mechanisms. The design emphasizes resilience through retry policies, thread safety, and graceful error handling. With the enhanced authentication lifecycle management, the system now properly handles background timer cancellation during shutdown, preventing resource leaks and ensuring clean session termination. By following the documented patterns and best practices, developers can implement custom authentication providers and manage multiple broker sessions effectively while maintaining security and compliance requirements.
+The authentication and security system for broker integrations provides a robust, multi-layered approach with PIN+TOTP verification, secure token management, and proactive refresh mechanisms. The design emphasizes resilience through retry policies, thread safety, and graceful error handling. With the enhanced authentication lifecycle management and data plane validation, the system now properly validates tokens against real market data endpoints, respects rate limits during login operations, and handles background timer cancellation during shutdown, preventing resource leaks and ensuring clean session termination. By following the documented patterns and best practices, developers can implement custom authentication providers and manage multiple broker sessions effectively while maintaining security and compliance requirements. The enhanced data plane validation ensures that only truly valid tokens are accepted, significantly improving reliability and reducing false-positive authentication scenarios.

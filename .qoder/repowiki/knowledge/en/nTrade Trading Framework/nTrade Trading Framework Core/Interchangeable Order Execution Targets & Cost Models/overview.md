@@ -1,1 +1,0 @@
-Provides interchangeable execution targets (live broker and simulated) plus slippage/commission/statutory cost models, a strategy-to-target router, and retry/rate-limiting primitives to enforce zero-parity between paper and live order fills.

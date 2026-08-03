@@ -1,0 +1,1 @@
+Root of the nTrade Python trading framework that unifies a zero-parity event-driven kernel, interchangeable broker adapters, replay/backtest engines, agent-facing skills, validation scripts, and tests under a single Clean Architecture package.

@@ -1,1 +1,0 @@
-Python ≥3.10 with pandas/numpy for data, python-dotenv for config, and Dhan-Tradehull≥3.3.2 as the live market/broker transport; pytest for the unified test suite.

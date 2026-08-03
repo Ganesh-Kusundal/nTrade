@@ -30,7 +30,7 @@
         "zero-parity",
         "replay"
       ],
-      "title": "C1: Broker clock injection — remove now-or-datetime.now fallbacks (zero-parity)",
+      "title": "C1: Broker clock injection \u2014 remove now-or-datetime.now fallbacks (zero-parity)",
       "updated": "2026-08-01T07:48:43+00:00"
     },
     "K-002": {
@@ -213,7 +213,7 @@
       "tags": [
         "risk"
       ],
-      "title": "M1: Stale-feed guard — halt on frozen feed",
+      "title": "M1: Stale-feed guard \u2014 halt on frozen feed",
       "updated": "2026-08-01T07:48:43+00:00"
     },
     "K-008": {
@@ -561,6 +561,257 @@
       "tags": [],
       "title": "L5: Greeks zero-filled footgun -> not-computed sentinel",
       "updated": "2026-08-01T08:32:06+00:00"
+    },
+    "K-020": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:19+00:00",
+      "detail": "dhan.py:386-403 \u2014 get_executed_price and get_executed_price_and_time wrap transport calls in except Exception: return float(order.avg_price or 0.0). Unlike get_order_status/get_order_detail (which re-raise RateLimited), these two still swallow a DH-904 rate-limit rejection and return 0.0 \u2014 the exact silent-zero pattern H1/B-016 eliminated elsewhere. A rate-limited execution-price poll looks like a fill at 0.0 to portfolio/position accounting.",
+      "files": [
+        "ntrade/brokers/dhan.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:19+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:21:55+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "bug",
+      "lane": "done",
+      "links": [],
+      "priority": "P1",
+      "tags": [
+        "rate-limit",
+        "silent-zero",
+        "order-lifecycle"
+      ],
+      "title": "get_executed_price/_and_time swallow RateLimited -> 0.0 (no-silent-swallow gap)",
+      "updated": "2026-08-03T05:21:55+00:00"
+    },
+    "K-021": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:19+00:00",
+      "detail": "T-026 gated the transport choke point, but broker convenience methods still wrap _tsl calls in except Exception -> empty/None. Full list (11, incl. get_future_script -> None dhan.py:482 and get_lot_size -> 0 dhan.py:489, which can divide-by-zero downstream): get_orderbook->OrderBook(), get_trade_book->TradeBook(), order_report->[], get_expiry_list->[], get_expiry_date->[], get_long_term_historical->{}, get_start_date->None, get_instrument_file->None, get_instrument_metadata->{} (dhan.py:405-533). A DH-904 on expiry list looks like 'no expiries' to strategies (ERROR-016 class). Decision: propagate RateLimited at broker boundary like the order-status path; keep degrade for non-rate errors.",
+      "files": [
+        "ntrade/brokers/dhan.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:19+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:26:07+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "rate-limit",
+        "silent-empty",
+        "error-016"
+      ],
+      "title": "Broker-level data reads still swallow failures to empty/None (DH-904 looks like no data)",
+      "updated": "2026-08-03T05:26:07+00:00"
+    },
+    "K-022": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:19+00:00",
+      "detail": "Momentum/VolumeSpike/Breakout throttle at 30s (M6/T-017) but GapScanner and ImbalanceScanner have no rate_limit_seconds (0.0) \u2014 they scan the full instrument universe every cycle with no app-level cache. On a live multi-instrument scan this multiplies broker DATA-quota burn and CPU. Either set a throttle or confirm their cache path.",
+      "files": [
+        "ntrade/scanners/builtin.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:19+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:28:56+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "task",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "scanner",
+        "rate-limit",
+        "quota"
+      ],
+      "title": "Gap/Imbalance scanners unthrottled (rate_limit_seconds asymmetry)",
+      "updated": "2026-08-03T05:28:56+00:00"
+    },
+    "K-023": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:19+00:00",
+      "detail": "builtin.py:82-85 documents that live quote.volume is day-cumulative while avg_volume is per-candle, so the spike ratio path is meaningless live (only the absolute min_volume fallback is reliable). Documented in the docstring but the ratio path still fires on live data \u2014 normalize units or guard the ratio branch in live mode.",
+      "files": [
+        "ntrade/scanners/builtin.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:19+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:31:49+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "scanner",
+        "volume",
+        "unit-mismatch"
+      ],
+      "title": "VolumeSpikeScanner live volume-unit mismatch (documented, unfixed)",
+      "updated": "2026-08-03T05:31:49+00:00"
+    },
+    "K-024": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:19+00:00",
+      "detail": "order.py buy/sell/limit/market/stop default trade_type=TradeType.MIS regardless of instrument kind. For an Equity the correct default is usually CNC (delivery); MIS on an equity order is an intraday margin order \u2014 a silent wrong-product-type risk for users who don't pass trade_type. Derive the default from instrument kind (Equity->CNC, Future/Option->MIS) or validate.",
+      "files": [
+        "ntrade/domain/orders/order.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:19+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:34:26+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "order-model",
+        "footgun",
+        "product-type"
+      ],
+      "title": "OrderFacade defaults TradeType.MIS for all instruments incl. equities",
+      "updated": "2026-08-03T05:34:26+00:00"
+    },
+    "K-025": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:30+00:00",
+      "detail": "CandleEngine._bucket (candle_engine.py:30-34) floors to UTC-pinned epoch with closed-LEFT bin membership and labels closed candles at bucket+seconds (right edge). HistoricalSeries.resample (history.py:103-111) uses pandas defaults (closed='left', label='left') \u2014 same membership, different LABEL. Fix: label='right' ONLY, keep closed='left' (changing closed breaks bin membership). Verify index is timezone-naive like the engine. Add parity test (1m->5m) in test_candle_timezone.py or test_history_stream.py.",
+      "files": [
+        "ntrade/domain/market/history.py",
+        "ntrade/engines/candle_engine.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:30+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:38:54+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "zero-parity",
+        "resample",
+        "timeframes"
+      ],
+      "title": "HistoricalSeries.resample label/closed convention vs CandleEngine UTC bucketing parity",
+      "updated": "2026-08-03T05:38:54+00:00"
+    },
+    "K-026": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:30+00:00",
+      "detail": "gate.py:28-30 writes positions[e.symbol] = (q, ltp) then immediately pops when q==0 \u2014 redundant write-then-pop, simplifies to a conditional. Also the docstring drift noted in the D-017 final review (yields-on-balance-event semantics vs 'each state change'). Trivial cleanup.",
+      "files": [
+        "ntrade/runner/gate.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:30+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:41:30+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "chore",
+      "lane": "done",
+      "links": [],
+      "priority": "P3",
+      "tags": [
+        "cleanup",
+        "gate"
+      ],
+      "title": "gate._equity_trace write-then-pop redundancy + docstring drift",
+      "updated": "2026-08-03T05:41:30+00:00"
+    },
+    "K-027": {
+      "blocked_by": "",
+      "created": "2026-08-03T06:07:00+00:00",
+      "detail": "F-001 label-convention parity (K-025 class): DhanMapper.resample_history used pandas' default label='left' (bin-START), labeling a 3m bar 09:15 where CandleEngine and HistoricalSeries.resample label 09:18 — identical bins, different timestamps. Adopted label='right' keeping closed='left' and the 09:15 IST per-day origin (night-session containment). Exact grid parity with the engine holds for 3m only; 2m/4m sit 1-3min off the engine's epoch grid by design (documented in-code). Cross-path parity test locks the 3m identity and the 2m/4m right-edge convention.",
+      "files": [
+        "ntrade/brokers/dhan_mapper.py",
+        "tests/test_dhan_transport.py",
+        "tests/test_history_stream.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T06:07:00+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T06:07:00+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "parity",
+        "resample",
+        "F-001",
+        "label-convention"
+      ],
+      "title": "F-001 resample_history labels right-edge bars (CandleEngine parity)",
+      "updated": "2026-08-03T06:07:00+00:00"
     }
   },
   "components": {},
@@ -1048,7 +1299,7 @@
   },
   "flows": {},
   "next_id": {
-    "card": 20,
+    "card": 28,
     "risk": 1
   },
   "project": {

@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: ntrade_core/domain/orders
+title: Order Domain Model & Order Book Value Objects
+scope:
+    - ntrade/domain/orders/
+source_files: []
+depends_on: []
+related_to: []

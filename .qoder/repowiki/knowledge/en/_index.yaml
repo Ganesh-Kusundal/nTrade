@@ -3,11 +3,11 @@ schema_version: 1
 locale: en-US
 branch: integration-completeness
 nodes_managed: true
-exported_at: "2026-08-02T04:40:39Z"
+exported_at: "2026-08-03T06:00:46Z"
 modules:
     "":
-        dir_name: nTrade Trading Framework
-        title: nTrade Trading Framework
+        dir_name: nTrade Trading Framework — Root Package
+        title: nTrade Trading Framework — Root Package
         scope:
             - ARCHITECTURE.md
             - .gitignore
@@ -17,7 +17,6 @@ modules:
         source_files: []
         children:
             - agents_skills
-            - docs_plans
             - ntrade_core
             - scripts
             - tests
@@ -31,19 +30,7 @@ modules:
         source_files: []
         children: []
         depends_on: []
-        related_to:
-            - path: ntrade_core/brokers
-    docs_plans:
-        dir_name: Superpowers Agentic Implementation Plans
-        title: Superpowers Agentic Implementation Plans
-        scope:
-            - docs/
-        source_files: []
-        children: []
-        depends_on: []
-        related_to:
-            - path: ntrade_core/core_api
-            - path: tests
+        related_to: []
     ntrade_core:
         dir_name: nTrade Trading Framework Core
         title: nTrade Trading Framework Core
@@ -71,20 +58,20 @@ modules:
         source_files: []
         children: []
         depends_on: []
-        related_to: []
+        related_to:
+            - path: ntrade_core/kernel
     ntrade_core/brokers:
-        dir_name: Broker Adapter & Dhan Integration
-        title: Broker Adapter & Dhan Integration
+        dir_name: Broker Adapter Layer (Paper & Dhan-Tradehull)
+        title: Broker Adapter Layer (Paper & Dhan-Tradehull)
         scope:
             - ntrade/brokers/
         source_files: []
         children: []
         depends_on: []
         related_to:
-            - path: agents_skills
+            - path: ntrade_core/domain/instruments
             - path: ntrade_core/execution
             - path: scripts
-            - path: tests
     ntrade_core/core_api:
         dir_name: Core API Surface & Registration Layer
         title: Core API Surface & Registration Layer
@@ -97,7 +84,7 @@ modules:
         children: []
         depends_on: []
         related_to:
-            - path: docs_plans
+            - path: ntrade_core/kernel
     ntrade_core/domain:
         dir_name: nTrade Core Domain Layer
         title: nTrade Core Domain Layer
@@ -142,7 +129,7 @@ modules:
         children: []
         depends_on: []
         related_to:
-            - path: ntrade_core/domain/market
+            - path: ntrade_core/brokers
     ntrade_core/domain/market:
         dir_name: Market Domain Models & Live Streaming
         title: Market Domain Models & Live Streaming
@@ -151,8 +138,7 @@ modules:
         source_files: []
         children: []
         depends_on: []
-        related_to:
-            - path: ntrade_core/domain/instruments
+        related_to: []
     ntrade_core/domain/orders:
         dir_name: Order Domain Model & Order Book Value Objects
         title: Order Domain Model & Order Book Value Objects
@@ -161,8 +147,7 @@ modules:
         source_files: []
         children: []
         depends_on: []
-        related_to:
-            - path: ntrade_core/execution
+        related_to: []
     ntrade_core/engines:
         dir_name: Event-Processing Trading Engines
         title: Event-Processing Trading Engines
@@ -173,7 +158,6 @@ modules:
         depends_on: []
         related_to:
             - path: ntrade_core/events
-            - path: ntrade_core/kernel
     ntrade_core/events:
         dir_name: Trading Kernel Event Model
         title: Trading Kernel Event Model
@@ -184,9 +168,10 @@ modules:
         depends_on: []
         related_to:
             - path: ntrade_core/engines
+            - path: ntrade_core/sources
     ntrade_core/execution:
-        dir_name: Interchangeable Order Execution Targets & Cost Models
-        title: Interchangeable Order Execution Targets & Cost Models
+        dir_name: Execution Targets & Cost Models (Broker_Simulated)
+        title: Execution Targets & Cost Models (Broker/Simulated)
         scope:
             - ntrade/execution/
         source_files: []
@@ -194,7 +179,7 @@ modules:
         depends_on: []
         related_to:
             - path: ntrade_core/brokers
-            - path: ntrade_core/domain/orders
+            - path: tests
     ntrade_core/kernel:
         dir_name: Trading Kernel & Session Orchestration
         title: Trading Kernel & Session Orchestration
@@ -204,7 +189,8 @@ modules:
         children: []
         depends_on: []
         related_to:
-            - path: ntrade_core/engines
+            - path: ntrade_core/backtest
+            - path: ntrade_core/core_api
             - path: scripts
             - path: tests
     ntrade_core/runner:
@@ -227,11 +213,11 @@ modules:
         children: []
         depends_on: []
         related_to:
+            - path: ntrade_core/events
             - path: ntrade_core/runner
-            - path: tests
     scripts:
-        dir_name: Trading Kernel Scripts & Live Validation Harness
-        title: Trading Kernel Scripts & Live Validation Harness
+        dir_name: nTrade CLI Scripts — Benchmarks, Strategy Runners & Live Validation
+        title: nTrade CLI Scripts — Benchmarks, Strategy Runners & Live Validation
         scope:
             - scripts/
         source_files: []
@@ -242,15 +228,13 @@ modules:
             - path: ntrade_core/kernel
             - path: ntrade_core/runner
     tests:
-        dir_name: nTrade Test Suite (pytest)
-        title: nTrade Test Suite (pytest)
+        dir_name: nTrade Trading Kernel Test Suite
+        title: nTrade Trading Kernel Test Suite
         scope:
             - tests/
         source_files: []
         children: []
         depends_on: []
         related_to:
-            - path: docs_plans
-            - path: ntrade_core/brokers
+            - path: ntrade_core/execution
             - path: ntrade_core/kernel
-            - path: ntrade_core/sources

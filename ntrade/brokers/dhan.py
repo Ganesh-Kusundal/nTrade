@@ -148,19 +148,26 @@ class DhanBroker(BrokerAdapter):
             raise RuntimeError(f"get_quote failed for {instrument.symbol}: LTP is 0")
         return quote.with_update(timestamp=self._ts(now))
 
-    def get_depth(self, instrument: "Instrument", timeout: float = 5.0, *, now: datetime | None = None) -> MarketDepth | None:
+    def get_depth(self, instrument: "Instrument", timeout: float = 8.0, *,
+                  now: datetime | None = None, attempts: int = 2,
+                  settle: float = 0.5) -> MarketDepth | None:
         """20-level market depth for NSE/BSE/NFO/BFO (not indices).
 
         Dhan streams depth over a websocket and returns an OrderedDict keyed
         'SYMBOL|EXCH' -> depth_client; each client must be passed to
         get_market_depth_df individually (the dict itself has no get_data).
         The websocket snapshot can hang, so the frame read is bounded by a
-        timeout thread and returns None on expiry.
+        timeout thread per attempt; the snapshot is retried ``attempts`` times
+        with a short ``settle`` between attempts (the fresh subscription
+        re-arms the websocket). A DH-904 is never retried.
         """
         # Dhan only supports depth for NSE/BSE/NFO/BFO — not indices.
         if instrument.KIND == "index":
             return None
-        return self._get_transport().get_depth(instrument.symbol, instrument.exchange, timeout=timeout, now=now)
+        return self._get_transport().get_depth(
+            instrument.symbol, instrument.exchange, timeout=timeout, now=now,
+            attempts=attempts, settle=settle,
+        )
 
     def get_historical(self, instrument, timeframe="5m", days=None, start=None, end=None) -> CandleSeries:
         self._ensure_tsl()

@@ -194,9 +194,27 @@ class TestGateStatus:
         snap = gate.status()
         assert snap["quote"]["windows"][0]["used"] == 1
         assert snap["quote"]["windows"][0]["limit"] == 1
-        assert snap["quote"]["blocked"] is True      # 1/1 full
+        # A full 1s burst window is normal steady state, not exhaustion
+        # (T-036: the login probe fills quote=1/1 right before the snapshot).
+        assert snap["quote"]["blocked"] is False      # 1/1 burst, not blocked
         assert snap["data"]["windows"][0]["used"] == 2
         assert snap["data"]["blocked"] is False      # 2/5 still free
+
+    def test_status_full_long_window_is_blocked(self):
+        """A sustained window (>= BLOCKED_MIN_WINDOW_SPAN_S) at capacity IS
+        blocked — genuine exhaustion a fresh acquire would wait on."""
+        from ntrade.execution.rate_limit import BLOCKED_MIN_WINDOW_SPAN_S
+        clock = FakeClock()
+        # Order class: fire all 250 acquires at t=0 (both windows at limit
+        # 250; the 250th acquire sees len=249 < 250 and passes). The 60s
+        # window then holds 250/250 and is the binding long-horizon window.
+        windows = {Quota.ORDER: ((1.0, 250), (BLOCKED_MIN_WINDOW_SPAN_S, 250))}
+        gate = BrokerRateGate(clock=clock, sleep=clock.sleep, windows=windows)
+        for _ in range(250):
+            gate.acquire(Quota.ORDER)
+        snap = gate.status()
+        assert snap["order"]["blocked"] is True       # 60s window exhausted
+        assert snap["quote"]["blocked"] is False      # untouched classes stay clear
 
     def test_status_reflects_penalty_cooldown(self):
         clock = FakeClock()

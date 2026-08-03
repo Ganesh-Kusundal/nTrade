@@ -169,10 +169,14 @@ class Instrument(ABC):
             self._quote = broker.get_quote(self)
         except Exception:
             pass  # keep previous quote on broker failure
+        else:
+            # Only record a refresh timestamp when the quote actually updated.
+            # Stamping on failure would make is_stale() lie and report a dead
+            # quote as fresh (state desync — a failed refresh must stay stale).
+            self._last_refresh_at = now if now is not None else datetime.now()
         depth = broker.get_depth(self)
         if depth is not None:
             self._depth = depth
-        self._last_refresh_at = now if now is not None else datetime.now()
         return self
 
     def hydrate(self) -> "Instrument":

@@ -46,6 +46,15 @@ DEFAULT_WINDOWS: dict[Quota, tuple[tuple[float, int], ...]] = {
     Quota.NON_TRADING: ((1.0, 20),),
 }
 
+# A quota class reports ``blocked`` (status telemetry, T-036) only when a
+# fresh acquire would wait a *material* time: an active DH-904 cooldown, or a
+# window with span >= this many seconds at capacity. A momentarily-full burst
+# window (1s/5s shaping) is normal steady-state operation — it frees within
+# seconds — so it must not flag the class: without this, the pre-flight quota
+# row would be DEGRADED after the connect-time login probe consumes the single
+# 1/s QUOTE slot (the rate_gate false-positive).
+BLOCKED_MIN_WINDOW_SPAN_S = 60.0
+
 
 class RateLimited(RuntimeError):
     """Raised when Dhan rejects a call with DH-904 / Rate_Limit.
@@ -137,6 +146,13 @@ class BrokerRateGate:
         "cooldown_remaining": float, "blocked": bool}}`` — used for the
         pre-deploy quota-headroom report and operator dashboards. Never blocks
         and never mutates gate state (windows are not pruned here).
+
+        ``blocked`` means a fresh acquire would wait a material time: an
+        active DH-904 cooldown, or a long-horizon window (``span_s >=
+        BLOCKED_MIN_WINDOW_SPAN_S``) at capacity. A momentarily-full burst
+        window (1s/5s shaping) is normal operation and is NOT blocked —
+        otherwise the pre-flight quota row reports DEGRADED after any single
+        quote call (T-036 regression).
         """
         now = self._clock()
         out: dict = {}
@@ -148,7 +164,11 @@ class BrokerRateGate:
                     used = sum(1 for t in window if t > now - span)
                     windows.append({"span_s": span, "limit": limit, "used": used})
                 cooldown = max(0.0, self._cooldown_until[quota] - now)
-                blocked = cooldown > 0 or any(w["used"] >= w["limit"] for w in windows)
+                blocked = cooldown > 0 or any(
+                    w["used"] >= w["limit"]
+                    and w["span_s"] >= BLOCKED_MIN_WINDOW_SPAN_S
+                    for w in windows
+                )
                 out[quota.value] = {
                     "windows": windows,
                     "cooldown_remaining": round(cooldown, 3),

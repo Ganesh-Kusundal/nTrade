@@ -17,7 +17,18 @@
 - [test_sources.py](file://tests/test_sources.py)
 - [test_dhan_feed.py](file://tests/test_dhan_feed.py)
 - [test_replay_backtest.py](file://tests/test_replay_backtest.py)
+- [test_dhan_broker.py](file://tests/test_dhan_broker.py)
+- [test_live_execution.py](file://tests/test_live_execution.py)
+- [test_kill_switch_wiring.py](file://tests/test_kill_switch_wiring.py)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Enhanced the "Mocking Techniques for External Dependencies" section with advanced broker simulation patterns using make_broker() helper function
+- Added comprehensive error condition testing examples demonstrating sophisticated exception handling validation
+- Updated diagrams to reflect new mocking patterns and error handling flows
+- Expanded coverage of DhanBroker testing with failure envelope handling and rate limiting scenarios
+- Added new sections on zero-parity testing between simulated and live execution paths
 
 ## Table of Contents
 1. Introduction
@@ -31,7 +42,7 @@
 9. Conclusion
 
 ## Introduction
-This document provides comprehensive unit testing examples for nTrade components. It covers how to write tests for custom strategies, broker adapters, risk rules, and domain objects. It demonstrates testing instrument creation, order lifecycle management, indicator calculations, and portfolio state changes. It also includes patterns for mocking external dependencies (market data feeds and broker APIs), testing edge cases and boundary scenarios, event-driven components using the event bus history, asynchronous operations, and thread-safe components.
+This document provides comprehensive unit testing examples for nTrade components. It covers how to write tests for custom strategies, broker adapters, risk rules, and domain objects. It demonstrates testing instrument creation, order lifecycle management, indicator calculations, and portfolio state changes. It also includes patterns for mocking external dependencies (market data feeds and broker APIs), testing edge cases and boundary scenarios, event-driven components using the event bus history, asynchronous operations, and thread-safe components. **Updated**: Enhanced with advanced mocking patterns for broker simulation and error condition testing, demonstrating sophisticated use of make_broker() helper function and proper exception handling validation for trading system reliability.
 
 ## Project Structure
 The repository organizes code into layered modules:
@@ -62,6 +73,9 @@ T12["test_kernel_resilient.py"]
 T13["test_sources.py"]
 T14["test_dhan_feed.py"]
 T15["test_replay_backtest.py"]
+T16["test_dhan_broker.py"]
+T17["test_live_execution.py"]
+T18["test_kill_switch_wiring.py"]
 end
 subgraph "Kernel"
 K1["kernel/event_bus.py"]
@@ -117,6 +131,9 @@ T12 --> K4
 T13 --> S1
 T14 --> S2
 T15 --> R1
+T16 --> X1
+T17 --> X1
+T18 --> E2
 ```
 
 **Diagram sources**
@@ -124,12 +141,18 @@ T15 --> R1
 - [test_event_bus_clock.py:1-128](file://tests/test_event_bus_clock.py#L1-L128)
 - [test_kernel_resilient.py:1-396](file://tests/test_kernel_resilient.py#L1-L396)
 - [test_replay_backtest.py:1-267](file://tests/test_replay_backtest.py#L1-L267)
+- [test_dhan_broker.py:1-758](file://tests/test_dhan_broker.py#L1-L758)
+- [test_live_execution.py:1-494](file://tests/test_live_execution.py#L1-L494)
+- [test_kill_switch_wiring.py:1-58](file://tests/test_kill_switch_wiring.py#L1-L58)
 
 **Section sources**
 - [test_engine_pipeline.py:1-137](file://tests/test_engine_pipeline.py#L1-L137)
 - [test_event_bus_clock.py:1-128](file://tests/test_event_bus_clock.py#L1-L128)
 - [test_kernel_resilient.py:1-396](file://tests/test_kernel_resilient.py#L1-L396)
 - [test_replay_backtest.py:1-267](file://tests/test_replay_backtest.py#L1-L267)
+- [test_dhan_broker.py:1-758](file://tests/test_dhan_broker.py#L1-L758)
+- [test_live_execution.py:1-494](file://tests/test_live_execution.py#L1-L494)
+- [test_kill_switch_wiring.py:1-58](file://tests/test_kill_switch_wiring.py#L1-L58)
 
 ## Core Components
 Key areas covered by tests:
@@ -145,6 +168,7 @@ Key areas covered by tests:
 - Sources: SimulatedFeedSource, DhanMarketFeedSource error/close handling
 - Replay/Backtest: EventStore, ReplayEngine, zero-parity, fill policies
 - Resilient Kernel: crash recovery, partial-fill deltas, idempotency
+- **Updated**: Advanced broker mocking with make_broker() helper for DhanBroker simulation and comprehensive error condition testing
 
 **Section sources**
 - [test_domain_types.py:1-239](file://tests/test_domain_types.py#L1-L239)
@@ -160,6 +184,8 @@ Key areas covered by tests:
 - [test_dhan_feed.py:1-31](file://tests/test_dhan_feed.py#L1-L31)
 - [test_replay_backtest.py:1-267](file://tests/test_replay_backtest.py#L1-L267)
 - [test_kernel_resilient.py:1-396](file://tests/test_kernel_resilient.py#L1-L396)
+- [test_dhan_broker.py:1-758](file://tests/test_dhan_broker.py#L1-L758)
+- [test_live_execution.py:1-494](file://tests/test_live_execution.py#L1-L494)
 
 ## Architecture Overview
 End-to-end flow tested across the kernel pipeline:
@@ -487,6 +513,8 @@ Patterns demonstrated:
 - Injecting mock kernel and bus for feed sources
 - Using PaperBroker to simulate market data deterministically
 - Creating synthetic feeds with known sequences
+- **Updated**: Advanced make_broker() helper function for creating fully functional DhanBroker instances with stubbed Tradehull methods
+- **Updated**: Comprehensive error condition testing including failure envelopes, rate limiting, and network failures
 
 ```mermaid
 classDiagram
@@ -495,6 +523,15 @@ class DhanBrokerStub {
 +tsl.order_placement(**kw)
 +tsl.get_order_status(orderid=None, **kw)
 +tsl.get_order_detail(orderid=None, **kw)
++get_ltp_data(names)
++get_quote_data(names)
++get_historical_data(**kw)
++full_market_depth_data(*a, **kw)
++get_option_chain(**kw)
+}
+class make_broker_helper {
++**tsl_methods : dict
++returns DhanBroker
 }
 class SimulatedFeedSource {
 +attach(kernel)
@@ -505,6 +542,7 @@ class DhanMarketFeedSource {
 +_on_error(err)
 +_on_close(ws)
 }
+make_broker_helper --> DhanBrokerStub : "creates"
 DhanBrokerStub <.. test_kernel_resilient.py : "used in tests"
 SimulatedFeedSource <.. test_sources.py : "tested"
 DhanMarketFeedSource <.. test_dhan_feed.py : "tested"
@@ -512,13 +550,42 @@ DhanMarketFeedSource <.. test_dhan_feed.py : "tested"
 
 **Diagram sources**
 - [test_kernel_resilient.py:235-278](file://tests/test_kernel_resilient.py#L235-L278)
-- [test_sources.py:21-63](file://tests/test_sources.py#L21-L63)
+- [test_sources.py:21-63](file://tests/test_sources.py#L21-63)
 - [test_dhan_feed.py:4-31](file://tests/test_dhan_feed.py#L4-L31)
+- [test_dhan_broker.py:18-23](file://tests/test_dhan_broker.py#L18-L23)
+- [test_live_execution.py:55-61](file://tests/test_live_execution.py#L55-L61)
 
 **Section sources**
 - [test_kernel_resilient.py:1-396](file://tests/test_kernel_resilient.py#L1-L396)
 - [test_sources.py:1-63](file://tests/test_sources.py#L1-L63)
 - [test_dhan_feed.py:1-31](file://tests/test_dhan_feed.py#L1-L31)
+- [test_dhan_broker.py:1-758](file://tests/test_dhan_broker.py#L1-L758)
+- [test_live_execution.py:1-494](file://tests/test_live_execution.py#L1-L494)
+
+### Zero-Parity Testing Between Simulated and Live Execution
+Patterns demonstrated:
+- Same signal produces identical fills, positions, and balances through both simulated and live broker paths
+- Zero-cost parity testing ensures consistent behavior across execution modes
+- Statistical equivalence validation between different execution backends
+
+```mermaid
+flowchart TD
+Signal["Same Signal"] --> SimPath["Simulated Path"]
+Signal --> LivePath["Live Broker Path"]
+SimPath --> SimResult["Simulated Result"]
+LivePath --> LiveResult["Live Broker Result"]
+SimResult --> Compare["Compare Results"]
+LiveResult --> Compare
+Compare --> ParityCheck{"Zero Parity?"}
+ParityCheck --> |Yes| Success["Test Passes"]
+ParityCheck --> |No| Failure["Test Fails"]
+```
+
+**Diagram sources**
+- [test_live_execution.py:174-205](file://tests/test_live_execution.py#L174-L205)
+
+**Section sources**
+- [test_live_execution.py:174-205](file://tests/test_live_execution.py#L174-L205)
 
 ### Backtesting and Replay
 Patterns demonstrated:
@@ -573,6 +640,40 @@ EmitDeltas --> VerifyParity["Verify parity with original run"]
 **Section sources**
 - [test_kernel_resilient.py:1-396](file://tests/test_kernel_resilient.py#L1-L396)
 
+### Advanced Error Condition Testing
+Patterns demonstrated:
+- Failure envelope detection and proper error propagation
+- Rate limiting exception handling and quota exhaustion scenarios
+- Network timeout and connection failure resilience
+- Transient failure retry mechanisms with exponential backoff
+- Kill switch activation on risk halts with graceful degradation
+
+```mermaid
+flowchart TD
+Error["Broker Error"] --> TypeCheck{"Error Type?"}
+TypeCheck --> |FailureEnvelope| HandleEnvelope["Handle failure envelope"]
+TypeCheck --> |RateLimited| HandleRateLimit["Handle rate limiting"]
+TypeCheck --> |NetworkError| HandleNetwork["Handle network error"]
+TypeCheck --> |Timeout| HandleTimeout["Handle timeout"]
+HandleEnvelope --> Propagate["Propagate RuntimeError"]
+HandleRateLimit --> Propagate
+HandleNetwork --> Propagate
+HandleTimeout --> Retry["Retry with backoff"]
+Retry --> Success{"Success?"}
+Success --> |Yes| Continue["Continue execution"]
+Success --> |No| Fail["Fail gracefully"]
+```
+
+**Diagram sources**
+- [test_dhan_broker.py:87-108](file://tests/test_dhan_broker.py#L87-L108)
+- [test_dhan_broker.py:340-370](file://tests/test_dhan_broker.py#L340-L370)
+- [test_kill_switch_wiring.py:36-58](file://tests/test_kill_switch_wiring.py#L36-L58)
+
+**Section sources**
+- [test_dhan_broker.py:87-108](file://tests/test_dhan_broker.py#L87-L108)
+- [test_dhan_broker.py:340-370](file://tests/test_dhan_broker.py#L340-L370)
+- [test_kill_switch_wiring.py:36-58](file://tests/test_kill_switch_wiring.py#L36-L58)
+
 ## Dependency Analysis
 Key dependency relationships validated by tests:
 - Strategies depend on kernel context and event bus
@@ -581,6 +682,7 @@ Key dependency relationships validated by tests:
 - Sources depend on kernel for publishing events
 - Replay engine depends on event store and kernel
 - Resilient kernel depends on event store and optional broker
+- **Updated**: DhanBroker depends on Tradehull SDK with comprehensive error handling
 
 ```mermaid
 graph TB
@@ -595,17 +697,21 @@ Replay["ReplayEngine"] --> Store["EventStore"]
 Replay --> Kernel["TradingKernel"]
 Resilient["ResilientKernel"] --> Store
 Resilient --> Exec
+DhanBroker["DhanBroker"] --> Tradehull["Tradehull SDK"]
+DhanBroker --> ErrorHandling["Error Handler"]
 ```
 
 **Diagram sources**
 - [test_engine_pipeline.py:16-79](file://tests/test_engine_pipeline.py#L16-L79)
 - [test_replay_backtest.py:72-100](file://tests/test_replay_backtest.py#L72-L100)
 - [test_kernel_resilient.py:107-153](file://tests/test_kernel_resilient.py#L107-L153)
+- [test_dhan_broker.py:18-23](file://tests/test_dhan_broker.py#L18-L23)
 
 **Section sources**
 - [test_engine_pipeline.py:1-137](file://tests/test_engine_pipeline.py#L1-L137)
 - [test_replay_backtest.py:1-267](file://tests/test_replay_backtest.py#L1-L267)
 - [test_kernel_resilient.py:1-396](file://tests/test_kernel_resilient.py#L1-L396)
+- [test_dhan_broker.py:1-758](file://tests/test_dhan_broker.py#L1-L758)
 
 ## Performance Considerations
 - IndicatorEngine enforces max_rows to bound memory usage during streaming
@@ -613,8 +719,7 @@ Resilient --> Exec
 - ReplayEngine and EventStore enable efficient backtesting with minimal overhead
 - PaperBroker seeding provides deterministic performance without network latency
 - ResilientKernel avoids reprocessing already-applied events to ensure idempotency
-
-[No sources needed since this section provides general guidance]
+- **Updated**: make_broker() helper enables fast, deterministic broker testing without network calls
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -623,6 +728,8 @@ Common issues and resolutions:
 - Market orders require a live quote; seed quotes before placing orders
 - Risk breakers may halt trading; check daily loss and drawdown thresholds
 - Partial-fill recovery requires correct open-order deltas; validate stored events
+- **Updated**: DhanBroker failure envelopes indicate rate limiting; check request parameters and raw responses
+- **Updated**: make_broker() helper should include all required TSL methods for complete broker simulation
 
 **Section sources**
 - [test_event_bus_clock.py:109-128](file://tests/test_event_bus_clock.py#L109-L128)
@@ -630,8 +737,7 @@ Common issues and resolutions:
 - [test_engine_pipeline.py:115-137](file://tests/test_engine_pipeline.py#L115-L137)
 - [test_risk_breakers.py:30-111](file://tests/test_risk_breakers.py#L30-L111)
 - [test_kernel_resilient.py:281-396](file://tests/test_kernel_resilient.py#L281-L396)
+- [test_dhan_broker.py:94-108](file://tests/test_dhan_broker.py#L94-L108)
 
 ## Conclusion
-The nTrade test suite demonstrates robust patterns for unit testing across domain models, engines, brokers, and infrastructure components. By leveraging deterministic fixtures like PaperBroker, event bus history, and replay/backtest tools, tests cover edge cases, error conditions, and asynchronous behavior. The examples provide clear blueprints for writing reliable tests for custom strategies, broker adapters, risk rules, and domain objects, ensuring correctness and resilience in production systems.
-
-[No sources needed since this section summarizes without analyzing specific files]
+The nTrade test suite demonstrates robust patterns for unit testing across domain models, engines, brokers, and infrastructure components. By leveraging deterministic fixtures like PaperBroker, event bus history, and replay/backtest tools, tests cover edge cases, error conditions, and asynchronous behavior. The examples provide clear blueprints for writing reliable tests for custom strategies, broker adapters, risk rules, and domain objects, ensuring correctness and resilience in production systems. **Updated**: The enhanced mocking patterns with make_broker() helper function and comprehensive error condition testing provide sophisticated techniques for validating trading system reliability under various failure scenarios, ensuring robust production deployments.

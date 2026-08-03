@@ -22,10 +22,11 @@
 
 ## Update Summary
 **Changes Made**
-- Added clarification about strategy lifecycle orthogonality to scanner throttling
-- Updated StrategyEngine section to emphasize independence from ScannerFacade operations
-- Added new section on scanner throttling and performance optimization
-- Enhanced dependency analysis to show separation between strategy and scanner systems
+- Updated Scanner Throttling and Performance Optimization section to reflect the 30-second rate limiting configuration
+- Enhanced architecture diagrams to show unified ScannerFacade._run as the canonical path for ranking and throttling
+- Added detailed explanation of eliminated divergent Scanner.top implementation
+- Updated dependency analysis to emphasize the separation between strategy and scanner systems
+- Enhanced troubleshooting guide with scanner-specific performance issues
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -108,7 +109,7 @@ SF -. independent .-> SE
 - [builtin.py:120-128](file://ntrade/scanners/builtin.py#L120-L128)
 - [risk_engine.py:19-141](file://ntrade/engines/risk_engine.py#L19-L141)
 - [order_engine.py:14-34](file://ntrade/engines/order_engine.py#L14-L34)
-- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-L81)
+- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-81)
 - [context.py:17-79](file://ntrade/kernel/context.py#L17-L79)
 - [live_runner.py:21-196](file://ntrade/runner/live_runner.py#L21-L196)
 - [trading_session.py:39-306](file://ntrade/kernel/trading_session.py#L39-L306)
@@ -146,7 +147,7 @@ Key responsibilities:
 **Section sources**
 - [strategy_engine.py:18-104](file://ntrade/engines/strategy_engine.py#L18-L104)
 - [strategies.py:13-67](file://ntrade/engines/strategies.py#L13-L67)
-- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-L81)
+- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-81)
 - [context.py:17-79](file://ntrade/kernel/context.py#L17-L79)
 - [risk_engine.py:19-141](file://ntrade/engines/risk_engine.py#L19-L141)
 - [order_engine.py:14-34](file://ntrade/engines/order_engine.py#L14-L34)
@@ -248,6 +249,7 @@ StrategyEngine --> Strategy : "dispatches events to"
 - Throttle cache is keyed by scanner instance AND call parameters for optimal performance
 - Strategy registration operations never affect scanner throttling state or cache
 - Cache serves cached results within throttle windows, significantly reducing CPU usage
+- **Unified Implementation**: ScannerFacade._run is now the canonical path for ranking and throttling, eliminating the divergent Scanner.top implementation
 
 ```mermaid
 flowchart TD
@@ -473,8 +475,8 @@ TS --> ScannerAccess["scanner() -> ScannerFacade"]
 
 **Diagram sources**
 - [trading_session.py:73-142](file://ntrade/kernel/trading_session.py#L73-L142)
-- [trading_session.py:225-249](file://ntrade/kernel/trading_session.py#L225-L249)
-- [trading_session.py:253-258](file://ntrade/kernel/trading_session.py#L253-L258)
+- [trading_session.py:225-249](file://ntrade/kernel/trading_session.py#L225-249)
+- [trading_session.py:253-258](file://ntrade/kernel/trading_session.py#L253-258)
 
 **Section sources**
 - [trading_session.py:39-306](file://ntrade/kernel/trading_session.py#L39-L306)
@@ -510,7 +512,7 @@ SF -. independent .-> SE
 - [order_engine.py:14-34](file://ntrade/engines/order_engine.py#L14-L34)
 - [live_runner.py:21-196](file://ntrade/runner/live_runner.py#L21-L196)
 - [trading_session.py:39-306](file://ntrade/kernel/trading_session.py#L39-L306)
-- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-L81)
+- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-81)
 - [context.py:17-79](file://ntrade/kernel/context.py#L17-L79)
 
 **Section sources**
@@ -521,7 +523,7 @@ SF -. independent .-> SE
 - [order_engine.py:14-34](file://ntrade/engines/order_engine.py#L14-L34)
 - [live_runner.py:21-196](file://ntrade/runner/live_runner.py#L21-L196)
 - [trading_session.py:39-306](file://ntrade/kernel/trading_session.py#L39-L306)
-- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-L81)
+- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-81)
 - [context.py:17-79](file://ntrade/kernel/context.py#L17-L79)
 
 ## Performance Considerations
@@ -533,6 +535,7 @@ SF -. independent .-> SE
 - Indicator bundles: Ensure IndicatorEngine computes only necessary indicators to minimize CPU usage
 - **Scanner throttling**: Built-in scanners use 30-second rate limiting to prevent full universe rescans; cache serves results within throttle windows
 - **Strategy-scanner independence**: Strategy registration never affects scanner throttling cache, maintaining optimal performance
+- **Unified throttling path**: ScannerFacade._run provides consistent ranking and throttling across all scanners, eliminating performance inconsistencies
 
 **Updated** Added specific guidance on scanner throttling performance and the importance of strategy-scanner independence.
 
@@ -545,6 +548,7 @@ Common issues and resolutions:
 - Kill switch failures: Inspect logs for broker kill switch activation errors; ensure broker adapter implements kill_switch correctly
 - **Scanner performance issues**: Verify rate_limit_seconds configuration; check if throttle cache is working properly
 - **Strategy registration impact**: Confirm that strategy registration doesn't unexpectedly trigger scanner rescans
+- **Scanner throttling verification**: Use test_facade_ranks_scores_via_run pattern to verify proper ranking and throttling behavior
 
 **Updated** Added troubleshooting guidance for scanner-related issues and strategy registration concerns.
 
@@ -596,6 +600,7 @@ The StrategyEngine provides a robust, event-driven foundation for trading strate
 - Custom scanners can set `rate_limit_seconds` attribute for throttling control
 - Throttle cache is keyed by scanner instance and call parameters
 - Strategy registration never affects scanner throttling state or cache
+- **Unified Implementation**: ScannerFacade._run is the canonical path for ranking and throttling, ensuring consistent behavior across all scanners
 
 **Section sources**
 - [builtin.py:90](file://ntrade/scanners/builtin.py#L90)

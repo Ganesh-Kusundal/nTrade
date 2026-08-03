@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: ntrade_core/kernel
+title: Trading Kernel & Session Orchestration
+scope:
+    - ntrade/kernel/
+source_files: []
+depends_on: []
+related_to:
+    - path: ntrade_core/backtest
+    - path: ntrade_core/core_api
+    - path: scripts
+    - path: tests

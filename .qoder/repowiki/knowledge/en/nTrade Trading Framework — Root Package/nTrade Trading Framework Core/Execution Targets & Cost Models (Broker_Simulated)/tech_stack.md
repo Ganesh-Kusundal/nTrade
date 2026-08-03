@@ -1,0 +1,1 @@
+Pure Python standard library only — `abc.ABC` for abstract model interfaces, `dataclasses.frozen` for immutable `RetryPolicy`, `threading.Lock` for token-bucket and broker rate gate, `time.monotonic` / `random` for timing and jitter, and `collections.deque` for sliding windows. No third-party dependencies.

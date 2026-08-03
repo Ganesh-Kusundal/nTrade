@@ -1,0 +1,1 @@
+Standalone Python CLIs that benchmark kernel latency, replay EMA-cross strategies against historical data, validate live Dhan API connectivity, and gate paper-to-live transitions for the ntrade trading framework.

@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: ""
+title: nTrade Trading Framework — Root Package
+scope:
+    - ARCHITECTURE.md
+    - .gitignore
+    - pyproject.toml
+    - skills-lock.json
+    - check_connection.py
+source_files: []
+depends_on: []
+related_to: []

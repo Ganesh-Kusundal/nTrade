@@ -1,5 +1,6 @@
 """Unit tests for DhanBroker with a stubbed Tradehull (no live network)."""
 
+import time
 import types
 from datetime import date
 from unittest.mock import MagicMock
@@ -85,6 +86,23 @@ def test_get_quote_no_duplicate_kwargs():
 
 def test_get_quote_raises_on_failure():
     broker = make_broker(get_ltp_data=lambda names: (_ for _ in ()).throw(RuntimeError("boom")))
+    nifty = Index("NIFTY")
+    with pytest.raises(RuntimeError, match="LTP fetch failed"):
+        broker.get_quote(nifty)
+
+
+def test_get_ltp_rejects_failure_envelope():
+    """Regression: the Tradehull SDK prints "Exception at calling ltp as
+    {'status': 'failure', ...}" and returns a failure envelope instead of
+    raising. get_ltp must treat that envelope as a hard failure, never as a
+    valid LTP — otherwise a dead/blocked fetch surfaces a stale or seed value
+    as a real price (the bug behind a silent 24565.45 in production)."""
+    failure_env = {
+        "status": "failure",
+        "remarks": {"error_code": None, "error_type": None, "error_message": None},
+        "data": "",
+    }
+    broker = make_broker(get_ltp_data=lambda names: failure_env)
     nifty = Index("NIFTY")
     with pytest.raises(RuntimeError, match="LTP fetch failed"):
         broker.get_quote(nifty)
@@ -251,11 +269,13 @@ def test_get_depth_legacy_columns_fallback():
 
 
 def test_get_depth_empty_frames_return_none():
+    """Genuinely empty frames (e.g. illiquid / pre-open) resolve to None after
+    the retry budget is exhausted — settle=0 keeps this unit test fast."""
     broker = make_broker(
         full_market_depth_data=lambda *a, **kw: {"RELIANCE|NSE": "client"},
         get_market_depth_df=lambda dc: (pd.DataFrame(), pd.DataFrame()),
     )
-    assert broker.get_depth(Equity("RELIANCE")) is None
+    assert broker.get_depth(Equity("RELIANCE"), settle=0.0) is None
 
 
 def test_get_depth_missing_client_falls_back():
@@ -269,6 +289,84 @@ def test_get_depth_missing_client_falls_back():
     )
     depth = broker.get_depth(Equity("RELIANCE", exchange="NSE"))
     assert depth is not None
+
+
+def test_get_depth_retries_empty_snapshot_then_succeeds():
+    """A first snapshot returning no depth client is retried (fresh websocket
+    subscription re-arms the stream) — the second attempt succeeds."""
+    calls = {"n": 0}
+
+    def flaky_subscribe(*a, **kw):
+        calls["n"] += 1
+        return {} if calls["n"] == 1 else {"RELIANCE|NSE": "client"}
+
+    broker = make_broker(
+        full_market_depth_data=flaky_subscribe,
+        get_market_depth_df=lambda dc: (
+            pd.DataFrame([{"bid_price": 100.0, "bid_qty": 500}]),
+            pd.DataFrame([{"ask_price": 100.5, "ask_qty": 400}]),
+        ),
+    )
+    depth = broker.get_depth(Equity("RELIANCE"), settle=0.0)
+    assert depth is not None
+    assert depth.best_bid().price == 100.0
+    assert calls["n"] == 2
+
+
+def test_get_depth_retries_on_frame_timeout_then_succeeds():
+    """A hung frame read (websocket snapshot timeout) is retried — the next
+    attempt gets the frames. Uses a real short timeout, no live network."""
+    calls = {"n": 0}
+
+    def slow_first_frame(dc):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            time.sleep(0.2)   # exceeds the 0.05s bounded timeout
+        return (
+            pd.DataFrame([{"bid_price": 10.0, "bid_qty": 100}]),
+            pd.DataFrame([{"ask_price": 10.5, "ask_qty": 200}]),
+        )
+
+    broker = make_broker(
+        full_market_depth_data=lambda *a, **kw: {"RELIANCE|NSE": "client"},
+        get_market_depth_df=slow_first_frame,
+    )
+    depth = broker.get_depth(Equity("RELIANCE"), timeout=0.05, settle=0.0)
+    assert depth is not None
+    assert depth.best_bid().price == 10.0
+    assert calls["n"] == 2
+
+
+def test_get_depth_rate_limited_not_retried():
+    """A DH-904 on the depth subscription must propagate immediately (B-011
+    no-amplify) — no retry loop that burns more DATA quota."""
+    from ntrade.execution.rate_limit import Quota, RateLimited
+    calls = {"n": 0}
+
+    def rate_limited(*a, **kw):
+        calls["n"] += 1
+        raise RateLimited(Quota.DATA)
+
+    broker = make_broker(full_market_depth_data=rate_limited)
+    with pytest.raises(RateLimited):
+        broker.get_depth(Equity("RELIANCE"), attempts=3)
+    assert calls["n"] == 1
+
+
+def test_get_depth_timeout_rate_limited_not_swallowed():
+    """A DH-904 raised INSIDE the frame read must surface as RateLimited, not
+    be swallowed as a timed-out None (never mask quota exhaustion)."""
+    from ntrade.execution.rate_limit import Quota, RateLimited
+
+    def rl_frame(dc):
+        raise RateLimited(Quota.DATA)
+
+    broker = make_broker(
+        full_market_depth_data=lambda *a, **kw: {"RELIANCE|NSE": "client"},
+        get_market_depth_df=rl_frame,
+    )
+    with pytest.raises(RateLimited):
+        broker.get_depth(Equity("RELIANCE"), timeout=0.05, attempts=1)
 
 
 def test_get_quote_retries_flaky_ltp():

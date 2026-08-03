@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: ntrade_core/domain/market
+title: Market Domain Models & Live Streaming
+scope:
+    - ntrade/domain/market/
+source_files: []
+depends_on: []
+related_to: []

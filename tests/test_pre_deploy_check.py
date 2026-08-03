@@ -142,13 +142,27 @@ def test_quota_status_row_pass_when_clear():
     assert "quote=" in summary and "order=" in summary
 
 
-def test_quota_status_row_degraded_when_blocked():
+def test_quota_status_row_pass_when_burst_window_full():
+    """A full 1s burst window (quote=1/1) is NORMAL steady state — the login
+    probe fills it right before the snapshot, so this must be PASS, not
+    DEGRADED (T-036 spurious rate_gate row regression)."""
     from ntrade.execution.rate_limit import BrokerRateGate, Quota
     gate = BrokerRateGate()
-    gate.acquire(Quota.QUOTE)  # 1/1 — quote window is now full
+    gate.acquire(Quota.QUOTE)  # 1/1 — burst window momentarily full
+    name, status, summary = live_read.quota_status_row(gate)
+    assert name == "rate_gate"
+    assert status == "PASS"
+    assert "quote=1/1" in summary
+
+
+def test_quota_status_row_degraded_when_sustained_window_blocked():
+    """A long-horizon window at capacity IS real exhaustion -> DEGRADED."""
+    from ntrade.execution.rate_limit import BrokerRateGate, Quota, BLOCKED_MIN_WINDOW_SPAN_S
+    gate = BrokerRateGate(windows={Quota.DATA: ((BLOCKED_MIN_WINDOW_SPAN_S, 1),)})
+    gate.acquire(Quota.DATA)   # 1/1 on the 60s window
     name, status, summary = live_read.quota_status_row(gate)
     assert status == "DEGRADED"
-    assert "quote=1/1" in summary
+    assert "data=" in summary
 
 
 def test_quota_status_row_reflects_cooldown():

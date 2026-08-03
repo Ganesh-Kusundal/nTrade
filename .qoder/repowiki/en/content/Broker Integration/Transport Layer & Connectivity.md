@@ -12,6 +12,7 @@
 - [market_feed.py](file://ntrade/sources/market_feed.py)
 - [event_bus.py](file://ntrade/kernel/event_bus.py)
 - [retry.py](file://ntrade/execution/retry.py)
+- [rate_limit.py](file://ntrade/execution/rate_limit.py)
 - [market.py](file://ntrade/events/market.py)
 - [base.py](file://ntrade/events/base.py)
 - [clock.py](file://ntrade/kernel/clock.py)
@@ -19,12 +20,12 @@
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive rate limiting system throughout Dhan integration
-- Updated DhanBroker initialization with RateLimiter configured for 10 calls per second
-- Enhanced DhanTransport with _throttled() method for consistent API throttling
-- Integrated rate limiting into WebSocket feed reconnection logic
-- Updated architecture diagrams to show rate limiting components
-- Added new section on rate limiting strategies and configuration
+- Major refactoring of DhanTransport to route all outbound REST calls through BrokerRateGate via `_invoke(quota, fn)` wrapper method
+- Replaced simple RateLimiter with granular quota-based throttling system
+- Implemented multi-window rate limiting with different quotas (QUOTE: 1/s, DATA: 5/s, ORDER: 10/s, NON_TRADING: 20/s)
+- Enhanced error handling for rate limit failures with proper `RateLimited` exception propagation
+- Updated DhanBroker to initialize and share a single `BrokerRateGate` instance across all operations
+- Removed legacy `_throttled()` method and simple rate limiting approach
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -32,21 +33,23 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Rate Limiting System](#rate-limiting-system)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
-11. [Appendices](#appendices)
+6. [Advanced Rate Limiting System](#advanced-rate-limiting-system)
+7. [WebSocket Feed Management](#websocket-feed-management)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
+12. [Appendices](#appendices)
 
 ## Introduction
 This document explains the transport layer abstraction that manages network connectivity and message handling for broker integrations, with a focus on Dhan via Tradehull. It covers:
-- WebSocket connection management for market data streaming
+- WebSocket connection management for market data streaming with simplified feed modes
 - REST-based transport for quotes, history, orders, and portfolio
 - Message serialization and deserialization between Python objects and broker wire formats
 - Event-driven architecture for incoming messages, order confirmations, and market data updates
 - Error handling strategies including timeouts, reconnection signals, and protocol errors
-- **Comprehensive rate limiting system to prevent API throttling issues**
+- **Comprehensive quota-based rate limiting system using BrokerRateGate to prevent API throttling issues**
+- **Simplified feed mode management with hardcoded full-data subscription code 21**
 - Extensibility patterns for custom transports and binary protocols
 - Monitoring, metrics, and debugging tools at the network level
 - Scalability considerations for concurrent connections and high-frequency processing
@@ -57,9 +60,9 @@ The transport layer is split across several modules:
 - Transport wrapper around the underlying library (DhanTransport)
 - Authentication lifecycle and token refresh (DhanAuthProvider, dhan_auth)
 - Data mapping and normalization (DhanMapper)
-- Live websocket feed source (DhanMarketFeedSource)
+- Live websocket feed source with simplified feed modes (DhanMarketFeedSource)
 - Event bus and canonical events (EventBus, Tick/Quote/Depth events)
-- Resilience primitives (RetryPolicy, RateLimiter)
+- Resilience primitives (RetryPolicy, BrokerRateGate)
 - Time source (TradingClock) to ensure zero-parity timestamps
 
 ```mermaid
@@ -71,7 +74,7 @@ end
 subgraph "Transport"
 DT["DhanTransport (dhan_transport.py)"]
 DM["DhanMapper (dhan_mapper.py)"]
-RL["RateLimiter (retry.py)"]
+BRG["BrokerRateGate (rate_limit.py)"]
 end
 subgraph "Auth"
 AP["DhanAuthProvider (dhan_auth_provider.py)"]
@@ -96,9 +99,9 @@ DF --> EB
 EB --> EV
 DB --> CL
 DT --> CL
-DB --> RL
-DT --> RL
-DF --> RL
+DB --> BRG
+DT --> BRG
+DF --> BRG
 ```
 
 **Diagram sources**
@@ -108,13 +111,13 @@ DF --> RL
 - [dhan_mapper.py:35-94](file://ntrade/brokers/dhan_mapper.py#L35-L94)
 - [dhan_auth_provider.py:28-75](file://ntrade/brokers/dhan_auth_provider.py#L28-L75)
 - [dhan_auth.py:114-167](file://ntrade/brokers/dhan_auth.py#L114-L167)
-- [market_feed.py:23-46](file://ntrade/sources/market_feed.py#L23-L46)
+- [market_feed.py:23-46](file://ntrade/sources/market_feed.py#L23-46)
 - [dhan_feed.py:98-166](file://ntrade/sources/dhan_feed.py#L98-L166)
 - [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-81)
 - [market.py:11-48](file://ntrade/events/market.py#L11-L48)
 - [base.py:16-22](file://ntrade/events/base.py#L16-L22)
 - [clock.py:14-55](file://ntrade/kernel/clock.py#L14-L55)
-- [retry.py:70-98](file://ntrade/execution/retry.py#L70-L98)
+- [rate_limit.py:76-147](file://ntrade/execution/rate_limit.py#L76-L147)
 
 **Section sources**
 - [base.py:25-163](file://ntrade/brokers/base.py#L25-L163)
@@ -123,7 +126,7 @@ DF --> RL
 - [dhan_mapper.py:35-94](file://ntrade/brokers/dhan_mapper.py#L35-L94)
 - [dhan_auth_provider.py:28-75](file://ntrade/brokers/dhan_auth_provider.py#L28-L75)
 - [dhan_auth.py:114-167](file://ntrade/brokers/dhan_auth.py#L114-L167)
-- [market_feed.py:23-46](file://ntrade/sources/market_feed.py#L23-L46)
+- [market_feed.py:23-46](file://ntrade/sources/market_feed.py#L23-46)
 - [dhan_feed.py:98-166](file://ntrade/sources/dhan_feed.py#L98-L166)
 - [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-81)
 - [market.py:11-48](file://ntrade/events/market.py#L11-L48)
@@ -135,9 +138,9 @@ DF --> RL
 - DhanBroker: Concrete broker implementation orchestrating auth, transport, and mapping; enforces SEBI rules and handles special order types.
 - DhanTransport: Thin wrapper over Tradehull API calls with retry and error handling; normalizes responses into domain objects.
 - DhanMapper: Pure functions to map raw broker payloads to canonical domain models (quotes, depth, books, positions).
-- DhanMarketFeedSource: Live websocket feed adapter publishing canonical events to the kernel bus.
+- DhanMarketFeedSource: Live websocket feed adapter publishing canonical events to the kernel bus with simplified feed modes.
 - EventBus: Synchronous publish/subscribe bus with thread-safe dispatch and event history.
-- RetryPolicy and RateLimiter: Resilience primitives for transient failures and rate control.
+- RetryPolicy and BrokerRateGate: Resilience primitives for transient failures and sophisticated rate control.
 - TradingClock: Deterministic time source ensuring zero-parity across live, replay, and simulation.
 
 Key responsibilities:
@@ -145,7 +148,8 @@ Key responsibilities:
 - Zero-parity timestamps: All events carry clock-derived timestamps.
 - Robustness: Retries, timeouts, and graceful fallbacks.
 - Normalization: Consistent domain models regardless of broker specifics.
-- **Rate limiting: Consistent API throttling across all Dhan interactions.**
+- **Quota-based rate limiting: Granular API throttling across all Dhan interactions using BrokerRateGate.**
+- **Simplified feed management: Hardcoded full-data subscription code 21 for consistent market data delivery.**
 
 **Section sources**
 - [base.py:25-163](file://ntrade/brokers/base.py#L25-L163)
@@ -155,6 +159,7 @@ Key responsibilities:
 - [dhan_feed.py:98-166](file://ntrade/sources/dhan_feed.py#L98-L166)
 - [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-81)
 - [retry.py:19-98](file://ntrade/execution/retry.py#L19-L98)
+- [rate_limit.py:76-147](file://ntrade/execution/rate_limit.py#L76-L147)
 - [clock.py:14-55](file://ntrade/kernel/clock.py#L14-L55)
 
 ## Architecture Overview
@@ -166,6 +171,7 @@ participant App as "Strategy/Engine"
 participant Broker as "DhanBroker"
 participant Auth as "DhanAuthProvider"
 participant Trans as "DhanTransport"
+participant Gate as "BrokerRateGate"
 participant Limiter as "RateLimiter"
 participant Map as "DhanMapper"
 participant Bus as "EventBus"
@@ -175,14 +181,14 @@ Broker->>Auth : _ensure_tsl()
 Auth-->>Broker : tsl (refreshed if needed)
 Broker->>Trans : get_quote(symbol)
 Trans->>Trans : get_ltp(symbol)
-Trans->>Limiter : _throttled().wait()
-Limiter-->>Trans : allow request
+Trans->>Gate : acquire(Quota.QUOTE)
+Gate-->>Trans : allow request
 Trans->>Trans : RetryPolicy.execute()
 Trans-->>Broker : float LTP
 Broker->>Map : normalize_quote(LTP, now)
 Map-->>Broker : Quote
 Broker-->>App : Quote
-Note over Feed,Bus : Live websocket publishes Tick/Quote/Depth events
+Note over Feed,Bus : Live websocket publishes Tick/Quote/Depth events with code 21
 Feed->>Bus : publish(TickEvent|QuoteEvent|DepthEvent)
 Bus-->>App : handlers receive events
 ```
@@ -205,7 +211,7 @@ Bus-->>App : handlers receive events
   - Transport for REST calls with retries
   - Mapper for normalization
   - Special handling for SEBI-compliant order types and bracket orders
-  - **Shared RateLimiter instance for API throttling**
+  - **Shared BrokerRateGate instance for sophisticated API throttling**
 
 ```mermaid
 classDiagram
@@ -267,7 +273,7 @@ class DhanBroker {
 +get_start_date()
 +get_instrument_file()
 +get_instrument_metadata(instrument)
--_rate_limiter RateLimiter
+-_gate BrokerRateGate
 }
 BrokerAdapter <|-- DhanBroker
 ```
@@ -280,23 +286,25 @@ BrokerAdapter <|-- DhanBroker
 - [base.py:25-163](file://ntrade/brokers/base.py#L25-L163)
 - [dhan.py:54-634](file://ntrade/brokers/dhan.py#L54-L634)
 
-### DhanTransport: REST Transport Wrapper
+### DhanTransport: REST Transport Wrapper with BrokerRateGate Integration
 Responsibilities:
 - Wrap Tradehull API calls with retry policy and consistent error handling
 - Normalize responses into domain objects via mapper
 - Provide methods for LTP, quote, depth snapshot, historical data, option chain, orders, and portfolio
-- **Implement rate limiting through _throttled() method**
+- **Implement sophisticated rate limiting through `_invoke(quota, fn)` method with BrokerRateGate**
 
 Key behaviors:
 - get_ltp uses RetryPolicy to handle flaky endpoints; raises a specific BrokerDataError on persistent failure or zero price
-- **All API calls are throttled via _throttled() before making requests**
+- **All API calls are routed through `_invoke(quota, fn)` which acquires the appropriate quota window**
 - get_depth performs a timeout-bounded snapshot read using a background thread
 - Historical endpoints normalize and filter results consistently
+- **Rate limit violations surface as `RateLimited` exceptions rather than silent failures**
 
 ```mermaid
 flowchart TD
-Start(["get_ltp(symbol)"]) --> Throttle["_throttled().wait()"]
-Throttle --> TryCall["Call TSL.get_ltp_data(names=[symbol])"]
+Start(["get_ltp(symbol)"]) --> Invoke["_invoke(Quota.QUOTE, fn)"]
+Invoke --> GateAcquire["BrokerRateGate.acquire(Quota.QUOTE)"]
+GateAcquire --> TryCall["Call TSL.get_ltp_data(names=[symbol])"]
 TryCall --> Candidate{"candidate > 0?"}
 Candidate --> |Yes| ReturnLTP["Return candidate"]
 Candidate --> |No| RaiseErr["Raise ValueError('LTP is 0')"]
@@ -347,13 +355,14 @@ class DhanMapper {
 **Section sources**
 - [dhan_mapper.py:35-239](file://ntrade/brokers/dhan_mapper.py#L35-L239)
 
-### DhanMarketFeedSource: WebSocket Streaming
+### DhanMarketFeedSource: WebSocket Streaming with Simplified Feed Modes
 Responsibilities:
 - Connect to Dhan's websocket via dhanhq.MarketFeed
 - Parse payloads into canonical events (TickEvent, QuoteEvent, DepthEvent)
 - Publish events to the kernel bus with deterministic timestamps
 - Handle disconnects and emit lifecycle events
 - **Implement rate limiting for reconnection attempts**
+- **Use hardcoded full-data subscription code 21 for consistent market data delivery**
 
 Connection management:
 - Lazy initialization of feed instance
@@ -361,6 +370,7 @@ Connection management:
 - wait_ready ensures warmup and minimum payload ingestion
 - stop closes connection and resets internal state
 - **Reconnection attempts are rate-limited to prevent rapid reconnect loops**
+- **Consistent subscription code 21 ensures full market data including depth information**
 
 ```mermaid
 sequenceDiagram
@@ -371,7 +381,7 @@ participant Bus as "EventBus"
 participant Handler as "Kernel Handlers"
 Source->>Limiter : _reconnect_limiter.wait()
 Limiter-->>Source : allow reconnect
-Source->>Feed : start()
+Source->>Feed : start() with code 21 subscriptions
 Feed-->>Source : on_message(payload)
 Source->>Source : dhan_payload_to_events(payload, symbol_map, ts)
 Source->>Bus : publish(TickEvent|QuoteEvent|DepthEvent)
@@ -474,67 +484,75 @@ Event <|-- DepthEvent
 - [market.py:11-48](file://ntrade/events/market.py#L11-L48)
 
 **Section sources**
-- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-81)
+- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-L81)
 - [base.py:16-22](file://ntrade/events/base.py#L16-L22)
 - [market.py:11-48](file://ntrade/events/market.py#L11-L48)
 
 ### Resilience Primitives
 - RetryPolicy: Exponential backoff with jitter for transient failures
-- RateLimiter: Token-bucket limiter to respect broker rate limits
+- BrokerRateGate: Sophisticated multi-window rate limiter with class-scoped quotas
 
 Usage:
 - DhanTransport wraps flaky calls with RetryPolicy.execute
-- RateLimiter can be used to throttle outbound requests where necessary
-- **DhanBroker initializes RateLimiter with 10 calls per second ceiling**
+- BrokerRateGate provides granular quota-based throttling across all Dhan interactions
+- **DhanBroker initializes BrokerRateGate during connection with default quota windows**
 - **DhanMarketFeedSource uses separate RateLimiter for reconnection throttling**
 
 **Section sources**
 - [retry.py:19-98](file://ntrade/execution/retry.py#L19-L98)
+- [rate_limit.py:76-147](file://ntrade/execution/rate_limit.py#L76-L147)
 - [dhan_transport.py:80-101](file://ntrade/brokers/dhan_transport.py#L80-L101)
 
-## Rate Limiting System
+## Advanced Rate Limiting System
 
-**Updated** Comprehensive rate limiting system implemented throughout Dhan integration to prevent API throttling issues previously handled with ad-hoc retry logic.
+**Updated** Comprehensive quota-based rate limiting system implemented throughout Dhan integration using BrokerRateGate, replacing the previous simple RateLimiter approach.
 
-### RateLimiter Implementation
-The RateLimiter provides thread-safe token-bucket rate limiting with configurable call rates:
+### BrokerRateGate Implementation
+The BrokerRateGate provides thread-safe multi-window rate limiting with configurable quota classes:
 
 ```mermaid
 classDiagram
-class RateLimiter {
-+calls_per_second float
-+interval float
-+wait() void
--_rate float
-+_interval float
-+_lock Lock
-+_last_time float
+class BrokerRateGate {
++acquire(quota) void
++penalize(quota, seconds) void
+-_windows dict
+-_history dict
+-_cooldown_until dict
+-_lock Lock
+-_clock Callable
+-_sleep Callable
 }
-class RetryPolicy {
-+max_retries int
-+base_delay float
-+max_delay float
-+multiplier float
-+jitter float
-+execute(fn) Any
-+delays() Generator
+class Quota {
+<<enumeration>>
+QUOTE
+DATA
+ORDER
+NON_TRADING
 }
-RateLimiter ..> RetryPolicy : Used alongside
+class RateLimited {
++quota Quota
++retry_after float
++message string
+}
+BrokerRateGate ..> Quota : Uses
+BrokerRateGate ..> RateLimited : Raises
 ```
 
 **Diagram sources**
-- [retry.py:70-98](file://ntrade/execution/retry.py#L70-L98)
-- [retry.py:19-67](file://ntrade/execution/retry.py#L19-L67)
+- [rate_limit.py:76-147](file://ntrade/execution/rate_limit.py#L76-L147)
+- [rate_limit.py:31-38](file://ntrade/execution/rate_limit.py#L31-L38)
+- [rate_limit.py:50-62](file://ntrade/execution/rate_limit.py#L50-L62)
 
-### DhanBroker Rate Limiting Configuration
-DhanBroker initializes a shared RateLimiter instance during connection:
+### DhanBroker Rate Gate Configuration
+DhanBroker initializes a shared BrokerRateGate instance during connection:
 
 ```python
 def connect(self) -> "DhanBroker":
-    self.tsl = self._auth.authenticate()
-    self._rate_limiter = RateLimiter(calls_per_second=10.0)  # Dhan API ceiling
+    # One shared gate per session — every outbound TSL call is throttled through it
+    self._gate = BrokerRateGate()
+    self.tsl = self._auth.authenticate(gate=self._gate)
     self._transport = DhanTransport(
-        self.tsl, rate_limiter=self._rate_limiter,
+        self.tsl, gate=self._gate,
         clock=getattr(self, "_clock", None),
     )
     self._connected = True
@@ -542,20 +560,33 @@ def connect(self) -> "DhanBroker":
 ```
 
 ### DhanTransport Throttling Mechanism
-The transport layer ensures consistent rate limiting across all Dhan API interactions:
+The transport layer ensures consistent rate limiting across all Dhan API interactions through the `_invoke` method:
 
 ```mermaid
 flowchart TD
-API_Call["API Call"] --> CheckLimiter{"RateLimiter configured?"}
-CheckLimiter --> |Yes| Throttle["_throttled().wait()"]
-CheckLimiter --> |No| DirectCall["Direct API Call"]
-Throttle --> API_Call_Internal["Internal API Call"]
-DirectCall --> API_Call_Internal
-API_Call_Internal --> Response["Response"]
+API_Call["API Call"] --> Invoke["_invoke(quota, fn)"]
+Invoke --> GateCheck{"Gate configured?"}
+GateCheck --> |Yes| GateAcquire["BrokerRateGate.acquire(quota)"]
+GateCheck --> |No| DirectCall["Direct API Call"]
+GateAcquire --> ExecuteFn["Execute fn()"]
+DirectCall --> ExecuteFn
+ExecuteFn --> Response["Response"]
+ExecuteFn --> RateLimit{"Rate limited?"}
+RateLimit --> |Yes| Penalize["gate.penalize(quota, retry_after)"]
+Penalize --> RaiseRL["Raise RateLimited"]
+RateLimit --> |No| Success["Return result"]
 ```
 
 **Diagram sources**
-- [dhan_transport.py:80-84](file://ntrade/brokers/dhan_transport.py#L80-L84)
+- [dhan_transport.py:88-116](file://ntrade/brokers/dhan_transport.py#L88-L116)
+
+### Quota Classes and Windows
+The system supports four distinct quota classes with different rate limits:
+
+- **QUOTE**: 1 request per second (for LTP and quote data)
+- **DATA**: 5 requests per second, 100,000 per day (for historical data)
+- **ORDER**: 10 requests per second, 250 per minute, 1000 per hour, 7000 per day (for order operations)
+- **NON_TRADING**: 20 requests per second (for account and metadata operations)
 
 ### WebSocket Feed Reconnection Rate Limiting
 The DhanMarketFeedSource implements separate rate limiting for reconnection attempts:
@@ -572,37 +603,95 @@ def start(self) -> None:
 ```
 
 ### Rate Limiting Strategy Benefits
-- **Prevents API throttling**: Consistent 10 calls/second ceiling matches Dhan's API limits
-- **Thread-safe operation**: Multiple concurrent requests are properly serialized
-- **Configurable limits**: Different rate limits for different use cases (API calls vs reconnections)
+- **Prevents API throttling**: Multi-window rate limiting matches Dhan's documented API limits
+- **Thread-safe operation**: Multiple concurrent requests are properly serialized per quota class
+- **Class-scoped penalties**: Rate limit violations penalize only the affected quota class
 - **Graceful degradation**: Requests are delayed rather than rejected when limits are exceeded
 - **Resource protection**: Prevents overwhelming the broker's API servers
+- **Feed stability**: 0.5 calls/second limit prevents reconnect storms during network issues
+- **Proper error propagation**: Rate limit violations surface as `RateLimited` exceptions
 
 **Section sources**
-- [dhan.py:66-74](file://ntrade/brokers/dhan.py#L66-L74)
-- [dhan_transport.py:80-84](file://ntrade/brokers/dhan_transport.py#L80-L84)
+- [dhan.py:66-77](file://ntrade/brokers/dhan.py#L66-L77)
+- [dhan_transport.py:88-116](file://ntrade/brokers/dhan_transport.py#L88-L116)
 - [dhan_feed.py:124](file://ntrade/sources/dhan_feed.py#L124)
-- [retry.py:70-98](file://ntrade/execution/retry.py#L70-L98)
+- [rate_limit.py:76-147](file://ntrade/execution/rate_limit.py#L76-L147)
+
+## WebSocket Feed Management
+
+**Updated** Simplified feed mode management with hardcoded full-data subscription code 21.
+
+### Feed Mode Simplification
+The DhanMarketFeedSource has been simplified to eliminate speculative feed mode codes:
+
+- **Removed**: `_MODE_CODES` dictionary, `_mode_code()` method, and `mode/version` parameters
+- **Implemented**: Hardcoded subscription code 21 for full-data market feeds
+- **Benefits**: Consistent behavior, reduced complexity, guaranteed full market data including depth
+
+### Subscription Code 21
+The hardcoded code 21 represents full-data subscription which includes:
+- Real-time price updates (LTP)
+- Quote data (open, high, low, close, volume, OI)
+- Market depth information (bid/ask levels)
+- Complete tick data with quantities
+
+```mermaid
+flowchart TD
+Subscriptions["_subscriptions()"] --> Code21["Return [(exch, sec, 21) for each symbol]"]
+Code21 --> FullData["Full-data subscription code 21"]
+FullData --> MarketData["Complete market data stream"]
+MarketData --> PriceUpdates["Real-time price updates"]
+MarketData --> QuoteInfo["Quote information"]
+MarketData --> DepthInfo["Market depth data"]
+```
+
+**Diagram sources**
+- [dhan_feed.py:128-129](file://ntrade/sources/dhan_feed.py#L128-L129)
+
+### Feed Initialization and Version Management
+The feed initialization now uses hardcoded version "v2" for consistency:
+
+```python
+def _build_feed(self):
+    # ... existing logic ...
+    feed = MarketFeed(
+        context, self._subscriptions(), version="v2",
+        on_message=self._on_message, on_error=self._on_error,
+        on_close=self._on_close,
+    )
+```
+
+### Feed Reconnection Strategy
+Enhanced reconnection handling with dedicated rate limiting:
+
+- **Separate RateLimiter**: Dedicated limiter for reconnection attempts (0.5 calls/second)
+- **Automatic recovery**: Seamless reconnection after network interruptions
+- **State preservation**: Maintains subscription state across reconnections
+- **Event notification**: Emits FeedDisconnectedEvent for monitoring and alerting
+
+**Section sources**
+- [dhan_feed.py:128-150](file://ntrade/sources/dhan_feed.py#L128-L150)
+- [dhan_feed.py:210-224](file://ntrade/sources/dhan_feed.py#L210-L224)
 
 ## Dependency Analysis
 The transport layer exhibits clear separation:
 - BrokerAdapter abstracts broker-specific logic
 - DhanBroker composes auth, transport, and mapper
-- DhanTransport depends on Tradehull and mapper
+- DhanTransport depends on Tradehull, mapper, and BrokerRateGate
 - DhanMarketFeedSource depends on dhanhq and publishes to EventBus
 - EventBus decouples producers and consumers
 - TradingClock provides deterministic timestamps
-- **RateLimiter provides shared rate limiting across components**
+- **BrokerRateGate provides shared quota-based rate limiting across components**
 
 ```mermaid
 graph TB
 DB["DhanBroker"] --> AP["DhanAuthProvider"]
 DB --> DT["DhanTransport"]
-DB --> RL["RateLimiter"]
+DB --> BRG["BrokerRateGate"]
 DT --> DM["DhanMapper"]
-DT --> RL
+DT --> BRG
 DF["DhanMarketFeedSource"] --> EB["EventBus"]
-DF --> RL
+DF --> RL["RateLimiter"]
 DB --> CL["TradingClock"]
 DT --> CL
 ```
@@ -612,44 +701,47 @@ DT --> CL
 - [dhan_transport.py:48-117](file://ntrade/brokers/dhan_transport.py#L48-L117)
 - [dhan_mapper.py:35-94](file://ntrade/brokers/dhan_mapper.py#L35-L94)
 - [dhan_feed.py:98-166](file://ntrade/sources/dhan_feed.py#L98-L166)
-- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-81)
+- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-L81)
 - [clock.py:14-55](file://ntrade/kernel/clock.py#L14-L55)
-- [retry.py:70-98](file://ntrade/execution/retry.py#L70-L98)
+- [rate_limit.py:76-147](file://ntrade/execution/rate_limit.py#L76-L147)
 
 **Section sources**
 - [dhan.py:54-105](file://ntrade/brokers/dhan.py#L54-L105)
 - [dhan_transport.py:48-117](file://ntrade/brokers/dhan_transport.py#L48-L117)
 - [dhan_mapper.py:35-94](file://ntrade/brokers/dhan_mapper.py#L35-L94)
 - [dhan_feed.py:98-166](file://ntrade/sources/dhan_feed.py#L98-L166)
-- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-81)
+- [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-L81)
 - [clock.py:14-55](file://ntrade/kernel/clock.py#L14-L55)
 
 ## Performance Considerations
 - WebSocket throughput:
   - DhanMarketFeedSource processes payloads in callbacks; ensure handlers are lightweight
   - Use wait_ready to avoid busy loops during warmup
-  - **Rate limiting adds minimal overhead (~microseconds per call)**
+  - **BrokerRateGate adds minimal overhead (~microseconds per acquire call)**
+  - **Hardcoded code 21 eliminates mode selection overhead**
 - REST latency:
   - RetryPolicy reduces transient failures but adds delay; tune max_retries and base_delay
   - Batch operations where possible (e.g., option chains)
-  - **Rate limiting prevents API throttling which would cause longer delays**
+  - **BrokerRateGate prevents API throttling which would cause longer delays**
 - Memory:
   - Avoid retaining large DataFrames beyond normalization; mapper returns domain objects
 - Concurrency:
   - EventBus serializes dispatch; avoid heavy work in handlers
   - Use separate threads for blocking I/O (as done for depth snapshots)
-  - **RateLimiter is thread-safe and efficient for concurrent access**
+  - **BrokerRateGate is thread-safe and efficient for concurrent access**
+  - **Separate rate limiters for different operations prevent contention**
 
 ## Troubleshooting Guide
 Common issues and resolutions:
 - LTP fetch failures:
   - DhanTransport raises BrokerDataError after retries; check network and broker status
   - Ensure instrument symbols are correct and mapped properly
-  - **Verify RateLimiter configuration matches Dhan API limits**
+  - **Verify BrokerRateGate configuration matches Dhan API limits**
 - WebSocket disconnects:
   - DhanMarketFeedSource emits FeedDisconnectedEvent; monitor and reconnect as needed
   - Verify credentials and permissions for market data
   - **Check reconnection rate limiter isn't too aggressive**
+  - **Ensure code 21 subscriptions are maintained across reconnections**
 - Order rejections:
   - DhanBroker enforces SEBI rules; MARKET orders converted to LIMIT for F&O
   - Check LTP availability before placing orders
@@ -657,16 +749,23 @@ Common issues and resolutions:
   - DhanAuthProvider proactively refreshes tokens; ensure PIN+TOTP configured
   - Shared token store must be accessible and not near expiry
 - **Rate limiting issues:**
-  - If API calls are being delayed excessively, verify RateLimiter configuration
+  - If API calls are being delayed excessively, verify BrokerRateGate configuration
   - Monitor for excessive throttling which may indicate misconfigured limits
-  - Check that shared RateLimiter instances are properly initialized
+  - Check that shared BrokerRateGate instances are properly initialized
+  - **RateLimited exceptions should propagate correctly without being swallowed**
+- **Feed mode issues:**
+  - All subscriptions now use code 21; no manual mode configuration needed
+  - Verify full market data is received including depth information
+  - Check that version "v2" is consistently used across feed operations
 
 Debugging tips:
 - Inspect EventBus.history for recent events
 - Log feed errors and close events from DhanMarketFeedSource
 - Validate symbol mappings and exchange codes
 - Use TradingClock to verify timestamps in replay/simulation
-- **Monitor RateLimiter._last_time to verify throttling is working**
+- **Monitor BrokerRateGate._history to verify quota usage patterns**
+- **Verify subscription tuples contain code 21 for full data**
+- **Check for RateLimited exceptions in logs to identify throttling issues**
 
 **Section sources**
 - [dhan_transport.py:80-101](file://ntrade/brokers/dhan_transport.py#L80-L101)
@@ -674,7 +773,7 @@ Debugging tips:
 - [dhan.py:304-351](file://ntrade/brokers/dhan.py#L304-L351)
 - [dhan_auth_provider.py:58-75](file://ntrade/brokers/dhan_auth_provider.py#L58-L75)
 - [event_bus.py:68-72](file://ntrade/kernel/event_bus.py#L68-L72)
-- [retry.py:70-98](file://ntrade/execution/retry.py#L70-L98)
+- [rate_limit.py:76-147](file://ntrade/execution/rate_limit.py#L76-L147)
 
 ## Conclusion
 The transport layer provides a robust, extensible abstraction for broker connectivity:
@@ -682,9 +781,11 @@ The transport layer provides a robust, extensible abstraction for broker connect
 - Strong resilience through retries, timeouts, and proactive token refresh
 - Event-driven design with deterministic timestamps for zero-parity operation
 - Scalable patterns for high-frequency data and concurrent connections
-- **Comprehensive rate limiting system preventing API throttling issues**
+- **Comprehensive quota-based rate limiting system using BrokerRateGate preventing API throttling issues**
+- **Simplified feed management with hardcoded full-data subscription code 21**
+- **Enhanced reconnection resilience with dedicated rate limiting**
 
-Adopting these patterns enables reliable integration with multiple brokers while maintaining performance and correctness. The rate limiting system ensures sustainable API usage while protecting against broker-imposed limits.
+Adopting these patterns enables reliable integration with multiple brokers while maintaining performance and correctness. The BrokerRateGate system ensures sustainable API usage while protecting against broker-imposed limits through sophisticated multi-window rate limiting. The simplified feed mode approach provides consistent market data delivery without complex mode selection logic.
 
 ## Appendices
 
@@ -695,7 +796,8 @@ Steps:
 - Create a transport wrapper similar to DhanTransport for REST calls
 - Add a feed source similar to DhanMarketFeedSource for websockets
 - Use DhanMapper-like utilities for normalization
-- **Configure appropriate RateLimiter instances for your broker's API limits**
+- **Configure appropriate BrokerRateGate instances for your broker's API limits**
+- **Consider simplified feed modes like hardcoded subscription codes for consistency**
 
 Example references:
 - [BrokerAdapter contract:25-163](file://ntrade/brokers/base.py#L25-L163)
@@ -712,47 +814,55 @@ Example references:
 - Use efficient data structures (tuples, named tuples) for immutable events
 - Batch operations where supported by the broker
 - Monitor and tune RetryPolicy parameters based on observed failure rates
-- **Configure RateLimiter appropriately to balance throughput and API compliance**
+- **Configure BrokerRateGate appropriately to balance throughput and API compliance**
+- **Use hardcoded subscription codes to eliminate mode selection overhead**
 
 ### Connection Monitoring and Metrics
 - Track feed running state and payloads_ingested counters
 - Log heartbeat intervals and disconnect reasons
 - Record event counts and latencies in the event bus history
-- **Monitor RateLimiter usage patterns and throttling frequency**
+- **Monitor BrokerRateGate usage patterns and throttling frequency**
+- **Verify subscription codes and feed versions for consistency**
 
 References:
 - [DhanMarketFeedSource metrics:124-126](file://ntrade/sources/dhan_feed.py#L124-L126)
 - [EventBus history:68-72](file://ntrade/kernel/event_bus.py#L68-L72)
-- [RateLimiter implementation:70-98](file://ntrade/execution/retry.py#L70-L98)
+- [BrokerRateGate implementation:76-147](file://ntrade/execution/rate_limit.py#L76-L147)
 
 ### Debugging Tools for Network Issues
 - Enable logging for feed errors and close events
 - Inspect EventBus.history for event sequences
 - Validate symbol mappings and exchange codes
 - Use TradingClock to verify timestamps in replay scenarios
-- **Check RateLimiter._last_time to verify throttling behavior**
+- **Check BrokerRateGate._history to verify throttling behavior**
+- **Verify subscription tuples contain expected codes (code 21 for full data)**
+- **Monitor for RateLimited exceptions to identify throttling issues**
 
 References:
 - [Feed error logging:215-224](file://ntrade/sources/dhan_feed.py#L215-L224)
 - [EventBus error handling:54-66](file://ntrade/kernel/event_bus.py#L54-L66)
-- [RateLimiter debug info:70-98](file://ntrade/execution/retry.py#L70-L98)
+- [BrokerRateGate debug info:76-147](file://ntrade/execution/rate_limit.py#L76-L147)
 
 ### Scalability Considerations
 - Multiple concurrent connections:
   - Use separate feed instances per broker/account
   - Isolate event handlers to prevent contention
-  - **Consider shared vs. separate RateLimiter instances per connection**
+  - **Consider shared vs. separate BrokerRateGate instances per connection**
+  - **Use consistent subscription codes across all connections**
 - High-frequency processing:
   - Offload heavy computations to background workers
   - Use non-blocking I/O where possible
   - Monitor memory usage and garbage collection
-  - **Tune RateLimiter settings based on expected request patterns**
+  - **Tune BrokerRateGate settings based on expected request patterns**
+  - **Simplified feed modes reduce per-request overhead**
 
 ### Rate Limiting Best Practices
-- Configure appropriate calls_per_second based on broker API limits
-- Use separate RateLimiter instances for different types of operations
+- Configure appropriate quota classes and windows based on broker API limits
+- Use separate BrokerRateGate instances for different types of operations
 - Monitor throttling frequency to identify potential bottlenecks
 - Test rate limiting under load to ensure proper behavior
 - **Document API limits and rate limiting configuration for maintainability**
+- **Apply appropriate limits for different operation types (API calls vs reconnections)**
+- **Handle RateLimited exceptions properly without swallowing them**
 
 [No sources needed since this section provides general guidance]

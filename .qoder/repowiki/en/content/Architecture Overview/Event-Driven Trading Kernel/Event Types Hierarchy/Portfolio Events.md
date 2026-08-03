@@ -11,8 +11,16 @@
 - [event_bus.py](file://ntrade/kernel/event_bus.py)
 - [strategy_engine.py](file://ntrade/engines/strategy_engine.py)
 - [gate.py](file://ntrade/runner/gate.py)
-- [test_portfolio_account.py](file://tests/test_portfolio_account.py)
+- [test_paper_gate.py](file://tests/test_paper_gate.py)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Updated Equity Tracing section to reflect K-026 fix for proper position closure handling
+- Enhanced troubleshooting guide with guidance on phantom position issues
+- Added detailed explanation of how PositionUpdatedEvent with quantity=0 removes positions from tracking
+- Updated diagrams to show the improved position cleanup logic
+- Simplified equity trace logic with single conditional check for position management
 
 ## Table of Contents
 1. Introduction
@@ -87,10 +95,10 @@ EB --> SE
 - [strategy_engine.py:1-102](file://ntrade/engines/strategy_engine.py#L1-L102)
 
 ## Core Components
-- PositionUpdatedEvent: Emitted when a position’s quantity, average price, or last traded price changes due to a fill or broker reconciliation.
-- BalanceChangedEvent: Emitted when account balance changes after a fill or when reconciling with the broker’s authoritative balance.
+- PositionUpdatedEvent: Emitted when a position's quantity, average price, or last traded price changes due to a fill or broker reconciliation. **Updated**: When quantity reaches zero, the symbol is removed from position tracking to prevent phantom positions.
+- BalanceChangedEvent: Emitted when account balance changes after a fill or when reconciling with the broker's authoritative balance.
 - OrderFilledEvent: The source trigger for portfolio updates; consumed by PortfolioEngine to net positions and adjust cash.
-- PortfolioEngine: Maintains the kernel’s Portfolio and Account read models and publishes PositionUpdatedEvent and BalanceChangedEvent after each fill.
+- PortfolioEngine: Maintains the kernel's Portfolio and Account read models and publishes PositionUpdatedEvent and BalanceChangedEvent after each fill.
 - PositionSyncEngine: Reconciles broker-reported positions and balance into the kernel, emitting the same canonical portfolio events.
 - StrategyEngine: Dispatches portfolio events to strategy hooks for reactive behavior.
 - EventBus: Synchronous pub/sub backbone ensuring deterministic dispatch and history recording.
@@ -145,6 +153,7 @@ Key behaviors:
 - Averaging entry price for same-direction adds.
 - Exit-and-reverse logic when crossing zero.
 - Partial exits preserve original average price.
+- **Updated**: When position quantity reaches zero, the position is removed from the portfolio and PositionUpdatedEvent is published with quantity=0.
 - Charges include commission and statutory fees per leg.
 
 ```mermaid
@@ -157,9 +166,12 @@ Direction -- Yes --> Average["Re-average avg_price<br/>update quantity"]
 Direction -- No --> Cross{"Cross zero?"}
 Cross -- Yes --> Reverse["Exit and reverse<br/>set avg_price=fill_price"]
 Cross -- No --> Partial["Partial exit<br/>keep avg_price"]
-Average --> UpdateCash["Update account balance<br/>BUY: -notional -charges<br/>SELL: +notional -charges"]
-Reverse --> UpdateCash
-Partial --> UpdateCash
+Average --> CheckZero{"Quantity == 0?"}
+Reverse --> CheckZero
+Partial --> CheckZero
+CheckZero -- Yes --> RemovePos["Remove position from portfolio<br/>Publish qty=0 event"]
+CheckZero -- No --> UpdateCash["Update account balance<br/>BUY: -notional -charges<br/>SELL: +notional -charges"]
+RemovePos --> UpdateCash
 Create --> UpdateCash
 UpdateCash --> EmitPos["Publish PositionUpdatedEvent"]
 EmitPos --> EmitBal["Publish BalanceChangedEvent"]
@@ -174,7 +186,7 @@ EmitBal --> End(["Done"])
 
 ### Position Sync Engine
 Responsibilities:
-- Periodically reconcile broker-reported positions and balance into the kernel’s read models.
+- Periodically reconcile broker-reported positions and balance into the kernel's read models.
 - Upsert positions, drop positions no longer reported, and update metadata (e.g., strategy origin).
 - Publish PositionUpdatedEvent whenever a position changes and BalanceChangedEvent when balance differs from local.
 
@@ -292,30 +304,34 @@ SE->>Strat : on_balance_changed(event)
 - [strategy_engine.py:1-102](file://ntrade/engines/strategy_engine.py#L1-L102)
 
 ### Equity Tracing Using Portfolio Events
-The gate utility reconstructs equity from the event stream:
+The gate utility reconstructs equity from the event stream with improved position cleanup:
 - Tracks per-symbol (quantity, ltp) on PositionUpdatedEvent.
+- **Updated**: Uses a simplified single conditional check that either writes position or removes it, eliminating redundant operations and preventing stale position entries from inflating equity calculations.
 - Computes equity on BalanceChangedEvent as cash + sum(quantity * ltp).
 - Yields peak and equity points for drawdown analysis.
 
-This ensures consistency with RiskEngine-equivalent equity calculations.
+This ensures consistency with RiskEngine-equivalent equity calculations and prevents phantom position inflation through efficient dictionary operations.
 
 ```mermaid
 flowchart TD
 Init(["Start with initial_cash"]) --> Loop["Iterate bus.history"]
 Loop --> Type{"Event type?"}
-Type -- PositionUpdatedEvent --> TrackPos["Update positions map<br/>remove if qty==0"]
+Type -- PositionUpdatedEvent --> CheckQty{"quantity > 0?"}
+CheckQty -- Yes --> AddPos["Add/update position<br/>positions[symbol] = (qty, ltp)"]
+CheckQty -- No --> RemovePos["Remove position<br/>positions.pop(symbol, None)"]
 Type -- BalanceChangedEvent --> ComputeEq["eq = balance + Σ(q*ltp)<br/>peak = max(peak, eq)<br/>yield (peak, eq)"]
 Type -- Other --> Next["Ignore"]
-TrackPos --> Next
+AddPos --> Next
+RemovePos --> Next
 ComputeEq --> Next
 Next --> Loop
 ```
 
 **Diagram sources**
-- [gate.py:1-79](file://ntrade/runner/gate.py#L1-L79)
+- [gate.py:1-83](file://ntrade/runner/gate.py#L1-L83)
 
 **Section sources**
-- [gate.py:1-79](file://ntrade/runner/gate.py#L1-L79)
+- [gate.py:1-83](file://ntrade/runner/gate.py#L1-L83)
 
 ## Dependency Analysis
 - PortfolioEngine depends on OrderFilledEvent and publishes PositionUpdatedEvent and BalanceChangedEvent.
@@ -358,8 +374,7 @@ EB --> SE
 - History buffer size is configurable; ensure sufficient capacity for replay and audit needs.
 - Avoid heavy computation inside event handlers; offload to background tasks if necessary.
 - Minimize redundant state updates by checking deltas before publishing events (already implemented in PositionSyncEngine).
-
-[No sources needed since this section provides general guidance]
+- **Updated**: Position cleanup in equity tracing uses efficient dictionary operations with a single conditional check to prevent memory leaks from stale positions and eliminate redundant operations.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -367,14 +382,13 @@ Common issues and remedies:
 - Incorrect balance drift: Ensure statutory charges and commissions are included in OrderFilledEvent fields and that both BUY and SELL branches apply charges correctly.
 - Stale positions after broker reconnect: Confirm PositionSyncEngine runs regularly and handles transient errors gracefully.
 - Inconsistent equity traces: Ensure equity is computed only on BalanceChangedEvent after PositionUpdatedEvent has been processed.
+- **Updated**: Phantom positions causing inflated equity: Verify that PositionUpdatedEvent with quantity=0 is properly handled to remove symbols from position tracking. The _equity_trace() function now correctly removes closed positions from the tracking dictionary using a simplified conditional check that either writes position or removes it, preventing stale position entries from inflating equity calculations.
 
 **Section sources**
 - [portfolio_engine.py:1-69](file://ntrade/engines/portfolio_engine.py#L1-L69)
 - [position_sync.py:1-110](file://ntrade/engines/position_sync.py#L1-L110)
 - [event_bus.py:1-81](file://ntrade/kernel/event_bus.py#L1-L81)
-- [gate.py:1-79](file://ntrade/runner/gate.py#L1-L79)
+- [gate.py:1-83](file://ntrade/runner/gate.py#L1-L83)
 
 ## Conclusion
-Portfolio events form a robust, event-driven foundation for tracking holdings, cash, and performance. By relying on PositionUpdatedEvent and BalanceChangedEvent emitted deterministically from fills and broker reconciliation, consumers can maintain consistent state, compute accurate metrics, and react promptly to changes. Best practices include subscribing to canonical events, avoiding direct polling, handling transient failures gracefully, and computing equity only on settled balance updates.
-
-[No sources needed since this section summarizes without analyzing specific files]
+Portfolio events form a robust, event-driven foundation for tracking holdings, cash, and performance. By relying on PositionUpdatedEvent and BalanceChangedEvent emitted deterministically from fills and broker reconciliation, consumers can maintain consistent state, compute accurate metrics, and react promptly to changes. Best practices include subscribing to canonical events, avoiding direct polling, handling transient failures gracefully, and computing equity only on settled balance updates. **Updated**: The recent improvement to position cleanup ensures that closed positions are properly removed from tracking through a simplified conditional check, preventing phantom positions from inflating equity calculations and maintaining accurate portfolio state consistency. The enhanced equity tracing logic eliminates redundant operations and provides more reliable equity calculations for paper-to-live validation.

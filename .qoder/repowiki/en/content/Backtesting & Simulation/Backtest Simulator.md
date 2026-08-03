@@ -15,6 +15,13 @@
 - [test_futures_carry_costs.py](file://tests/test_futures_carry_costs.py)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated BacktestSimulator default execution behavior from SimulatedExecution to BarAwareExecution
+- Enhanced documentation to reflect realistic limit order filling based on bar price action
+- Added detailed explanation of BarAwareExecution's role in zero-parity testing
+- Updated configuration examples to show the new default behavior
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -28,13 +35,15 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document explains the BacktestSimulator component and how it provides zero-parity testing across live, replay, and backtest modes. It details the BarAwareExecution system for realistic limit order filling based on bar price action, the fill model configuration (slippage, commission, statutory costs), partial fill handling via deterministic fills, and the full backtest lifecycle from initialization through execution to result analysis. It also covers historical data loading, event generation, strategy execution timing, and integration with the trading kernel and engine stack during backtesting mode.
+This document explains the BacktestSimulator component and how it provides zero-parity testing across live, replay, and backtest modes. **Updated**: The BacktestSimulator now defaults to BarAwareExecution instead of SimulatedExecution, ensuring limit orders only fill when the bar price range includes the limit price. This enhancement provides more realistic limit order filling based on bar price action rather than simple tick matching, bringing backtest behavior closer to live trading conditions.
+
+The system details the BarAwareExecution system for realistic limit order filling based on bar price action, the fill model configuration (slippage, commission, statutory costs), partial fill handling via deterministic fills, and the full backtest lifecycle from initialization through execution to result analysis. It also covers historical data loading, event generation, strategy execution timing, and integration with the trading kernel and engine stack during backtesting mode.
 
 ## Project Structure
 The backtesting subsystem is implemented under ntrade/backtest and integrates tightly with the execution and kernel layers:
 - BacktestSimulator orchestrates a TradingKernel configured for backtest mode, drives events from OHLCV bars, and aggregates results.
-- BarAwareExecution extends SimulatedExecution to enforce bar-aware limit fills using FillPolicy.
-- SimulatedExecution implements the deterministic fill pipeline used by paper trading, replay, and backtest.
+- **Updated**: BarAwareExecution is now the default execution target, extending SimulatedExecution to enforce bar-aware limit fills using FillPolicy.
+- SimulatedExecution implements the deterministic fill pipeline used by paper trading, replay, and backtest as a fallback.
 - Costs models define slippage, commissions, Indian statutory charges, and futures carry/roll costs.
 - The TradingKernel wires the engine stack (market, candle, indicator, strategy, risk, portfolio) and the execution router.
 - Clock abstractions ensure deterministic time control for replay and simulation.
@@ -43,11 +52,11 @@ The backtesting subsystem is implemented under ntrade/backtest and integrates ti
 graph TB
 subgraph "Backtest"
 BS["BacktestSimulator"]
-FAE["BarAwareExecution"]
+BAE["BarAwareExecution<br/>(Default)"]
 FP["FillPolicy"]
+SE["SimulatedExecution<br/>(Fallback)"]
 end
 subgraph "Execution"
-SE["SimulatedExecution"]
 ER["ExecutionRouter"]
 CM["Cost Models<br/>Slippage/Commission/Statutory/FuturesCarry"]
 end
@@ -66,8 +75,8 @@ T["TickEvent"]
 end
 BS --> TK
 TK --> ER
-ER --> FAE
-FAE --> SE
+ER --> BAE
+BAE --> SE
 SE --> CM
 BS --> Q
 BS --> T
@@ -80,7 +89,7 @@ TK --> RE
 ```
 
 **Diagram sources**
-- [simulator.py:58-113](file://ntrade/backtest/simulator.py#L58-L113)
+- [simulator.py:98-110](file://ntrade/backtest/simulator.py#L98-L110)
 - [fills.py:44-72](file://ntrade/backtest/fills.py#L44-L72)
 - [execution_simulator.py:43-147](file://ntrade/execution/simulator.py#L43-L147)
 - [costs.py:21-64](file://ntrade/execution/costs.py#L21-L64)
@@ -92,9 +101,9 @@ TK --> RE
 - [session.py:38-101](file://ntrade/kernel/session.py#L38-L101)
 
 ## Core Components
-- BacktestSimulator: Initializes a TradingKernel in backtest mode, registers an instrument, configures the execution target (BarAwareExecution or SimulatedExecution), publishes QuoteEvent and TickEvent per bar, accrues futures carrying costs, computes mark-to-market equity, and returns BacktestResult aggregating trades, equity curve, and cost totals.
-- BarAwareExecution: Extends SimulatedExecution to intercept non-MARKET orders and apply bar-aware limit logic via FillPolicy; MARKET orders pass through unchanged.
-- SimulatedExecution: Deterministic fill engine that applies slippage, commission, and statutory costs; supports delivery detection for equities; publishes OrderAcceptedEvent and OrderFilledEvent; tracks fills.
+- BacktestSimulator: Initializes a TradingKernel in backtest mode, registers an instrument, configures the execution target (**Updated**: defaults to BarAwareExecution with realistic limit fills), publishes QuoteEvent and TickEvent per bar, accrues futures carrying costs, computes mark-to-market equity, and returns BacktestResult aggregating trades, equity curve, and cost totals.
+- **Updated**: BarAwareExecution: Now the default execution target that extends SimulatedExecution to intercept non-MARKET orders and apply bar-aware limit logic via FillPolicy; MARKET orders pass through unchanged.
+- SimulatedExecution: Deterministic fill engine that applies slippage, commission, and statutory costs; supports delivery detection for equities; publishes OrderAcceptedEvent and OrderFilledEvent; tracks fills; serves as the base class for BarAwareExecution.
 - FillPolicy: Encapsulates market-on behavior and limit-fill rules based on bar open/high/low/close.
 - Cost Models: SlippageModel (FixedSlippage, PercentageSlippage), CommissionModel (FlatCommission, PercentageCommission), IndianStatutoryCosts (H6 charges), FuturesCarryCosts (daily carry and roll).
 - TradingKernel: Wires engines and execution router; supports live/replay/backtest modes with identical stack; manages session lifecycle and replay.
@@ -110,7 +119,7 @@ TK --> RE
 Zero-parity is achieved by keeping the same TradingKernel + engine stack + execution target across live, replay, and backtest. Differences are limited to:
 - Event source: Live broker feed vs ReplayClock-driven events vs BacktestSimulator-generated Quote/Tick events from OHLCV bars.
 - Clock: LiveClock vs ReplayClock vs SimulationClock.
-- Execution target: BrokerExecution (live) vs SimulatedExecution (paper/backtest/replay) vs BarAwareExecution (backtest limit fills).
+- **Updated**: Execution target: BrokerExecution (live) vs SimulatedExecution (paper/backtest/replay) vs **BarAwareExecution (default for backtest limit fills)**.
 
 ```mermaid
 sequenceDiagram
@@ -124,7 +133,8 @@ participant IE as "IndicatorEngine"
 participant STR as "StrategyEngine"
 participant OE as "OrderEngine"
 participant ER as "ExecutionRouter"
-participant BE as "BarAwareExecution/SimulatedExecution"
+participant BAE as "BarAwareExecution<br/>(Default)"
+participant SE as "SimulatedExecution<br/>(Base)"
 participant PE as "PortfolioEngine"
 loop For each bar
 Data-->>BS : row {timestamp, open, high, low, close, volume}
@@ -137,9 +147,15 @@ IE->>IE : compute indicators on closed candle
 STR->>STR : on_candle_closed/on_tick callbacks
 STR-->>OE : emit_signal -> OrderIntentEvent
 OE->>ER : submit(intent)
-ER->>BE : submit(intent)
-BE-->>BUS : OrderAcceptedEvent
-BE-->>BUS : OrderFilledEvent(fill_price, commission, statutory)
+ER->>BAE : submit(intent)
+alt LIMIT order
+BAE->>BAE : Check FillPolicy against bar
+BAE-->>BUS : OrderRejectedEvent if not touched
+else MARKET order
+BAE->>SE : delegate to parent
+SE-->>BUS : OrderAcceptedEvent
+SE-->>BUS : OrderFilledEvent(fill_price, commission, statutory)
+end
 PE->>PE : update positions/balance
 BS->>BS : _apply_futures_costs(ts)
 BS->>BS : _mark_to_market(close)
@@ -159,14 +175,14 @@ BS->>BS : stop kernel and collect results
 Responsibilities:
 - Initialize TradingKernel in backtest mode with SimulationClock and timeframe.
 - Register instrument (default Equity if none provided).
-- Configure execution target: BarAwareExecution when fill_policy is provided, else SimulatedExecution.
+- **Updated**: Configure execution target: **BarAwareExecution by default** when no custom kernel is provided, providing realistic limit order fills; SimulatedExecution serves as the base implementation.
 - Publish QuoteEvent and TickEvent per bar to drive the engine stack deterministically.
 - Accrue futures holding-period costs after bar state updates positions.
 - Compute mark-to-market equity at each bar and finalize results.
 
 Key behaviors:
 - Zero-parity: Uses the same kernel and engine stack as live; only clock and execution differ.
-- Deterministic fills: No randomness; fills are computed from bar ranges and policy.
+- **Enhanced**: Deterministic fills with realistic limit order behavior: No randomness; fills are computed from bar ranges and policy; limit orders only fill when bar price range includes the limit price.
 - Futures carry/roll: Optional modeling via FuturesCarryCosts applied daily within window and once on expiry crossing.
 
 ```mermaid
@@ -199,10 +215,10 @@ Results --> End(["return BacktestResult"])
 - [simulator.py:194-220](file://ntrade/backtest/simulator.py#L194-L220)
 
 ### BarAwareExecution and FillPolicy
-BarAwareExecution wraps SimulatedExecution to enforce bar-aware limit fills:
+**Updated**: BarAwareExecution is now the default execution target for realistic limit order fills:
 - Non-MARKET orders: consult FillPolicy against current bar; if not touched, return OrderRejectedEvent with reason "limit not touched".
 - If touched: adjust intent price to bar-aware fill price (better of limit and open depending on side) and delegate to parent submit.
-- MARKET orders: bypass policy and execute via parent.
+- MARKET orders: bypass policy and execute via parent SimulatedExecution.
 
 FillPolicy rules:
 - Market orders fill at configured bar price (open or close).
@@ -324,14 +340,15 @@ TradingKernel wires the engine stack identically across modes:
 - OrderEngine routes intents via ExecutionRouter to execution targets.
 - PortfolioEngine updates positions and balances upon fills.
 
-BacktestSimulator injects BarAwareExecution or SimulatedExecution into the router and sets the default target.
+**Updated**: BacktestSimulator injects BarAwareExecution (default) or SimulatedExecution into the router and sets the default target.
 
 ```mermaid
 sequenceDiagram
 participant BS as "BacktestSimulator"
 participant TK as "TradingKernel"
 participant ER as "ExecutionRouter"
-participant BE as "BarAwareExecution/SimulatedExecution"
+participant BAE as "BarAwareExecution<br/>(Default)"
+participant SE as "SimulatedExecution<br/>(Base)"
 participant OE as "OrderEngine"
 participant PE as "PortfolioEngine"
 BS->>TK : register(Equity/Future)
@@ -341,9 +358,15 @@ loop per bar
 BS->>TK.bus : publish QuoteEvent/TickEvent
 TK->>OE : process events -> OrderIntentEvent
 OE->>ER : submit(intent)
-ER->>BE : submit(intent)
-BE-->>TK.bus : OrderAcceptedEvent
-BE-->>TK.bus : OrderFilledEvent
+ER->>BAE : submit(intent)
+alt LIMIT order
+BAE->>BAE : Check FillPolicy
+BAE-->>TK.bus : OrderRejectedEvent if not touched
+else MARKET order
+BAE->>SE : delegate to parent
+SE-->>TK.bus : OrderAcceptedEvent
+SE-->>TK.bus : OrderFilledEvent
+end
 TK->>PE : update positions/balance
 end
 BS->>TK : stop(reason="backtest complete")
@@ -372,7 +395,7 @@ BS->>TK : stop(reason="backtest complete")
 
 ### Backtest Lifecycle Examples
 - Basic setup: Create BacktestSimulator with timeframe, initial cash, optional statutory=None for zero-cost mode; register strategy; run with OHLCV DataFrame; inspect BacktestResult fields.
-- Limit fills: Use FillPolicy(market_on="close"/"open"); limit orders only fill if bar range touches limit; fill price determined by policy rules.
+- **Updated**: Limit fills: Use FillPolicy(market_on="close"/"open"); limit orders only fill if bar range touches limit; fill price determined by policy rules; **now enabled by default**.
 - Commissions: Configure PercentageCommission(pct=...) to simulate proportional fees; verify commissions_total in results.
 - Futures carry: Provide FuturesCarryCosts(risk_free, dividend_yield, roll_pct, carry_window_days); simulator accrues daily carry within window and one-off roll on expiry crossing.
 
@@ -393,7 +416,7 @@ Examples are validated in tests:
 BacktestSimulator depends on:
 - TradingKernel for engine stack wiring and lifecycle.
 - ExecutionRouter for routing order intents to execution targets.
-- BarAwareExecution or SimulatedExecution for deterministic fills.
+- **Updated**: BarAwareExecution (default) or SimulatedExecution for deterministic fills with realistic limit order behavior.
 - Cost models for slippage, commission, statutory, and futures carry.
 - Events (QuoteEvent, TickEvent, OrderFilledEvent) for driving engines and aggregating results.
 
@@ -401,8 +424,9 @@ BacktestSimulator depends on:
 graph LR
 BS["BacktestSimulator"] --> TK["TradingKernel"]
 BS --> ER["ExecutionRouter"]
-ER --> BE["BarAwareExecution / SimulatedExecution"]
-BE --> CM["Cost Models"]
+ER --> BAE["BarAwareExecution<br/>(Default)"]
+BAE --> SE["SimulatedExecution<br/>(Base)"]
+SE --> CM["Cost Models"]
 BS --> EV["QuoteEvent / TickEvent"]
 TK --> ENG["Engines (Market/Candle/Indicator/Strategy/Risk/Portfolio)"]
 ```
@@ -420,18 +444,17 @@ TK --> ENG["Engines (Market/Candle/Indicator/Strategy/Risk/Portfolio)"]
 ## Performance Considerations
 - Deterministic execution: No network calls; fills computed locally from bar ranges and policies.
 - Efficient event publishing: QuoteEvent and TickEvent per bar minimize overhead while preserving fidelity.
+- **Enhanced**: Realistic limit order processing: BarAwareExecution adds minimal overhead for limit order validation while maintaining performance.
 - Futures carry accrual: Applied once per day per position; bounded by carry window to avoid double-counting.
 - Equity curve computation: Simple accumulation per bar; O(n) over number of bars.
 - Memory usage: Stores fills and curve rows; consider streaming large datasets if memory constrained.
-
-[No sources needed since this section provides general guidance]
 
 ## Troubleshooting Guide
 Common issues and resolutions:
 - Empty or invalid data: Ensure OHLCV DataFrame is non-empty and contains required columns; BacktestSimulator raises ValueError otherwise.
 - Unknown instrument: Verify instrument registration; SimulatedExecution rejects intents for unknown symbols.
 - No market price: MARKET orders require valid LTP; ensure QuoteEvent sets ltp correctly.
-- Limit orders not filling: Check bar ranges and limit prices; use FillPolicy.limit_fill to validate touch conditions.
+- **Updated**: Limit orders not filling: Check bar ranges and limit prices; use FillPolicy.limit_fill to validate touch conditions; **remember that limit orders now require bar price trade-through by default**.
 - Unexpected commissions/statutory costs: Confirm cost model configuration; STATUTORY_DEFAULT enables realistic Indian charges; None disables them.
 - Futures costs not applied: Ensure FuturesCarryCosts is provided and positions are held within carry window; check expiry dates.
 
@@ -442,9 +465,7 @@ Common issues and resolutions:
 - [costs.py:276-285](file://ntrade/execution/costs.py#L276-L285)
 
 ## Conclusion
-BacktestSimulator delivers zero-parity backtesting by reusing the exact TradingKernel and engine stack as live trading, differing only in event source, clock, and execution target. BarAwareExecution ensures realistic limit fills based on bar price action, while SimulatedExecution provides deterministic fills with configurable slippage, commissions, and statutory costs. The lifecycle from initialization through execution to result analysis is fully deterministic, enabling reliable validation of strategies across live, replay, and backtest modes.
-
-[No sources needed since this section summarizes without analyzing specific files]
+BacktestSimulator delivers zero-parity backtesting by reusing the exact TradingKernel and engine stack as live trading, differing only in event source, clock, and execution target. **Enhanced**: BarAwareExecution ensures realistic limit fills based on bar price action by default, while SimulatedExecution provides deterministic fills with configurable slippage, commissions, and statutory costs. The lifecycle from initialization through execution to result analysis is fully deterministic, enabling reliable validation of strategies across live, replay, and backtest modes with improved realism for limit order behavior.
 
 ## Appendices
 
@@ -454,9 +475,10 @@ BacktestSimulator delivers zero-parity backtesting by reusing the exact TradingK
   - Register strategy and run with OHLCV DataFrame.
   - Inspect BacktestResult.trades, equity_curve, commissions_total, max_drawdown_pct.
 
-- Limit fills with bar awareness:
+- **Updated**: Limit fills with bar awareness:
   - Use FillPolicy(market_on="close").
   - Emit LIMIT signals; policy determines fill price or rejection.
+  - **Note**: BarAwareExecution is now the default, so limit orders automatically require bar price trade-through.
 
 - Commissions and drawdown:
   - Configure PercentageCommission(pct=0.01).
@@ -472,7 +494,7 @@ BacktestSimulator delivers zero-parity backtesting by reusing the exact TradingK
 
 ### Integration with Replay and Live Modes
 - ReplayEngine runs recorded events through TradingKernel with ReplayClock for zero-parity replay.
-- Live mode uses LiveClock and BrokerExecution; backtest uses SimulationClock and SimulatedExecution/BarAwareExecution.
+- Live mode uses LiveClock and BrokerExecution; backtest uses SimulationClock and **BarAwareExecution (default)**/SimulatedExecution.
 - Same event bus and engine stack ensure consistent behavior across modes.
 
 **Section sources**

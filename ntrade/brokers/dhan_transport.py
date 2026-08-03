@@ -17,6 +17,7 @@ The transport holds a reference to the authenticated Tradehull instance
 from __future__ import annotations
 
 import threading
+import time
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -130,6 +131,17 @@ class DhanTransport:
             data = self._invoke(
                 Quota.QUOTE, lambda: self._tsl.get_ltp_data(names=names),
             )
+            # The Tradehull SDK does NOT raise on a failed fetch — it prints
+            # "Exception at calling ltp as {...}" and returns a failure envelope
+            # like {'status': 'failure', 'remarks': {...}, 'data': ''}. Treat any
+            # non-success envelope as a hard failure so a dead/blocked fetch can
+            # never surface a stale or seed value as a valid LTP (B-005 contract).
+            if isinstance(data, dict) and str(data.get("status", "")).lower() == "failure":
+                raise ValueError(f"LTP fetch failed: {data}")
+            # A non-dict payload (e.g. a stale float from a prior call) is also
+            # undecodable — refuse it rather than trusting an unverifiable number.
+            if not isinstance(data, dict) or names[0] not in data:
+                raise ValueError(f"LTP response missing symbol {names[0]}: {data!r}")
             candidate = float(data.get(names[0], 0.0) or 0.0)
             if candidate > 0:
                 return candidate
@@ -168,8 +180,31 @@ class DhanTransport:
             pass
         return quote
 
-    def get_depth(self, symbol: str, exchange: str, timeout: float = 5.0, *, now: datetime | None = None) -> MarketDepth | None:
-        """20-level market depth via websocket snapshot (timeout-bounded)."""
+    def get_depth(self, symbol: str, exchange: str, timeout: float = 8.0, *,
+                  now: datetime | None = None, attempts: int = 2,
+                  settle: float = 0.5) -> MarketDepth | None:
+        """20-level market depth via websocket snapshot (retried, timeout-bounded).
+
+        Dhan streams depth over a websocket; the snapshot can hang or come
+        back empty on the first try (observed live on NSE equities). The frame
+        read is bounded by a timeout thread per attempt, and the whole snapshot
+        is retried ``attempts`` times with a short ``settle`` between attempts
+        so the websocket re-arms before re-subscribing.
+
+        A DH-904 (:class:`RateLimited`) is never retried (B-011 no-amplify) —
+        it propagates immediately even on the first attempt.
+        """
+        for attempt in range(attempts):
+            depth = self._depth_snapshot(symbol, exchange, timeout, now)
+            if depth is not None:
+                return depth
+            if attempt < attempts - 1:
+                time.sleep(settle)
+        return None
+
+    def _depth_snapshot(self, symbol: str, exchange: str, timeout: float,
+                        now: datetime | None) -> MarketDepth | None:
+        """One bounded websocket snapshot attempt; None on hang/empty client."""
         try:
             dc = self._invoke(
                 Quota.DATA,
@@ -193,6 +228,11 @@ class DhanTransport:
             t.start()
             t.join(timeout)
             if "frames" not in result:
+                # Never let a quota violation be swallowed by a timed-out
+                # snapshot: a DH-904 surfaces as RateLimited, not a None.
+                err = result.get("error")
+                if isinstance(err, RateLimited):
+                    raise err
                 return None
             bid_df, ask_df = result["frames"]
             if bid_df is None or bid_df.empty:

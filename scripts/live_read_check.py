@@ -7,6 +7,7 @@ No orders are placed; every call is read-only.
 """
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -14,6 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ntrade.kernel.trading_session import TradingSession  # noqa: E402
 
 RESULTS: list[tuple[str, str, str]] = []
+
+# T-036: the B-012 connect-time login probe acquires the single 1/s QUOTE
+# slot, so a snapshot taken immediately after connect is inside that same
+# window and the quota row reports quote=1/1 (spurious DEGRADED). Settle past
+# the 1s burst window before snapshotting so the row reflects steady-state
+# usage, not the login probe itself.
+RATE_GATE_SETTLE_S = 1.05
 
 
 def quota_status_row(gate) -> tuple[str, str, str]:
@@ -107,6 +115,8 @@ def main(argv: list[str] | None = None) -> int:
         # T-036: report quota headroom from the session's shared rate gate.
         gate = getattr(session.broker, "_gate", None)
         if gate is not None:
+            # Let the login probe's 1/s QUOTE burst window roll off (T-036).
+            time.sleep(RATE_GATE_SETTLE_S)
             RESULTS.append(quota_status_row(gate))
     except Exception as exc:  # noqa: BLE001
         RESULTS.append(("connect", "FAIL", f"{type(exc).__name__}: {exc}"))

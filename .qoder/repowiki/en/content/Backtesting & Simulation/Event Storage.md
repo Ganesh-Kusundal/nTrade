@@ -13,7 +13,15 @@
 - [resilient.py](file://ntrade/kernel/resilient.py)
 - [test_kernel_recording.py](file://tests/test_kernel_recording.py)
 - [test_hardening_regression.py](file://tests/test_hardening_regression.py)
+- [test_replay_backtest.py](file://tests/test_replay_backtest.py)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Enhanced crash recovery capabilities with torn JSONL line handling
+- Added robust error handling for JSON decode failures during event loading
+- Improved resilience against partial writes during system crashes
+- Updated troubleshooting guide with new error handling behavior
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -30,8 +38,10 @@
 ## Introduction
 This document provides comprehensive documentation for the EventStore component, which implements append-only event persistence for audit trails and crash recovery. It covers the event serialization format, storage backends, indexing strategies, and query APIs. It also explains how events are structured with timestamps and metadata to enable complete market session reconstruction, including examples for live recording, historical querying, and custom backend implementation. Finally, it outlines schema evolution and migration considerations for long-term compatibility.
 
+**Updated** Enhanced with robust crash recovery capabilities that gracefully handle torn JSONL lines and JSON decode errors, ensuring system resilience during unexpected shutdowns.
+
 ## Project Structure
-The EventStore is part of the nTrade storage subsystem and integrates tightly with the kernel’s event bus and trading lifecycle. The core files involved include:
+The EventStore is part of the nTrade storage subsystem and integrates tightly with the kernel's event bus and trading lifecycle. The core files involved include:
 - Event model definitions (base and domain-specific events)
 - EventStore implementation and JSONL persistence
 - Kernel wiring that subscribes all events to the store
@@ -97,6 +107,7 @@ Key responsibilities:
 - Append-only JSONL persistence with flush-on-write
 - Query APIs for filtering by type and symbol
 - Recovery utilities for open-order deltas and causal event streams
+- **Enhanced**: Robust error handling for corrupted or incomplete JSONL files during crash recovery
 
 **Section sources**
 - [base.py:16-22](file://ntrade/events/base.py#L16-L22)
@@ -110,7 +121,7 @@ Key responsibilities:
 - [resilient.py:43-78](file://ntrade/kernel/resilient.py#L43-L78)
 
 ## Architecture Overview
-The EventStore sits between the kernel’s event bus and persistent storage. All events published through the bus are appended to the store. For crash recovery, the resilient kernel replays a curated subset of events (market data and fills) to reconstruct state deterministically without re-trading.
+The EventStore sits between the kernel's event bus and persistent storage. All events published through the bus are appended to the store. For crash recovery, the resilient kernel replays a curated subset of events (market data and fills) to reconstruct state deterministically without re-trading.
 
 ```mermaid
 sequenceDiagram
@@ -322,6 +333,11 @@ Event <|-- SessionStoppedEvent
 - Querying: events(event_type, symbol), market_events(), replay()
 - Recovery: recovery_events() returns causally ordered market + fills; open_order_deltas() reconstructs partial-fill state
 
+**Updated** Enhanced with robust crash recovery capabilities:
+- Gracefully handles torn JSONL lines caused by crashes mid-append
+- Catches JSON decode errors and logs warnings while continuing to load valid events
+- Ensures system resilience even when storage files are partially corrupted
+
 ```mermaid
 flowchart TD
 Start([Function Entry]) --> ValidatePath["Check if path provided"]
@@ -350,6 +366,12 @@ InMemory --> Return(["Return self"])
   - Rebuilds open-order deltas to resume partial fills correctly
   - Ensures execution sequence numbers do not collide with recovered IDs
 
+**Updated** Enhanced crash recovery workflow:
+- EventStore now tolerates corrupted JSONL files during loading
+- Torn lines are skipped with warning logs instead of causing failures
+- Recovery process continues with valid events even if some data is lost
+- System maintains operational integrity despite storage corruption
+
 ```mermaid
 sequenceDiagram
 participant Store as "EventStore"
@@ -374,7 +396,7 @@ Resilient->>Kernel : restore_open_orders(deltas)
 - [session.py:133-145](file://ntrade/kernel/session.py#L133-L145)
 
 **Section sources**
-- [session.py:71-77](file://ntrade/kernel/session.py#L71-L77)
+- [session.py:71-77](file://ntrade/kernel/session.py#L71-77)
 - [resilient.py:43-78](file://ntrade/kernel/resilient.py#L43-L78)
 - [resilient.py:105-122](file://ntrade/kernel/resilient.py#L105-L122)
 
@@ -389,8 +411,14 @@ Resilient->>Kernel : restore_open_orders(deltas)
   - Use replay() to iterate chronologically
 - Custom storage backend:
   - Implement a class with append(event) and extend(events) semantics
-  - Optionally implement persistence and deserialization compatible with EventStore’s expectations
+  - Optionally implement persistence and deserialization compatible with EventStore's expectations
   - Integrate by substituting the store passed to TradingKernel
+
+**Updated** Crash recovery usage patterns:
+- EventStore automatically handles corrupted files during initialization
+- Warning logs indicate when torn lines are skipped during recovery
+- Valid events continue to load even if some data is lost due to crashes
+- No manual intervention required for basic crash recovery scenarios
 
 **Section sources**
 - [test_kernel_recording.py:41-94](file://tests/test_kernel_recording.py#L41-L94)
@@ -399,7 +427,7 @@ Resilient->>Kernel : restore_open_orders(deltas)
 - [event_store.py:212-214](file://ntrade/storage/event_store.py#L212-L214)
 
 ## Dependency Analysis
-EventStore depends on event types for serialization/deserialization and is integrated into the kernel’s event bus. ResilientKernel depends on EventStore for recovery.
+EventStore depends on event types for serialization/deserialization and is integrated into the kernel's event bus. ResilientKernel depends on EventStore for recovery.
 
 ```mermaid
 graph LR
@@ -433,6 +461,7 @@ Resilient["kernel.resilient.ResilientKernel"] --> Store
 - In-memory list maintains O(1) appends; queries are linear scans, suitable for moderate datasets.
 - Causal ordering uses timestamp plus append index to avoid inversion when timestamps tie.
 - Recovery stream filters to market and fill events to minimize replay cost.
+- **Enhanced**: Error handling adds minimal overhead during file loading; corrupted lines are skipped quickly without affecting performance.
 - Potential optimizations:
   - Batch writes with periodic flushing to reduce I/O frequency
   - Partitioning by symbol or date to improve query locality
@@ -451,15 +480,28 @@ Resilient["kernel.resilient.ResilientKernel"] --> Store
 - Crash recovery mismatches:
   - Ensure recovery runs before registering strategies to avoid re-trading
   - Confirm open-order deltas are rebuilt to resume partial fills correctly
+- **New**: Corrupted JSONL files:
+  - EventStore now automatically handles torn lines with warning logs
+  - Check logs for "skipping torn line" messages indicating partial writes
+  - Valid events continue to load even if some data is lost
+  - Consider implementing file integrity checks for critical applications
+
+**Updated** Enhanced troubleshooting for crash scenarios:
+- Torn JSONL lines are handled gracefully with warning logs
+- System continues operating even with partial data loss
+- Monitor warning logs to identify potential storage issues
+- Implement monitoring alerts for repeated torn line warnings
 
 **Section sources**
 - [event_store.py:60-73](file://ntrade/storage/event_store.py#L60-L73)
 - [event_store.py:183-210](file://ntrade/storage/event_store.py#L183-L210)
 - [resilient.py:43-78](file://ntrade/kernel/resilient.py#L43-L78)
-- [test_hardening_regression.py:25-50](file://tests/test_hardening_regression.py#L25-L50)
+- [test_hardening_regression.py:25-50](file://tests/test_hardening_regression.py#L25-50)
 
 ## Conclusion
 EventStore provides a robust, append-only event persistence layer tailored for audit trails and deterministic crash recovery in trading systems. Its integration with the kernel ensures full observability, while its recovery utilities enable precise state reconstruction. With careful attention to ordering, serialization, and performance, EventStore supports reliable live operations and accurate historical analysis.
+
+**Updated** Enhanced with improved crash resilience that gracefully handles storage corruption and partial writes, ensuring system continuity even during unexpected shutdowns.
 
 [No sources needed since this section summarizes without analyzing specific files]
 
@@ -476,6 +518,11 @@ EventStore provides a robust, append-only event persistence layer tailored for a
 - clear(): Reset in-memory state and remove persisted file
 - close(): Close any open file handles
 
+**Updated** Enhanced error handling during file operations:
+- _load() method now catches JSON decode errors and logs warnings
+- Torn JSONL lines are skipped gracefully instead of causing failures
+- System continues loading valid events even when some data is corrupted
+
 **Section sources**
 - [event_store.py:89-104](file://ntrade/storage/event_store.py#L89-L104)
 - [event_store.py:116-124](file://ntrade/storage/event_store.py#L116-L124)
@@ -490,6 +537,11 @@ EventStore provides a robust, append-only event persistence layer tailored for a
 - JSONL file: Path provided; events persisted line-by-line with UTF-8 encoding
 - Custom backend: Implement append/extend semantics and integrate with kernel/store
 
+**Updated** Enhanced JSONL file handling:
+- Automatic detection and skipping of corrupted lines during loading
+- Warning logs provide visibility into storage issues
+- System resilience maintained even with partial file corruption
+
 **Section sources**
 - [event_store.py:76-87](file://ntrade/storage/event_store.py#L76-L87)
 - [event_store.py:106-113](file://ntrade/storage/event_store.py#L106-L113)
@@ -503,6 +555,23 @@ EventStore provides a robust, append-only event persistence layer tailored for a
   - Provide decode-time transformations for legacy formats
   - Validate reconstructed events against expected schemas
 
+**Updated** Enhanced migration resilience:
+- Unknown event types are handled gracefully during deserialization
+- Corrupted JSONL entries don't prevent loading of valid events
+- System continues operating with partial data availability
+
 **Section sources**
 - [event_store.py:18-29](file://ntrade/storage/event_store.py#L18-L29)
 - [event_store.py:60-73](file://ntrade/storage/event_store.py#L60-L73)
+
+### Crash Recovery Enhancement Details
+**New Section** The EventStore now includes robust crash recovery capabilities:
+
+- **Torn Line Handling**: When a crash occurs mid-append, the final JSONL line may be truncated. The EventStore now catches `json.JSONDecodeError` exceptions and logs a warning instead of failing the entire store.
+- **Graceful Degradation**: Valid events continue to load even when some data is corrupted, ensuring system continuity.
+- **Warning Logging**: All skipped lines are logged with context information for debugging and monitoring.
+- **Test Coverage**: Comprehensive test coverage ensures the enhancement works correctly with various corruption scenarios.
+
+**Section sources**
+- [event_store.py:115-126](file://ntrade/storage/event_store.py#L115-L126)
+- [test_replay_backtest.py:243-256](file://tests/test_replay_backtest.py#L243-L256)

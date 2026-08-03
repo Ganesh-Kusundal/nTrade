@@ -92,12 +92,19 @@ class VolumeSpikeScanner(Scanner):
 
     def scan(self, session: "TradingSession", *, min_volume: int = 100_000,
              spike_multiplier: float = 2.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
+        # K-023: ``quote.volume`` is day-cumulative in live mode while
+        # ``avg_volume`` is a per-candle mean — the spike ratio is meaningless
+        # live, so live mode relies on the absolute ``min_volume`` fallback
+        # only. Backtest/replay bars are per-candle, so the ratio path stays.
+        ctx = getattr(getattr(session, "kernel", None), "ctx", None)
+        mode = getattr(ctx, "mode", "live")
+        live = mode == "live"
         results: list[ScannerResult] = []
         for inst in _instruments(session):
             vol = inst.market.volume() or 0
             indicators = _safe_indicators(inst)
             avg_vol = indicators.get("avg_volume", 0)
-            if avg_vol and avg_vol > 0:
+            if not live and avg_vol and avg_vol > 0:
                 ratio = vol / avg_vol
                 if ratio < spike_multiplier:
                     continue

@@ -255,6 +255,32 @@ class TestVolumeSpikeScanner:
         session = _make_session_with_instruments(inst)
         assert VolumeSpikeScanner().scan(session, min_volume=100_000) == []
 
+    def test_volume_spike_live_uses_min_volume(self):
+        """K-023: live quote.volume is day-cumulative while avg_volume is
+        per-candle — the ratio is meaningless live. A 1.5x ratio (below the
+        2.0 spike multiplier) must still flag via the absolute min_volume
+        fallback in live mode."""
+        from ntrade.kernel.trading_session import TradingSession
+        inst = _make_instrument("REL", ltp=2500, volume=150_000,
+                                indicators={"avg_volume": 100_000})
+        session = TradingSession(mode="live")
+        session._kernel.ctx.instruments[inst.symbol] = inst
+        results = VolumeSpikeScanner().scan(session, min_volume=100_000,
+                                            spike_multiplier=2.0)
+        assert len(results) == 1  # ratio path (1.5x < 2x) would skip; min_volume flags
+
+    def test_volume_spike_live_skips_ratio_branch(self):
+        """Even a huge ratio must NOT flag in live when absolute volume is
+        below min_volume — the ratio branch is skipped entirely in live mode."""
+        from ntrade.kernel.trading_session import TradingSession
+        inst = _make_instrument("REL", ltp=2500, volume=500_000,
+                                indicators={"avg_volume": 100_000})  # 5x ratio
+        session = TradingSession(mode="live")
+        session._kernel.ctx.instruments[inst.symbol] = inst
+        results = VolumeSpikeScanner().scan(session, min_volume=1_000_000,
+                                            spike_multiplier=2.0)
+        assert results == []  # ratio 5x would flag in backtest; live must skip
+
 
 # ============================================================ Momentum
 

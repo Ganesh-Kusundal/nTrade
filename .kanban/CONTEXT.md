@@ -1,4 +1,4 @@
-# nTrade — kanban digest (2026-08-02T18:13:45Z)
+# nTrade — kanban digest (2026-08-03T02:36:49Z)
 
 nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). It provides an instrument-centric API where every market entity (Equity, Future, Option, Index, Commodity) owns its own state (quote, depth, history, stream) and broker transport is hidden behind a BrokerAdapter. Currently integrated with Dhan via Dhan-Tradehull. Architecture: event-driven kernel with engine pipeline (Market→Candle→Indicator→Strategy→Risk→Portfolio), typed EventBus, execution router supporting live/paper/replay modes. 75 source files, 7269 LOC, 40 test files, 361 passing tests.
 
@@ -24,30 +24,13 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - T-036 [task/done] Expose BrokerRateGate.status() telemetry + quota headroom row in live_read_check.py (completed 2026-08-02)
 
 ## Tests
-- last pytest run: 1 failing (as of 2026-08-02T18:10:31Z)
-  - tests/test_dhan_broker.py::test_dhan_timeframe_accepts_2_3_4m
+- last pytest run: 0 failing
 
 ## Drift since previous scan
-- added: docs/superpowers/plans/2026-08-02-timeframe-auth-race-hardening.md
-- modified: .gitignore
-- modified: Dependencies/log_files/logs2026-08-02.log
-- modified: Dependencies/token_1106251237_2026-08-02.txt
-- modified: Dependencies\all_instrument 2026-08-02.csv
-- modified: ntrade/brokers/dhan_auth.py
-- modified: ntrade/brokers/dhan_auth_provider.py
-- modified: ntrade/brokers/dhan_mapper.py
-- modified: ntrade/brokers/dhan_transport.py
-- modified: ntrade/domain/market/history.py
-- modified: ntrade/kernel/context.py
-- modified: ntrade/sources/dhan_feed.py
-- modified: test.ipynb
-- modified: tests/test_dhan_broker.py
-- modified: tests/test_dhan_feed.py
-- modified: tests/test_dhan_providers.py
-- modified: tests/test_dhan_transport.py
-- modified: tests/test_history_stream.py
+- none
 
 ## Recent commits
+- 3fe17b4 fix: timeframe/auth/race hardening batch (B-013..B-016, D-018..D-020)
 - a686e3f fix: commit T-022..T-024 remediation batch (bar-aware LIMIT fills, EventStore torn-line recovery, two-way kill switch)
 - 4741c11 T-037 regression test: position sync pays NON_TRADING quota
 - 8eacfc9 T-036 expose BrokerRateGate.status() telemetry + quota headroom in live-read
@@ -55,9 +38,8 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - 8bd7b09 T-034 fail closed on DEGRADED live reads
 - 7ff8f90 T-033 add unified pre-deploy gate script
 - 9e284d0 B-012 gate auth probe reads through BrokerRateGate
-- 925ccea T-027 integration tests for broker rate gate
 
-(171 uncommitted changes in working tree)
+(159 uncommitted changes in working tree)
 
 ## Architecture & components
 - **ntrade/backtest/** (0 files): Backtest simulator: uses TradingKernel in replay mode with SimulatedExecution. Zero parity with live

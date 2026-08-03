@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "timestamp": "2026-08-02T18:13:45Z",
+  "timestamp": "2026-08-03T02:36:49Z",
   "index": {
     "skills-lock.json": [
       1785493445.547,
@@ -19,7 +19,11 @@
       662
     ],
     "Dependencies\\all_instrument 2026-08-02.csv": [
-      1785694312.58,
+      1785694456.373,
+      25289298
+    ],
+    "Dependencies\\all_instrument 2026-08-03.csv": [
+      1785724518.189,
       25289298
     ],
     "Dependencies\\all_instrument 2026-08-01.csv": [
@@ -42,13 +46,13 @@
       1785596702.261,
       1320
     ],
-    "Dependencies/token_2026-08-02.txt": [
-      1785651034.205,
+    "Dependencies/token_2026-08-03.txt": [
+      1785724421.036,
       291
     ],
-    "Dependencies/token_1106251237_2026-08-02.txt": [
-      1785694215.09,
-      315
+    "Dependencies/token_1106251237_2026-08-03.txt": [
+      1785724516.245,
+      308
     ],
     "Dependencies/log_files/logs2026-08-01.log": [
       1785591446.577,
@@ -91,8 +95,8 @@
       6947
     ],
     "docs/superpowers/plans/2026-08-02-timeframe-auth-race-hardening.md": [
-      1785693806.552,
-      3520
+      1785694489.528,
+      3134
     ],
     "docs/superpowers/plans/2026-08-02-broker-rate-limit-infra.md": [
       1785670646.075,
@@ -805,51 +809,29 @@
   },
   "drift": {
     "first_scan": false,
-    "added": [
-      "docs/superpowers/plans/2026-08-02-timeframe-auth-race-hardening.md"
-    ],
+    "added": [],
     "removed": [],
-    "modified": [
-      ".gitignore",
-      "Dependencies/log_files/logs2026-08-02.log",
-      "Dependencies/token_1106251237_2026-08-02.txt",
-      "Dependencies\\all_instrument 2026-08-02.csv",
-      "ntrade/brokers/dhan_auth.py",
-      "ntrade/brokers/dhan_auth_provider.py",
-      "ntrade/brokers/dhan_mapper.py",
-      "ntrade/brokers/dhan_transport.py",
-      "ntrade/domain/market/history.py",
-      "ntrade/kernel/context.py",
-      "ntrade/sources/dhan_feed.py",
-      "test.ipynb",
-      "tests/test_dhan_broker.py",
-      "tests/test_dhan_feed.py",
-      "tests/test_dhan_providers.py",
-      "tests/test_dhan_transport.py",
-      "tests/test_history_stream.py"
-    ]
+    "modified": []
   },
   "git": {
     "available": true,
     "commits": [
+      "3fe17b4 fix: timeframe/auth/race hardening batch (B-013..B-016, D-018..D-020)",
       "a686e3f fix: commit T-022..T-024 remediation batch (bar-aware LIMIT fills, EventStore torn-line recovery, two-way kill switch)",
       "4741c11 T-037 regression test: position sync pays NON_TRADING quota",
       "8eacfc9 T-036 expose BrokerRateGate.status() telemetry + quota headroom in live-read",
       "dfe1b4e T-035 gate DhanMarketFeedSource login probe through BrokerRateGate",
       "8bd7b09 T-034 fail closed on DEGRADED live reads",
       "7ff8f90 T-033 add unified pre-deploy gate script",
-      "9e284d0 B-012 gate auth probe reads through BrokerRateGate",
-      "925ccea T-027 integration tests for broker rate gate"
+      "9e284d0 B-012 gate auth probe reads through BrokerRateGate"
     ],
-    "uncommitted": 171
+    "uncommitted": 159
   },
   "tests": {
     "available": true,
-    "failing": 1,
-    "tests": [
-      "tests/test_dhan_broker.py::test_dhan_timeframe_accepts_2_3_4m"
-    ],
-    "as_of": "2026-08-02T18:10:31Z",
+    "failing": 0,
+    "tests": [],
+    "as_of": "2026-08-03T02:36:49Z",
     "phantom_filtered": 0
   },
   "imports": {},

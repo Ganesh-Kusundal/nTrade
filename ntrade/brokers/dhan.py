@@ -396,20 +396,32 @@ class DhanBroker(BrokerAdapter):
             return float(order.avg_price or 0.0), ""
 
     def get_orderbook(self, *, now: datetime | None = None) -> OrderBook:
-        """Order book as a typed OrderBook domain object."""
+        """Order book as a typed OrderBook domain object.
+
+        A rate-limit rejection (RateLimited) propagates — never masked as an
+        empty book (K-021: DH-904 looks like 'no orders').
+        """
         try:
             return DhanMapper.normalize_orderbook(
                 self._get_transport().get_orderbook(), now=self._ts(now),
             )
+        except RateLimited:
+            raise
         except Exception:
             return OrderBook()
 
     def get_trade_book(self, *, now: datetime | None = None) -> TradeBook:
-        """Trade book as a typed TradeBook domain object."""
+        """Trade book as a typed TradeBook domain object.
+
+        A rate-limit rejection (RateLimited) propagates — never masked as an
+        empty book (K-021: DH-904 looks like 'no trades').
+        """
         try:
             return DhanMapper.normalize_tradebook(
                 self._get_transport().get_trade_book(), now=self._ts(now),
             )
+        except RateLimited:
+            raise
         except Exception:
             return TradeBook()
 
@@ -448,10 +460,16 @@ class DhanBroker(BrokerAdapter):
 
     # ------------------------------------------------------------ market data
     def get_expiry_list(self, instrument: "Instrument"):
-        """Return the list of contract expiry dates for this underlying."""
+        """Return the list of contract expiry dates for this underlying.
+
+        A rate-limit rejection (RateLimited) propagates — never masked as
+        'no expiries' (K-021 / ERROR-016 class).
+        """
         exchange = "INDEX" if instrument.KIND == "index" else "NFO"
         try:
             return self._get_transport().get_expiry_list(instrument.symbol, exchange)
+        except RateLimited:
+            raise
         except Exception:
             return []
 
@@ -460,24 +478,38 @@ class DhanBroker(BrokerAdapter):
 
         Dhan's library takes opt_fut in ("OPTION", "FUTURE") and returns a
         LIST of expiry date strings — we normalize to a list[date] (empty on
-        failure).
+        failure). A rate-limit rejection propagates (K-021).
         """
         try:
             return self._get_transport().get_expiry_date(instrument.symbol, opt_fut)
+        except RateLimited:
+            raise
         except Exception:
             return []
 
     def get_future_script(self, instrument: "Instrument", expiry: int):
-        """Resolve the Dhan tradingsymbol for a future of this underlying."""
+        """Resolve the Dhan tradingsymbol for a future of this underlying.
+
+        A rate-limit rejection (RateLimited) propagates — never masked as
+        None (K-021).
+        """
         try:
             return self._get_transport().get_future_script(instrument.symbol, expiry)
+        except RateLimited:
+            raise
         except Exception:
             return None
 
     def get_lot_size(self, instrument: "Instrument") -> int:
-        """Fetch the lot size for a derivative script (options/futures)."""
+        """Fetch the lot size for a derivative script (options/futures).
+
+        A rate-limit rejection (RateLimited) propagates — never masked as 0
+        (a 0 lot size can divide-by-zero downstream; K-021).
+        """
         try:
             return self._get_transport().get_lot_size(dhan_symbol(instrument))
+        except RateLimited:
+            raise
         except Exception:
             return 0
 
@@ -499,14 +531,28 @@ class DhanBroker(BrokerAdapter):
             return {}
 
     def get_start_date(self):
+        """Earliest available date for this underlying on Dhan.
+
+        A rate-limit rejection (RateLimited) propagates — never masked as
+        None (K-021).
+        """
         try:
             return self._get_transport().get_start_date()
+        except RateLimited:
+            raise
         except Exception:
             return None
 
     def get_instrument_file(self):
+        """Path/location of Dhan's instrument master file.
+
+        A rate-limit rejection (RateLimited) propagates — never masked as
+        None (K-021).
+        """
         try:
             return self._get_transport().get_instrument_file()
+        except RateLimited:
+            raise
         except Exception:
             return None
 
@@ -515,12 +561,16 @@ class DhanBroker(BrokerAdapter):
 
         Falls back to the commodity FUTCOM row when the symbol only matches via
         SM_SYMBOL_NAME (e.g. 'GOLD'); returns {} when nothing matches.
+        A rate-limit rejection (RateLimited) propagates — never masked as
+        empty metadata (K-021).
         """
         try:
             return self._get_transport().get_instrument_metadata(
                 dhan_symbol(instrument), instrument.exchange,
                 underlying_symbol=instrument.symbol,
             )
+        except RateLimited:
+            raise
         except Exception:
             return {}
 

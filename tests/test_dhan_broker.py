@@ -592,3 +592,74 @@ def test_option_chain_rate_limited_does_not_retry_expiries():
     with pytest.raises(RateLimited):
         broker.get_option_chain(nifty, expiry=0, num_strikes=2)
     broker._transport.get_option_chain.assert_called_once()
+
+
+# ------------------------------------------------------------- K-021
+
+
+def test_expiry_list_propagates_rate_limited():
+    """A DH-904 on get_expiry_list must raise RateLimited, never return []
+    (an empty expiry list looks like 'no expiries' to strategies, ERROR-016)."""
+    from ntrade.execution.rate_limit import RateLimited
+    broker = make_broker(get_expiry_list=lambda **kw: (_ for _ in ()).throw(RuntimeError("DH-904")))
+    nifty = Index("NIFTY")
+    with pytest.raises(RateLimited):
+        broker.get_expiry_list(nifty)
+
+
+def test_orderbook_propagates_rate_limited():
+    """A DH-904 on get_orderbook must raise RateLimited, never return an empty
+    OrderBook (an empty book looks like 'no orders')."""
+    from ntrade.execution.rate_limit import RateLimited
+    broker = make_broker(get_orderbook=lambda debug="NO": (_ for _ in ()).throw(RuntimeError("Rate_Limit")))
+    with pytest.raises(RateLimited):
+        broker.get_orderbook()
+
+
+def test_trade_book_propagates_rate_limited():
+    from ntrade.execution.rate_limit import RateLimited
+    broker = make_broker(get_trade_book=lambda debug="NO": (_ for _ in ()).throw(RuntimeError("DH-904")))
+    with pytest.raises(RateLimited):
+        broker.get_trade_book()
+
+
+def test_lot_size_propagates_rate_limited():
+    """A DH-904 on get_lot_size must raise RateLimited, never return 0 (a 0 lot
+    size can divide-by-zero downstream)."""
+    from ntrade.execution.rate_limit import RateLimited
+    broker = make_broker(get_lot_size=lambda tradingsymbol: (_ for _ in ()).throw(RuntimeError("DH-904")))
+    opt = Option("NIFTY 24400 CE", exchange="NFO", strike=24400, expiry=date(2026, 8, 6),
+                 option_type="CE", underlying_symbol="NIFTY")
+    with pytest.raises(RateLimited):
+        broker.get_lot_size(opt)
+
+
+def test_orderbook_still_degrades_on_other_errors():
+    """Non-rate failures keep the documented empty-book degrade."""
+    from ntrade.domain.orders.book import OrderBook
+    broker = make_broker(get_orderbook=lambda debug="NO": (_ for _ in ()).throw(ConnectionError("down")))
+    ob = broker.get_orderbook()
+    assert isinstance(ob, OrderBook)
+    assert len(ob) == 0
+
+
+def test_expiry_date_still_degrades_on_other_errors():
+    """Non-rate failures keep the documented [] degrade for expiry dates."""
+    broker = make_broker(get_expiry_date=lambda **kw: (_ for _ in ()).throw(ConnectionError("down")))
+    assert broker.get_expiry_date(Index("NIFTY"), "OPTION") == []
+
+
+def test_instrument_metadata_propagates_rate_limited():
+    """A DH-904 on the instrument-file metadata read must raise RateLimited,
+    never return {} (empty metadata looks like 'no tick/lot data').
+
+    The transport's get_instrument_metadata reads ``self.tsl.instrument_df``
+    (an attribute, not a method), so we mock the transport directly — the
+    same pattern as test_order_status_rate_limited_not_swallowed."""
+    from ntrade.execution.rate_limit import Quota, RateLimited
+    broker = make_broker()
+    broker._transport = MagicMock()
+    broker._transport.get_instrument_metadata.side_effect = RateLimited(Quota.NON_TRADING)
+    rel = Equity("RELIANCE")
+    with pytest.raises(RateLimited):
+        broker.get_instrument_metadata(rel)

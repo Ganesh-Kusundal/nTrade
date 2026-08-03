@@ -1,5 +1,5 @@
 """Paper->live gate report builder (G2-E2)."""
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -62,3 +62,32 @@ def test_equity_trace_converges_on_portfolio_read_model():
     assert peak == pytest.approx(100_000.0, abs=0.01)
     assert final_eq == pytest.approx(k.risk_engine.equity(), abs=0.01)
     assert report["max_drawdown_pct"] == pytest.approx(0.0, abs=0.01)
+
+
+def test_equity_trace_drops_closed_positions():
+    """K-026: a close (quantity=0 PositionUpdatedEvent) must REMOVE the symbol
+    from the trace — a stale entry would mark a closed position at its last
+    ltp and inflate equity. Round-trip a BUY then a SELL-to-flat at the same
+    price: final equity must equal the initial cash (minus charges), with no
+    phantom position contributing to the mark-to-market."""
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m",
+                      initial_cash=100_000.0)
+    k.register(Equity("RELIANCE", exchange="NSE"))
+    ts = datetime(2026, 1, 1, 9, 15)
+    k.router.submit(OrderIntentEvent(
+        symbol="RELIANCE", exchange="NSE", side="BUY", quantity=10,
+        order_type="LIMIT", price=100.0, strategy="g", ts=ts))
+    k.router.submit(OrderIntentEvent(
+        symbol="RELIANCE", exchange="NSE", side="SELL", quantity=10,
+        order_type="LIMIT", price=100.0, strategy="g", ts=ts + timedelta(seconds=1)))
+    report = build_paper_report(k, initial_cash=100_000.0)
+    trace = list(_equity_trace(k, initial_cash=100_000.0))
+    peak, final_eq = trace[-1]
+    # Flat at the same price: no position value remains in the trace, so the
+    # settled equity is exactly initial cash minus both legs' charges.
+    charges = report["checklist"]["total_charges"]
+    assert final_eq == pytest.approx(100_000.0 - charges, abs=0.01)
+    assert final_eq == pytest.approx(k.risk_engine.equity(), abs=0.01)
+    # Flat round-trip never spikes equity above the initial cash — a phantom
+    # stale position would push peak past 100_000 (K-026 regression guard).
+    assert peak == pytest.approx(100_000.0, abs=0.01)

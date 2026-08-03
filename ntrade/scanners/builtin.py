@@ -48,6 +48,7 @@ class GapScanner(Scanner):
     """
 
     name = "gap"
+    rate_limit_seconds = 30.0   # K-022/M6: don't rescan the full universe every tick
 
     def scan(self, session: "TradingSession", *, min_gap_pct: float = 1.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
         results: list[ScannerResult] = []
@@ -235,6 +236,7 @@ class ImbalanceScanner(Scanner):
     """
 
     name = "imbalance"
+    rate_limit_seconds = 30.0   # K-022/M6: don't rescan the full universe every tick
 
     def scan(self, session: "TradingSession", *, imbalance_ratio: float = 2.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
         results: list[ScannerResult] = []

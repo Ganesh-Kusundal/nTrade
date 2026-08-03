@@ -193,7 +193,13 @@ class TestScannerFacade:
             assert cls.name in ("momentum", "volume_spike", "breakout")
             assert cls.rate_limit_seconds > 0, f"{cls.__name__} must arm the M6 throttle"
         for cls in (GapScanner, ImbalanceScanner):
-            assert cls.rate_limit_seconds == 0.0, f"{cls.__name__} must stay unthrottled"
+            assert cls.rate_limit_seconds > 0, f"{cls.__name__} must arm the M6 throttle (K-022)"
+
+    def test_gap_imbalance_throttled(self):
+        """K-022: Gap/Imbalance scan the full universe every cycle — they must
+        throttle at 30s like the other three scanners (M6 symmetry)."""
+        assert GapScanner.rate_limit_seconds == 30.0
+        assert ImbalanceScanner.rate_limit_seconds == 30.0
 
 
 # ============================================================ Gap Scanner

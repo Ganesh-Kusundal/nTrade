@@ -126,7 +126,13 @@ class HistoricalSeries:
         indexed = self._df.set_index("timestamp")
         agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
         agg.update({c: "sum" for c in indexed.columns if c in ("volume", "oi")})
-        resampled = indexed.resample(rule).agg(agg).dropna(subset=["open"]).reset_index()
+        # K-025: label bars at the RIGHT edge (bin start + span) to match
+        # CandleEngine's closed-candle labels (bucket + seconds). pandas
+        # defaults to label="left" (bin START) which labels a 5m bar 09:15
+        # where the engine labels 09:20 — same bin membership (closed="left"
+        # is kept so bins don't shift), different label. The index stays
+        # timezone-naive like the engine treats it.
+        resampled = indexed.resample(rule, closed="left", label="right").agg(agg).dropna(subset=["open"]).reset_index()
         return HistoricalSeries(self.instrument, resampled, rule, clock=self.clock)
     # ------------------------------------------------------------------ pandas
     def indicators(self, **params) -> dict[str, float]:

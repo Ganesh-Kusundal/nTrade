@@ -1,5 +1,7 @@
 """Tests for HistoricalSeries (dataframe-like, attached) and LiveStream."""
 
+from datetime import timezone
+
 import pandas as pd
 import pytest
 
@@ -100,6 +102,49 @@ def test_history_resample():
     assert coarse.timeframe == "15min"
     assert len(coarse) <= len(h)
     assert {"timestamp", "open", "high", "low", "close"} <= set(coarse.df.columns)
+
+
+def test_resample_labels_match_candle_engine_buckets():
+    """K-025: HistoricalSeries.resample must label bars at the same (end-of-
+    bar, right-edge) boundary as CandleEngine's closed-candle labels.
+
+    CandleEngine._bucket floors to a UTC-pinned epoch (closed-LEFT bin
+    membership) and labels each closed candle at ``bucket + seconds`` (the
+    RIGHT edge). pandas resample defaults to ``label="left"`` (bin START), so
+    a 1m->5m resample labels 09:15 while the engine labels 09:20. The parity
+    test asserts resample labels equal the engine's end-of-bar labels for the
+    same timestamps.
+    """
+    from datetime import datetime, timedelta
+
+    from ntrade.engines.candle_engine import CandleEngine
+    from ntrade.kernel.event_bus import EventBus
+
+    bus = EventBus()
+    ctx = type("Ctx", (), {"bus": bus})()
+    engine = CandleEngine(ctx, timeframe="5m")
+
+    start = datetime(2026, 8, 3, 9, 15)  # naive UTC wall-clock
+    ts = [start + timedelta(minutes=i) for i in range(10)]  # 09:15..09:24
+    df = pd.DataFrame({
+        "timestamp": ts,
+        "open": [100.0] * 10, "high": [101.0] * 10,
+        "low": [99.0] * 10, "close": [100.5] * 10,
+        "volume": [100] * 10,
+    })
+    h = HistoricalSeries(Equity("RELIANCE"), df, timeframe="1m")
+    coarse = h.resample("5min")
+    # Engine end-of-bar labels for the same timestamps: bucket + 300s. The
+    # engine pins naive timestamps to UTC, matching the naive index here.
+    engine_labels = [
+        datetime.fromtimestamp(engine._bucket(t) + engine.seconds,
+                               tz=timezone.utc).replace(tzinfo=None)
+        for t in (start, start + timedelta(minutes=5))
+    ]
+    got = list(coarse.df["timestamp"])
+    assert len(got) == 2, f"expected 2 resampled bars, got {got}"
+    assert all(t.tzinfo is None for t in got), "resample index must stay timezone-naive"
+    assert got == engine_labels, f"resample labels {got} != engine end-of-bar {engine_labels}"
 
 
 def test_history_live_merge_preserves_schema():

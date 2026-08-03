@@ -147,6 +147,64 @@ def test_resample_labels_match_candle_engine_buckets():
     assert got == engine_labels, f"resample labels {got} != engine end-of-bar {engine_labels}"
 
 
+def test_resample_implementations_share_right_edge_convention():
+    """Cross-path parity (K-025 + F-001): HistoricalSeries.resample and
+    DhanMapper.resample_history must both label bars at the bin's RIGHT edge.
+
+    For 3m the two grids coincide (09:15 sits on both the epoch 180s grid and
+    the 09:15-IST origin grid), so bars AND labels are identical. For 2m/4m
+    the F-001 09:15-IST origin anchors a session grid offset from the epoch
+    grid (09:15 % 120s = 60s, % 240s = 180s), so the bars legitimately differ
+    — only the right-edge convention is shared, and the offset is the
+    documented cost of night-session containment.
+    """
+    from datetime import datetime, timedelta
+
+    from ntrade.brokers.dhan_mapper import DhanMapper
+
+    start = datetime(2026, 8, 3, 9, 15)  # naive wall clock
+    ts = [start + timedelta(minutes=i) for i in range(12)]  # 09:15..09:26
+    df = pd.DataFrame({
+        "timestamp": ts,
+        "open": [100 + i for i in range(12)],
+        "high": [101 + i for i in range(12)],
+        "low": [99 + i for i in range(12)],
+        "close": [100.5 + i for i in range(12)],
+        "volume": [100] * 12,
+    })
+    h = HistoricalSeries(Equity("RELIANCE"), df, timeframe="1m")
+
+    # 3m: identical bars AND identical right-edge labels on both grids.
+    a = h.resample("3min").df
+    b = DhanMapper.resample_history(df, "3min")
+    assert list(pd.to_datetime(a["timestamp"])) == list(pd.to_datetime(b["timestamp"]))
+    for col in ("open", "high", "low", "close", "volume"):
+        assert list(a[col]) == list(b[col]), f"3m {col} diverged between resample paths"
+
+    # 2m/4m: grids intentionally diverge — each must still label at the right
+    # edge of its OWN grid (epoch-anchored for HistoricalSeries, 09:15-anchored
+    # for F-001), locking in the documented offset.
+    assert list(pd.to_datetime(h.resample("2min").df["timestamp"])) == [
+        pd.Timestamp("2026-08-03 09:16:00"), pd.Timestamp("2026-08-03 09:18:00"),
+        pd.Timestamp("2026-08-03 09:20:00"), pd.Timestamp("2026-08-03 09:22:00"),
+        pd.Timestamp("2026-08-03 09:24:00"), pd.Timestamp("2026-08-03 09:26:00"),
+        pd.Timestamp("2026-08-03 09:28:00"),
+    ]
+    assert list(pd.to_datetime(DhanMapper.resample_history(df, "2min")["timestamp"])) == [
+        pd.Timestamp("2026-08-03 09:17:00"), pd.Timestamp("2026-08-03 09:19:00"),
+        pd.Timestamp("2026-08-03 09:21:00"), pd.Timestamp("2026-08-03 09:23:00"),
+        pd.Timestamp("2026-08-03 09:25:00"), pd.Timestamp("2026-08-03 09:27:00"),
+    ]
+    assert list(pd.to_datetime(h.resample("4min").df["timestamp"])) == [
+        pd.Timestamp("2026-08-03 09:16:00"), pd.Timestamp("2026-08-03 09:20:00"),
+        pd.Timestamp("2026-08-03 09:24:00"), pd.Timestamp("2026-08-03 09:28:00"),
+    ]
+    assert list(pd.to_datetime(DhanMapper.resample_history(df, "4min")["timestamp"])) == [
+        pd.Timestamp("2026-08-03 09:19:00"), pd.Timestamp("2026-08-03 09:23:00"),
+        pd.Timestamp("2026-08-03 09:27:00"),
+    ]
+
+
 def test_history_live_merge_preserves_schema():
     broker = PaperBroker()
     rel = Equity("RELIANCE", broker=broker)

@@ -153,6 +153,68 @@ class TestResampleTimeframes:
         assert df["volume"].iloc[0] == 300   # summed
         assert series.timeframe == "3m"
 
+    def test_resample_history_labels_match_engine_right_edge(self):
+        """F-001 parity with CandleEngine (K-025): resample_history must label
+        bars at the bin's RIGHT edge (09:18/09:21 for 3m bins starting
+        09:15/09:18) — not pandas' default bin-START labels (09:15/09:18). Bin
+        membership (closed="left") and the 09:15 IST origin stay unchanged.
+
+        CandleEngine has no native 3m interval (3m exists only via this F-001
+        path), so the expected labels mirror its bucketing formula directly:
+        naive ts pinned to UTC, floor to ``seconds``, label = bucket + seconds.
+        """
+        from datetime import datetime, timedelta, timezone
+        from ntrade.brokers.dhan_mapper import DhanMapper
+
+        def _engine_label(t: datetime) -> datetime:
+            seconds = 180  # 3m, as CandleEngine would compute for this rule
+            epoch = int(t.replace(tzinfo=timezone.utc).timestamp())
+            bucket = epoch - (epoch % seconds)
+            return datetime.fromtimestamp(bucket + seconds, tz=timezone.utc).replace(tzinfo=None)
+
+        start = datetime(2026, 8, 3, 9, 15)  # naive IST wall clock
+        ts = [start + timedelta(minutes=i) for i in range(6)]  # 09:15..09:20
+        df = pd.DataFrame({
+            "timestamp": ts,
+            "open": [10 + i for i in range(6)],
+            "high": [11 + i for i in range(6)],
+            "low": [9 + i for i in range(6)],
+            "close": [10.5 + i for i in range(6)],
+            "volume": [100] * 6,
+        })
+        out = DhanMapper.resample_history(df, "3min")
+        got = list(pd.to_datetime(out["timestamp"]))
+        engine_labels = [_engine_label(start), _engine_label(start + timedelta(minutes=3))]
+        assert got == engine_labels, f"resample_history labels {got} != engine end-of-bar {engine_labels}"
+        # Membership unchanged: two 3-bar bins, same OHLCV aggregation.
+        assert len(out) == 2
+        assert out["open"].iloc[0] == 10 and out["close"].iloc[0] == 12.5
+        assert out["open"].iloc[1] == 13 and out["close"].iloc[1] == 15.5
+
+    def test_resample_history_night_session_keeps_day_grouping_right_edge(self):
+        """F-001: a night-session candle keeps its right-edge label AND stays
+        inside its own calendar day — the 09:15 IST origin axis is untouched by
+        the K-025 label change."""
+        from ntrade.brokers.dhan_mapper import DhanMapper
+        df = pd.DataFrame({
+            "timestamp": [
+                pd.Timestamp("2026-08-03 15:27:00"),  # night session, day 1
+                pd.Timestamp("2026-08-03 15:28:00"),
+                pd.Timestamp("2026-08-04 09:15:00"),  # next session, day 2
+                pd.Timestamp("2026-08-04 09:16:00"),
+            ],
+            "open": [1, 2, 3, 4], "high": [2, 3, 4, 5],
+            "low": [0, 1, 2, 3], "close": [1.5, 2.5, 3.5, 4.5],
+            "volume": [10] * 4,
+        })
+        out = DhanMapper.resample_history(df, "3min")
+        # Day 1: 15:27/15:28 -> bin [15:27, 15:30) labeled 15:30 (right edge)
+        # Day 2: 09:15/09:16 -> bin [09:15, 09:18) labeled 09:18
+        labels = list(pd.to_datetime(out["timestamp"]))
+        assert labels == [pd.Timestamp("2026-08-03 15:30:00"),
+                          pd.Timestamp("2026-08-04 09:18:00")], f"got {labels}"
+        assert len(out) == 2
+
     def test_native_timeframe_never_resampled(self):
         """5m/15m etc. pass straight through with no resample call."""
         tsl = MagicMock()

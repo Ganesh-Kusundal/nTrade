@@ -127,7 +127,20 @@ class DhanMapper:
             # Naive origin anchored at the 09:15 IST market open so
             # night-session candles stay inside their own calendar day.
             origin = pd.Timestamp(day) + pd.Timedelta(hours=9, minutes=15)
-            resampled = group.resample(rule, origin=origin).agg(agg).dropna(subset=["open"])
+            # K-025 parity: adopt the engine's RIGHT-edge label convention
+            # (bin start + span — CandleEngine labels closed candles at
+            # bucket + seconds, same as HistoricalSeries.resample). pandas
+            # defaults to label="left" (bin START), which labels a 3m bar
+            # 09:15 where the engine labels 09:18 — same bin membership
+            # (closed="left" kept so bins don't shift), different label.
+            # NOTE: exact grid parity with the engine holds only for 3m (09:15
+            # is on the 180s epoch grid); 2m/4m sit 1-3min off the engine's
+            # epoch grid by design — the 09:15 IST origin keeps night-session
+            # candles inside their own calendar day, which is the more
+            # important invariant. Do not replace the origin to chase parity.
+            resampled = group.resample(
+                rule, origin=origin, closed="left", label="right",
+            ).agg(agg).dropna(subset=["open"])
             rows.append(resampled)
         if not rows:
             return pd.DataFrame(columns=out.columns)

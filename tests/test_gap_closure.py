@@ -450,6 +450,76 @@ def test_order_executed_price_paper():
     assert order.executed_price() == 100.0
 
 
+# ------------------------------------------------- K-020: no silent 0.0 on DH-904
+def test_executed_price_propagates_rate_limited():
+    """A DH-904 on the executed-price poll must raise RateLimited, never look
+    like a fill at 0.0 (K-020: no-silent-swallow gap closed)."""
+    from ntrade.execution.rate_limit import Quota, RateLimited
+    broker = make_broker(
+        get_executed_price=lambda orderid, debug="NO": (_ for _ in ()).throw(
+            RateLimited(Quota.ORDER)),
+    )
+    rel = Equity("RELIANCE")
+    rel._broker = broker
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=75,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=100.0,
+                  order_id="ORD-1", status=OrderStatus.PENDING)
+    with pytest.raises(RateLimited):
+        order.executed_price()
+
+
+def test_executed_price_and_time_propagates_rate_limited():
+    """get_executed_price_and_time must also re-raise RateLimited (not return
+    (0.0, "") which looks like a fill at zero with no exchange time)."""
+    from ntrade.execution.rate_limit import Quota, RateLimited
+    broker = make_broker(
+        get_executed_price_and_time=lambda orderid, debug="NO": (_ for _ in ()).throw(
+            RateLimited(Quota.ORDER)),
+    )
+    rel = Equity("RELIANCE")
+    rel._broker = broker
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=75,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=100.0,
+                  order_id="ORD-1", status=OrderStatus.PENDING)
+    with pytest.raises(RateLimited):
+        order.executed_price_and_time()
+
+
+def test_executed_price_degrades_on_other_errors():
+    """Non-rate errors keep the documented degrade contract: fall back to the
+    order's recorded avg_price instead of raising (D-016 stale-order contract).
+    The broker-level fallback fires when the *transport* raises a non-rate
+    error (the transport itself swallows network errors into 0.0, so this
+    exercises the broker boundary directly)."""
+    from unittest.mock import MagicMock
+    broker = make_broker()
+    broker._transport = MagicMock()
+    broker._transport.get_executed_price.side_effect = ConnectionError("network down")
+    rel = Equity("RELIANCE")
+    rel._broker = broker
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=75,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=100.0,
+                  order_id="ORD-1", status=OrderStatus.PENDING, avg_price=99.5)
+    assert order.executed_price() == 99.5
+
+
+def test_executed_price_and_time_degrades_on_other_errors():
+    """Same degrade contract for the price+time pair: (avg_price, "") on a
+    non-rate transport failure."""
+    from unittest.mock import MagicMock
+    broker = make_broker()
+    broker._transport = MagicMock()
+    broker._transport.get_executed_price_and_time.side_effect = ConnectionError("network down")
+    rel = Equity("RELIANCE")
+    rel._broker = broker
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=75,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=100.0,
+                  order_id="ORD-1", status=OrderStatus.PENDING, avg_price=99.5)
+    price, ts = order.executed_price_and_time()
+    assert price == 99.5
+    assert ts == ""
+
+
 def test_super_order_management_capabilities():
     from ntrade.brokers.capabilities import registered_capabilities
     broker = make_broker(

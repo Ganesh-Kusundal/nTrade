@@ -1,1 +1,0 @@
-Python dataclasses (`frozen=True`) for immutable value objects; pandas DataFrames wrapped in domain types; `collections.deque` with maxlen for bounded tick buffering; datetime-based staleness checks.

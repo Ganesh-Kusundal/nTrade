@@ -1,1 +1,0 @@
-Pure Python domain model using dataclasses for immutable value objects (`CorporateAction`, `OptionPair`), `functools.cached_property` for lazy capability instantiation, and pandas DataFrames for historical series and analytics. Type hints use `TYPE_CHECKING` blocks to avoid circular imports between Instrument and broker/order facades.

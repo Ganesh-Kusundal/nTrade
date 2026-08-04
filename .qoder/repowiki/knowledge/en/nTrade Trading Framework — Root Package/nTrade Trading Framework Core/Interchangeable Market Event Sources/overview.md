@@ -1,1 +1,0 @@
-Zero-parity market data sources that publish canonical TickEvent/QuoteEvent/DepthEvent into the kernel bus, supporting simulated replay, synthetic OHLCV extrapolation, and live Dhan websocket feeds behind a single abstract interface.

@@ -1,1 +1,0 @@
-Defines immutable market value objects (Quote, Tick, MarketDepth), OHLCV series wrappers (CandleSeries, HistoricalSeries), and per-instrument live streaming with event-driven tick ingestion.

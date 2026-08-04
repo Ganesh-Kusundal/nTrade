@@ -1,5 +1,0 @@
-- Domain types wrap pandas DataFrames via a thin class with a `to_dataframe()` escape hatch and `__getattr__` delegation, allowing DataFrame interop while presenting a typed API (used by both `IVSurface` and `GreeksTable`).
-- Indicators are implemented as pure functions taking a pandas DataFrame and returning a Series or DataFrame, with no global state and no side effects.
-- Failure cases use explicit sentinel values rather than exceptions or NaNs — e.g. `NOT_COMPUTED = None` for uncomputed IV/delta, and `compute_bundle` logs warnings instead of raising on per-indicator failures.
-- Public symbols are explicitly curated through `__all__` in `__init__.py`, exposing only the intended API surface (`Greeks`, `BlackScholes`) while keeping internal helpers private.
-- All numeric results are rounded to a fixed precision before return (e.g. price to 4 decimals, greeks to 6, IV to 6) to avoid floating-point noise leaking across boundaries.

@@ -169,3 +169,30 @@ def test_feed_watchdog_warns_on_stale_ticks():
     runner.step()
     assert runner._watchdog_missed >= 1
     runner.stop()
+
+
+def test_feed_watchdog_trip_halts_risk_engine_once():
+    """Wall-clock watchdog trip routes through RiskEngine.halt: exactly one
+    RiskHaltedEvent, engine halted (pipeline rejects new signals), and no
+    re-fire on subsequent steps."""
+    k = TradingKernel(mode="live", clock=LiveClock(), timeframe="1m")
+    k.register(Equity("NIFTY"))
+    src = SyntheticMarketFeedSource(k, symbol="NIFTY", exchange="NSE", data=_frame())
+    runner = LiveRunner(k, src, poll_interval=0.05, sync_interval=0.05,
+                        watchdog_timeout=10.0)
+    t = [0.0]
+    runner._timer = lambda: t[0]
+    runner._sleep = lambda s: None
+    runner.start()            # warmup tick; baseline set at t=0
+    t[0] = 5.0
+    runner.step()             # warmup tick advanced -> baseline refresh, no trip
+    t[0] = 16.0
+    runner.step()             # 11s of silence > 10s timeout -> trip
+    halts = [e for e in k.bus.history if isinstance(e, RiskHaltedEvent)]
+    assert len(halts) == 1
+    assert "frozen feed" in halts[0].reason
+    assert k.risk_engine.halted is True
+    t[0] = 27.0
+    runner.step()             # already halted: early return, no re-fire
+    assert len([e for e in k.bus.history if isinstance(e, RiskHaltedEvent)]) == 1
+    runner.stop()

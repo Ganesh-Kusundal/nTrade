@@ -52,7 +52,8 @@ class DhanBroker(BrokerAdapter):
     name = "dhan"
 
     def __init__(self, env_path: str = ".env", env: dict | None = None,
-                 connect: bool = True, clock=None):
+                 connect: bool = True, clock=None,
+                 sebi_max_quote_age: float = 10.0, sebi_band_pct: float = 2.0):
         super().__init__(clock=clock)
         self.env_path = env_path
         self.env = env
@@ -60,6 +61,10 @@ class DhanBroker(BrokerAdapter):
         self._transport: DhanTransport | None = None
         self._mapper = DhanMapper()
         self.tsl = None  # backward compat — capabilities reference broker.tsl
+        # SEBI MARKET->LIMIT conversion guards (H-2): the reference LTP must be
+        # fresh, and the price band is configurable instead of hardcoded ±2%.
+        self._sebi_max_quote_age = float(sebi_max_quote_age)
+        self._sebi_band_pct = float(sebi_band_pct)
         if connect:
             self.connect()
 
@@ -164,8 +169,10 @@ class DhanBroker(BrokerAdapter):
         # Dhan only supports depth for NSE/BSE/NFO/BFO — not indices.
         if instrument.KIND == "index":
             return None
+        # Options must use Tradehull CUSTOM form (… CALL/PUT), not chain
+        # short labels like "NIFTY 24600 CE" — those return None silently.
         return self._get_transport().get_depth(
-            instrument.symbol, instrument.exchange, timeout=timeout, now=now,
+            dhan_symbol(instrument), instrument.exchange, timeout=timeout, now=now,
             attempts=attempts, settle=settle,
         )
 
@@ -246,13 +253,28 @@ class DhanBroker(BrokerAdapter):
         # SEBI (Apr 2026): MARKET orders banned for F&O — force LIMIT.
         if order.instrument.exchange in _SEBI_FNO_EXCHANGES and order.order_type.value == "MARKET":
             order.order_type = order.order_type.__class__("LIMIT")
-            ltp = order.instrument._quote.ltp
+            quote = order.instrument._quote
+            ltp = quote.ltp
             if not ltp or ltp <= 0:
                 raise RuntimeError(
                     f"Cannot convert MARKET order to LIMIT for {order.instrument.symbol}: LTP is {ltp}. "
                     "Refresh the instrument first (refresh() must run after market data is available)."
                 )
-            order.price = round(ltp * 1.02, 1) if order.side == OrderSide.BUY else round(ltp * 0.98, 1)
+            # Never band against a stale price (H-2): the ±band LIMIT is the
+            # only price protection this conversion gets, so the reference LTP
+            # must be fresh. Untimestamped quotes are treated as stale.
+            max_age = getattr(self, "_sebi_max_quote_age", 10.0)
+            quote_ts = getattr(quote, "timestamp", None)
+            age = (self._ts() - quote_ts).total_seconds() if quote_ts is not None else None
+            if age is None or age > max_age:
+                detail = "untimestamped" if age is None else f"{age:.0f}s old"
+                raise RuntimeError(
+                    f"Cannot convert MARKET order to LIMIT for {order.instrument.symbol}: "
+                    f"cached quote is {detail} (max age {max_age:.0f}s). "
+                    "Refresh the instrument first so the LIMIT band uses a live price."
+                )
+            band = abs(getattr(self, "_sebi_band_pct", 2.0)) / 100.0
+            order.price = round(ltp * (1.0 + band), 1) if order.side == OrderSide.BUY else round(ltp * (1.0 - band), 1)
         # Bracket (BO) orders: Dhan's order_placement accepts no BO type — route
         # to its dedicated place_super_order API (entry + target + stop legs).
         # Both paths go through the throttled transport (B-010: no self.tsl bypass).
@@ -339,14 +361,20 @@ class DhanBroker(BrokerAdapter):
         """Refresh order status/fills from Dhan.
 
         A rate-limit rejection (RateLimited) propagates — it is never masked as
-        a stale order (finding: no silent swallow on DH-904).
+        a stale order (finding: no silent swallow on DH-904). Transport errors
+        also propagate (H-5): silently returning the stale order inverted the
+        caller's staleness accounting — BrokerExecution counts a failed
+        refresh as staleness, and a masked error meant truly-dead connections
+        never evicted while quota backoff did.
         """
         try:
             status = self._get_transport().get_order_status(order.order_id)
         except RateLimited:
             raise
-        except Exception:
-            return order
+        except Exception as exc:
+            raise RuntimeError(
+                f"Dhan order status refresh failed for {order.order_id}: {exc}"
+            ) from exc
         _DHAN_STATUS = {
             "PENDING": OrderStatus.PENDING, "TRANSIT": OrderStatus.PENDING,
             "COMPLETE": OrderStatus.COMPLETED, "TRADED": OrderStatus.COMPLETED,

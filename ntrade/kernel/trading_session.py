@@ -25,7 +25,7 @@ from ntrade.kernel.session import TradingKernel
 from ntrade.registry import BrokerRegistry
 
 if TYPE_CHECKING:
-    from ntrade.brokers.base import BrokerAdapter
+    from ntrade.domain.ports import BrokerAdapter
     from ntrade.domain.instruments.base import Instrument
     from ntrade.domain.instruments.cash import (
         Commodity, Currency, Equity, ETF, Index,

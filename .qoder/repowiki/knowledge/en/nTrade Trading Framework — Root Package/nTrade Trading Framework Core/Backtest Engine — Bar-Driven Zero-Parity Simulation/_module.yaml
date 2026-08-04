@@ -1,9 +1,0 @@
-schema_version: 1
-module_path: ntrade_core/backtest
-title: Backtest Engine — Bar-Driven Zero-Parity Simulation
-scope:
-    - ntrade/backtest/
-source_files: []
-depends_on: []
-related_to:
-    - path: ntrade_core/kernel

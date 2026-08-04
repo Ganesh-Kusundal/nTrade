@@ -17,6 +17,13 @@
 - [test_chain_navigation.py](file://tests/test_chain_navigation.py)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated Instrument refresh logic documentation to reflect the fix for quote timestamp handling
+- Added detailed explanation of the `_last_refresh_at` field behavior and its impact on `is_stale()` functionality
+- Enhanced the state management section with specific details about refresh failure handling
+- Updated troubleshooting guide with information about stale quote detection
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -30,7 +37,7 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document provides a comprehensive data model for nTrade’s instrument hierarchy. It explains the base Instrument class and its state management (quote, depth, history, stream, indicators, signals, corporate actions), asset-specific implementations across cash and derivatives, the OptionChain composite pattern for options analytics, and the capability system that extends instrument functionality with market data, trading, streaming, analytics, derivatives, and provider extensions. It also includes field definitions, validation rules, business logic, relationships, and usage examples via factories and tests.
+This document provides a comprehensive data model for nTrade's instrument hierarchy. It explains the base Instrument class and its state management (quote, depth, history, stream, indicators, signals, corporate actions), asset-specific implementations across cash and derivatives, the OptionChain composite pattern for options analytics, and the capability system that extends instrument functionality with market data, trading, streaming, analytics, derivatives, and provider extensions. It also includes field definitions, validation rules, business logic, relationships, and usage examples via factories and tests.
 
 ## Project Structure
 The instrument domain is organized under ntrade/domain/instruments with supporting market data models under ntrade/domain/market. Factories and tests demonstrate creation and behavior.
@@ -194,12 +201,12 @@ Instrument <|-- SyntheticInstrument
   - Identity: symbol, exchange, name, currency, tick_size, lot_size, freeze_qty.
   - Internal state: _quote (Quote), _depth (MarketDepth), _history (HistoricalSeries), _stream (LiveStream), _indicators (dict), _signals (dict), _annotations (dict), _tags (set), _metadata (dict), _subscription_state, _corporate_actions (list), _metadata_hydrated, _last_refresh_at, _session, _market_status.
 - Lifecycle:
-  - refresh(force, now): pulls latest quote and depth from broker if available; hydrates metadata once.
+  - refresh(force, now): pulls latest quote and depth from broker if available; hydrates metadata once. **Updated**: Only stamps `_last_refresh_at` when quotes are successfully updated, preventing failed refresh attempts from marking stale quotes as fresh.
   - hydrate(): fetches tick size, lot size, freeze qty, circuit limits from broker adapter.
   - set_market_status(state): updates internal market status and session state.
 - Corporate actions:
   - record_corporate_action(action_type, amount, ratio, ex_date, record_date, description).
-  - corporate_actions property returns a copy of the list.
+  - corporate_actions property returns a copy.
 - Signals:
   - set_signal(name, value), get_signal(name, default), signals property returns a copy.
 - Snapshotting and serialization:
@@ -210,6 +217,7 @@ Instrument <|-- SyntheticInstrument
 
 Validation and error handling:
 - Broker-dependent operations gracefully handle missing broker_adapter by returning early or raising explicit runtime errors in downstream components (e.g., history fetch).
+- **Critical**: Failed quote fetches preserve previous quote state and do not update `_last_refresh_at`, ensuring `is_stale()` correctly reports stale quotes even after failed refresh attempts.
 
 **Section sources**
 - [base.py](file://ntrade/domain/instruments/base.py)
@@ -452,7 +460,7 @@ participant Analytics as "AnalyticsCapability"
 participant Derivs as "DerivativesCapability"
 User->>Inst : "instrument.market.ltp()"
 Inst-->>Market : "access cached_property"
-Market-->>User : "returns Quote.ltp"
+Market-->>User : "returns Quote.is_stale()"
 User->>Inst : "instrument.trade.buy().market().quantity(100).place()"
 Inst-->>Trade : "access cached_property"
 Trade-->>User : "OrderBuilder fluent API"
@@ -521,6 +529,7 @@ Chain --> Expiry["Expiry (expiry.py)"]
 - LiveStream buffers ticks with bounded deque to prevent memory growth.
 - OptionChain builds strike maps for O(1) lookups; analytics computations are deferred until accessed.
 - Capability objects are cached_properties on Instrument to avoid repeated instantiation.
+- **Critical**: The `_last_refresh_at` timestamp optimization prevents unnecessary state updates on failed refresh attempts, maintaining accurate freshness reporting.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -528,12 +537,15 @@ Common issues and resolutions:
   - History fetch and OptionChain.fetch raise RuntimeError when broker_adapter is None. Ensure a broker is wired during instrument creation or factory usage.
 - Stale quotes:
   - Use market.is_stale(max_age_seconds) to detect outdated quotes; call refresh() to pull fresh data.
+  - **Important**: Failed refresh attempts will NOT update `_last_refresh_at`, so `is_stale()` continues to report stale quotes correctly even after network failures.
 - Missing option type validation:
   - Option constructor enforces CE/PE; invalid types raise ValueError.
 - Subscription state:
   - stream.is_live indicates active subscription; subscribe/unsubscribe transitions are managed via broker_adapter.
 - Corporate actions:
   - record_corporate_action appends actions; use clear_corporate_actions() to reset.
+- **Refresh failure handling**:
+  - When broker connections fail, the instrument preserves the previous quote state and does not mark it as fresh, ensuring accurate staleness detection.
 
 **Section sources**
 - [history.py](file://ntrade/domain/market/history.py)
@@ -541,18 +553,20 @@ Common issues and resolutions:
 - [derivatives.py](file://ntrade/domain/instruments/derivatives.py)
 - [stream.py](file://ntrade/domain/market/stream.py)
 - [base.py](file://ntrade/domain/instruments/base.py)
+- [test_instruments.py](file://tests/test_instruments.py)
 
 ## Conclusion
-nTrade’s instrument hierarchy provides a robust, extensible foundation for market entities. Instrument centralizes state and lifecycle while capabilities offer focused interfaces for market data, trading, streaming, analytics, derivatives, and provider extensions. Asset-specific classes and derivatives enrich functionality with domain-specific analytics. The OptionChain composite pattern enables efficient options analytics and navigation. Clear validation, immutability, and lazy broker integration ensure reliability and performance.
+nTrade's instrument hierarchy provides a robust, extensible foundation for market entities. Instrument centralizes state and lifecycle while capabilities offer focused interfaces for market data, trading, streaming, analytics, derivatives, and provider extensions. Asset-specific classes and derivatives enrich functionality with domain-specific analytics. The OptionChain composite pattern enables efficient options analytics and navigation. Clear validation, immutability, and lazy broker integration ensure reliability and performance. The recent fix to the refresh logic ensures that failed quote fetches don't incorrectly mark stale quotes as fresh, maintaining data integrity in production environments.
 
 ## Appendices
 
 ### Field Definitions and Validation Rules
-- Instrument fields: symbol, exchange, name, currency, tick_size, lot_size, freeze_qty; internal state includes quote, depth, history, stream, indicators, signals, annotations, tags, metadata, corporate actions, session, market status.
+- Instrument fields: symbol, exchange, name, currency, tick_size, lot_size, freeze_qty; internal state includes quote, depth, history, stream, indicators, signals, annotations, tags, metadata, corporate actions, session, market status, and `_last_refresh_at`.
 - Quote fields: ltp, bid, ask, bid_qty, ask_qty, open, high, low, prev_close, volume, oi, vwap, avg_price, circuit_low, circuit_high, timestamp; derived methods include spread, mid_price, change, change_pct, with_update, is_stale.
 - MarketDepth fields: symbol, bids, asks, timestamp; methods include best_bid, best_ask, spread, depth, bid_ask_imbalance.
 - Option fields: strike, expiry, option_type (validated CE/PE), underlying_symbol, exercise_style, settlement, iv, greeks; analytics include intrinsic/extrinsic, moneyness, Black-Scholes, implied vol, payoff, pnl.
 - Future fields: underlying_symbol, expiry, front_month, next_month, underlying; methods include basis, cost_of_carry, roll_yield, continuous.
+- **Critical field**: `_last_refresh_at` - timestamps successful quote updates only; never updated on failed refresh attempts to maintain accurate staleness reporting.
 
 **Section sources**
 - [base.py](file://ntrade/domain/instruments/base.py)
@@ -570,6 +584,8 @@ nTrade’s instrument hierarchy provides a robust, extensible foundation for mar
   - instrument.record_corporate_action("dividend", amount=..., ex_date=...).
 - Validate option type:
   - Option constructor raises ValueError for invalid option_type.
+- **Test refresh failure handling**:
+  - Failed broker connections preserve previous quote state and timestamp, ensuring `is_stale()` continues to report correct freshness status.
 
 **Section sources**
 - [factories.py](file://ntrade/factories.py)

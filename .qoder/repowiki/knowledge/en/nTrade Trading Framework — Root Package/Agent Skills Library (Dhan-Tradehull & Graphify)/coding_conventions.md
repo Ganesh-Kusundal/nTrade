@@ -1,5 +1,0 @@
-- Each skill follows a fixed three-part structure: a YAML-frontmatted `SKILL.md` header (name, description, trigger keywords), a narrative instruction body, and a `references/` directory of focused topic documents loaded on demand.
-- Examples in both skills are written as complete, runnable Python snippets with inline comments explaining parameter choices, SEBI/regulatory constraints, and preferred patterns over deprecated APIs.
-- The graphify skill encodes multi-step workflows as numbered bash code blocks with explicit placeholder substitution (INPUT_PATH, IS_DIRECTED, SPEC_PATH) rather than abstract descriptions, ensuring deterministic execution by the agent.
-- Authentication and configuration in dhan-tradehull examples consistently prefer `pin_totp` mode for automated algos and explicitly warn against hardcoding lot sizes or using deprecated `get_option_greek()`.
-- Reference files are named descriptively per domain (e.g., `auth.md`, `orders.md`, `extraction-spec.md`) and cross-referenced from the parent `SKILL.md` via a table mapping tasks to file paths.

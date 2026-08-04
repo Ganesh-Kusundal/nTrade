@@ -134,3 +134,29 @@ def test_pipeline_requires_initial_quote_for_market_order():
     _publish_tick(k, 0.0)  # ltp stays 0
     fills = [e for e in k.bus.history if isinstance(e, OrderFilledEvent)]
     assert fills == []
+
+
+def test_strategy_hook_error_is_logged_and_isolated(caplog):
+    """A raising strategy is logged with its traceback and counted, but must
+    not take down sibling strategies (H-1: no silent swallow)."""
+    import logging
+    from ntrade.events.risk import SignalApprovedEvent
+
+    class Broken(Strategy):
+        name = "broken"
+
+        def on_tick(self, event):
+            raise ValueError("boom")
+
+    k = _kernel()
+    broken = Broken()
+    k.register_strategy(broken)
+    k.register_strategy(BuyOnTick(quantity=10))
+    with caplog.at_level(logging.ERROR, logger="ntrade.strategy"):
+        _publish_tick(k, 101.0)
+    assert "broken" in caplog.text
+    assert "boom" in caplog.text  # traceback is part of the record
+    assert broken._error_count == 1
+    # sibling strategy still ran: its signal was approved and filled
+    assert len([e for e in k.bus.history if isinstance(e, SignalApprovedEvent)]) == 1
+    assert len([e for e in k.bus.history if isinstance(e, OrderFilledEvent)]) == 1

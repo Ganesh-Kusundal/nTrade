@@ -1,1 +1,0 @@
-No build or test commands are present in this leaf module; it is a pure Python package imported as `ntrade.domain.market`.

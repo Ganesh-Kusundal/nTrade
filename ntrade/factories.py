@@ -14,7 +14,7 @@ from ntrade.domain.instruments.derivatives import Future, Option, SyntheticInstr
 from ntrade.registry import SymbolMaster
 
 if TYPE_CHECKING:
-    from ntrade.brokers.base import BrokerAdapter
+    from ntrade.domain.ports import BrokerAdapter
 
 
 class InstrumentFactory:

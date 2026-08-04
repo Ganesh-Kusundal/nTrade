@@ -37,7 +37,7 @@ This document describes the contract testing framework embedded in the nTrade pr
 - Strategy registration does not interfere with scanner throttling.
 - Event-driven components remain deterministic and resilient.
 
-These contracts are enforced by focused test files that target specific integration points without coupling to implementation details.
+These contracts are enforced by focused test files that target specific integration points without coupling to implementation details. TradingSession is the preferred entry point that composes the kernel, broker, and runner consistently across live/replay/backtest modes.
 
 ## Project Structure
 The repository organizes code into a layered architecture with domain, kernel, execution, brokers, sources, and tests. Contract tests reside under tests/ and assert behavioral invariants across modules.
@@ -56,6 +56,8 @@ end
 subgraph "Kernel"
 K1["kernel/event_bus.py"]
 K2["events/base.py"]
+KL["kernel/trading_session.py"]
+KRES["kernel/resilient.py (ResilientKernel)"]
 end
 subgraph "Brokers"
 B1["brokers/paper.py"]
@@ -63,13 +65,13 @@ end
 subgraph "Factories"
 F1["factories.py"]
 end
-T1 --> B1
 T2 --> K1
 T3 --> K1
 T4 --> F1
+T1 --> B1
 T5 --> B1
 T6 --> K1
-T7 --> K1
+T7 --> KL
 ```
 
 **Diagram sources**
@@ -86,7 +88,7 @@ T7 --> K1
 - [factories.py:1-84](file://ntrade/factories.py#L1-L84)
 
 **Section sources**
-- [ARCHITECTURE.md:1-389](file://ARCHITECTURE.md#L1-L389)
+- [ARCHITECTURE.md:1-527](file://ARCHITECTURE.md#L1-L527)
 - [pyproject.toml:1-25](file://pyproject.toml#L1-L25)
 
 ## Core Components
@@ -110,9 +112,11 @@ Key responsibilities:
 ## Architecture Overview
 Contract tests enforce boundaries between subsystems:
 - Auth shutdown must not emit observability events.
-- Reconnect must rebuild feeds with correct subscription codes and API version.
+- Reconnect must rebuild feeds with correct subscription codes and API versions.
 - Live runner consumers must be orthogonal: feed drop triggers risk halt; order timeout cancels orders only.
 - Strategy registration must not reset scanner throttle cache.
+- TradingSession (preferred entry point) composes the kernel, broker, and runner consistently across live/replay/backtest modes.
+- ResilientKernel recovers fills/positions/balance from EventStore without re-running strategies.
 
 ```mermaid
 sequenceDiagram
@@ -122,7 +126,7 @@ participant Bus as "EventBus"
 participant Runner as "LiveRunner"
 participant Feed as "MarketFeedSource"
 participant Broker as "DhanBroker"
-Test->>Kernel : "Create kernel + register instruments"
+Test->>Kernel : "TradingSession.replay() / .paper() (preferred entry) + register instruments"
 Test->>Feed : "Start feed source"
 Feed-->>Kernel : "Publish Tick/Quote/Depth events"
 Kernel->>Bus : "publish(event)"
@@ -371,7 +375,7 @@ PaperBroker --> CandleSeries : "returns"
 - [paper.py:72-87](file://ntrade/brokers/paper.py#L72-L87)
 
 ## Dependency Analysis
-Contract tests depend on core kernel and event infrastructure to assert system-wide invariants.
+Contract tests depend on core kernel and event infrastructure to assert system-wide invariants. TradingSession is the preferred entry point that composes the TradingKernel (with optional ResilientKernel crash recovery over the EventStore) and the LiveRunner orchestration harness.
 
 ```mermaid
 graph TB
@@ -422,8 +426,8 @@ The contract testing framework enforces critical invariants across the trading k
 
 ## Appendices
 - Configuration: pytest defaults defined in pyproject.toml.
-- Architecture overview: Layered design and dependency rules documented in ARCHITECTURE.md.
+- Architecture overview: Layered design with TradingSession as preferred entry point, ResilientKernel crash recovery, and LiveRunner orchestration. Documented in ARCHITECTURE.md.
 
 **Section sources**
 - [pyproject.toml:1-25](file://pyproject.toml#L1-L25)
-- [ARCHITECTURE.md:1-389](file://ARCHITECTURE.md#L1-L389)
+- [ARCHITECTURE.md:1-527](file://ARCHITECTURE.md#L1-L527)

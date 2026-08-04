@@ -21,8 +21,7 @@ from ntrade.domain.market.stream import LiveStream
 from ntrade.domain.session import MarketState, SessionState
 
 if TYPE_CHECKING:
-    from ntrade.brokers.base import BrokerAdapter
-    from ntrade.brokers.capabilities import BrokerExtensionFacade
+    from ntrade.domain.ports import BrokerAdapter, BrokerExtensionFacade
     from ntrade.domain.instruments.capabilities import (
         AnalyticsCapability,
         DerivativesCapability,
@@ -103,7 +102,7 @@ class Instrument(ABC):
     @property
     def broker(self) -> "BrokerExtensionFacade":
         """Broker-specific capabilities (e.g. nifty.broker.depth20())."""
-        from ntrade.brokers.capabilities import BrokerExtensionFacade
+        from ntrade.domain.ports import BrokerExtensionFacade
         return BrokerExtensionFacade(self)
 
     @property

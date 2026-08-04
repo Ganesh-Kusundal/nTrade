@@ -76,16 +76,19 @@ CAPS --> DHAN
 - [capabilities.py](file://ntrade/brokers/capabilities.py)
 
 ## Core Components
-- BrokerAdapter: Abstract base defining connect/disconnect, market data (quote, depth, historical), order lifecycle, portfolio queries, and subscription multiplexing. It also injects a clock for zero-parity timestamps across replay/live.
-- DhanBroker: Full-featured production broker implementing all adapter methods, integrating authentication, transport, and normalization layers.
-- PaperBroker: Deterministic in-memory broker for tests/backtests with realistic quote/depth/history generation and immediate fills.
-- Capability System: Dynamic feature discovery via decorators; instrument.broker.<capability>() resolves at runtime based on the active broker.
+- **BrokerAdapter**: Abstract base defining connect/disconnect, market data (quote, depth, historical), order lifecycle, portfolio queries, and subscription multiplexing. It also injects a clock for zero-parity timestamps across replay/live.
+- **DhanBroker**: Full-featured production broker implementing all adapter methods, integrating authentication, transport, and normalization layers. Routes all REST calls through the shared `BrokerRateGate` (constructed in `connect()`) and exposes broker-specific features via the capability system.
+- **PaperBroker**: Deterministic in-memory broker for tests/backtests with realistic quote/depth/history generation and immediate fills.
+- **Capability System**: Dynamic feature discovery via decorators; `instrument.broker.<capability>()` resolves at runtime based on the active broker.
+- **BrokerRateGate / Quota / RateLimited**: Multi-window, multi-class sliding-window rate gate — the single choke point for all outbound broker REST calls. Four quota classes (QUOTE, DATA, ORDER, NON_TRADING) with configurable windows; DH-904 backs a class off via `penalize()`.
+- **RetryPolicy**: Exponential-backoff retry that never retries `RateLimited` exceptions (DH-904 surfaces immediately); transient LTP failures retry.
 
 Key responsibilities:
 - Uniform domain-facing API regardless of broker
 - Time parity through injected clock
 - Fail-fast capability checks to avoid hidden if/else branches
 - Clean separation of concerns: auth, transport, mapping
+- Single rate-gate choke point preventing quota exhaustion across concurrent calls
 
 **Section sources**
 - [base.py](file://ntrade/brokers/base.py)
@@ -94,10 +97,31 @@ Key responsibilities:
 - [capabilities.py](file://ntrade/brokers/capabilities.py)
 
 ## Architecture Overview
-The DhanBroker composes three providers:
-- DhanAuthProvider: Lifecycle management and proactive token refresh using PIN+TOTP fallback
-- DhanTransport: Retry and error handling around Tradehull API calls
-- DhanMapper: Pure data normalization functions
+The DhanBroker composes three providers behind the BrokerAdapter contract:
+- **DhanAuthProvider** — Lifecycle management and proactive token refresh using PIN+TOTP fallback. Produces the authenticated Tradehull instance (`tsl`) shared by the broker and the market feed.
+- **DhanTransport** — All REST calls routed through a per-method choke point: every `self._tsl.*` call passes through `_invoke(quota, fn)` which acquires the session's `BrokerRateGate` before firing and normalises DH-904 / Rate_Limit failures into the typed `RateLimited` exception. The transport holds the shared `BrokerRateGate` and an injectable clock for zero-parity timestamps.
+- **DhanMapper** — Pure data normalization functions (wire→domain).
+
+The `BrokerRateGate` is the **single choke point** every outbound broker REST
+call passes through — it is constructed once per session in
+`DhanBroker.connect()` and shared with `DhanTransport`, `BrokerExecution`
+and the live feed. It is a multi-window, multi-class sliding-window gate
+(real `deque` timestamps, stdlib-only) with four quota classes matching
+Dhan's documented rate-limit table:
+
+| Quota class | Windows |
+|---|---|
+| `QUOTE` | 1/s |
+| `DATA` | 5/s, 100 000/day |
+| `ORDER` | 10/s, 250/min, 1000/h, 7000/day |
+| `NON_TRADING` | 20/s |
+
+`_invoke` acquires the gate, runs the function, and on a DH-904 backs the
+class off via `gate.penalize(quota, retry_after)` so the next acquire waits
+before re-firing. `status()` exposes read-only telemetry (windows, cooldown
+remaining, blocked flag) consumed by the pre-deploy quota-headroom report.
+`clock` and `sleep` are injectable, making rate-gate behaviour deterministic
+in tests.
 
 ```mermaid
 classDiagram
@@ -149,7 +173,7 @@ class PaperBroker {
 +get_holdings() list
 }
 class DhanAuthProvider {
-+authenticate() Any
++authenticate(gate) Any
 +refresh_if_needed() Any
 +stop() void
 +tsl Any
@@ -157,6 +181,10 @@ class DhanAuthProvider {
 +time_until_expiry() float
 }
 class DhanTransport {
++_gate BrokerRateGate
++_clock TradingClock
++_retry_policy RetryPolicy
++_invoke(quota, fn, *, retryable) Any
 +get_ltp(symbol) float
 +get_quote(symbol) Quote
 +get_depth(symbol, exchange, timeout) MarketDepth|None
@@ -198,12 +226,29 @@ class DhanMapper {
 +holdings_from_df(df) list
 +normalize_depth(symbol, bid_df, ask_df, now) MarketDepth
 }
+class BrokerRateGate {
++acquire(quota) void
++penalize(quota, seconds) void
++status() dict
+}
+class Quota {
+<<enumeration>>
+QUOTE DATA ORDER NON_TRADING
+}
+class RateLimited {
++quota Quota
++retry_after float|None
+}
 BrokerAdapter <|-- DhanBroker
 BrokerAdapter <|-- PaperBroker
 DhanBroker --> DhanAuthProvider : "composes"
 DhanBroker --> DhanTransport : "uses"
 DhanBroker --> DhanMapper : "normalizes"
+DhanBroker --> BrokerRateGate : "owns/shared gate"
+DhanTransport --> BrokerRateGate : "acquires"
 DhanTransport --> DhanMapper : "uses"
+BrokerRateGate --> Quota
+BrokerRateGate --> RateLimited
 ```
 
 **Diagram sources**
@@ -213,6 +258,8 @@ DhanTransport --> DhanMapper : "uses"
 - [dhan_auth_provider.py](file://ntrade/brokers/dhan_auth_provider.py)
 - [dhan_transport.py](file://ntrade/brokers/dhan_transport.py)
 - [dhan_mapper.py](file://ntrade/brokers/dhan_mapper.py)
+- [rate_limit.py](file://ntrade/execution/rate_limit.py)
+- [retry.py](file://ntrade/execution/retry.py)
 
 ## Detailed Component Analysis
 
@@ -241,6 +288,8 @@ Stream --> End(["Consistent domain objects"])
 - Supports bracket orders via place_super_order.
 - Normalizes quotes, depth, history, option chains, and order books into domain types.
 - Integrates with DhanAuthProvider for token lifecycle and DhanTransport for API calls.
+- Routes every outbound REST call through the shared `BrokerRateGate` via `DhanTransport._invoke(Quota, fn)` with four quota classes: `Quota.QUOTE` (1/s), `Quota.DATA` (5/s, 100k/day), `Quota.ORDER` (10/s, 250/min, 1000/h, 7000/day), `Quota.NON_TRADING` (20/s).
+- Dhan-specific capabilities (depth20, kill_switch, expiry_list, lot_size, etc.) wrap their broker calls in `broker._gated(<class>, lambda: broker.tsl.<method>(...))` so they pay the correct quota class and DH-904 surfaces as `RateLimited`.
 
 ```mermaid
 sequenceDiagram
@@ -248,11 +297,14 @@ participant Strat as "Strategy/Engine"
 participant Broker as "DhanBroker"
 participant Auth as "DhanAuthProvider"
 participant Trans as "DhanTransport"
+participant Gate as "BrokerRateGate"
 participant TSL as "Tradehull"
 Strat->>Broker : place_order(Order)
 Broker->>Auth : refresh_if_needed()
 Auth-->>Broker : tsl (or refreshed)
-Broker->>Trans : place_order(**params)
+Broker->>Trans : _invoke(Quota.ORDER, place_order(...))
+Trans->>Gate : acquire(ORDER)
+Gate-->>Trans : slot granted
 Trans->>TSL : order_placement(...)
 TSL-->>Trans : order_id
 Trans-->>Broker : order_id
@@ -266,6 +318,9 @@ Broker-->>Strat : Order(PENDING)
 
 **Section sources**
 - [dhan.py](file://ntrade/brokers/dhan.py)
+- [dhan_transport.py](file://ntrade/brokers/dhan_transport.py)
+- [rate_limit.py](file://ntrade/execution/rate_limit.py)
+- [retry.py](file://ntrade/execution/retry.py)
 
 ### PaperBroker (Simulation)
 - Always connected, deterministic seeding for quotes and history.
@@ -334,7 +389,7 @@ participant Provider as "DhanAuthProvider"
 participant AuthMod as "dhan_auth.get_tradehull"
 participant Store as "Shared Token Store"
 participant TSL as "Tradehull"
-App->>Provider : authenticate()
+App->>Provider : authenticate(gate)
 Provider->>AuthMod : get_tradehull(env_path, env)
 AuthMod->>Store : read token (if exists)
 alt valid token
@@ -357,6 +412,7 @@ Provider-->>App : TSL (with scheduled refresh)
 
 ### Connection Management and Streaming
 - BrokerAdapter tracks subscriptions per instrument symbol and notifies streams on disconnect.
+- DhanBroker constructs a per-session `BrokerRateGate` in `connect()` and shares it with `DhanTransport`, `BrokerExecution`, and the live feed — all outbound REST calls are throttled through it.
 - DhanBroker propagates clock to transport for time parity.
 - PaperBroker always connected; push_tick emits ticks to subscribed streams.
 
@@ -373,21 +429,27 @@ Notify --> Clear["Clear subscriptions"]
 - [paper.py](file://ntrade/brokers/paper.py)
 
 ### Error Handling Strategies
-- DhanTransport wraps flaky endpoints with retries; raises BrokerDataError for critical failures (e.g., zero LTP).
+- DhanTransport wraps flaky endpoints with retries; raises `BrokerDataError` for critical failures (e.g., zero LTP).
+- DH-904 / Rate_Limit failures are normalised into the typed `RateLimited` exception at the transport boundary (`_invoke`) and are **never** retried — they propagate up so data reads fail loud instead of silently returning empty/zero (B-005, K-021 contracts). `is_rate_limited()` matches Dhan's error text variants.
 - DhanBroker converts marketplace errors to clear RuntimeError messages and updates order status consistently.
+- `get_balance()` / `get_positions()` raise on transport failure instead of collapsing to `0.0` / `[]`, so position sync can distinguish "flat" from "error".
 - PaperBroker never fails; deterministic behavior aids debugging.
 
 ```mermaid
 flowchart TD
-Call["API call"] --> Try{"Retry policy"}
-Try --> |Success| Return["Return normalized data"]
-Try --> |Failure| Critical{"Critical endpoint?"}
-Critical --> |Yes| Raise["Raise specific error (e.g., BrokerDataError)"]
-Critical --> |No| Fallback["Return empty/zero defaults"]
+    Call["API call"] --> Try{"Retry policy"}
+    Try --> |Success| Return["Return normalized data"]
+    Try --> |Failure| Rate{"RateLimited (DH-904)?"}
+    Rate --> |Yes| Raise["Raise RateLimited (never retried)"]
+    Rate --> |No| Critical{"Critical endpoint?"}
+    Critical --> |Yes| Raise2["Raise BrokerDataError"]
+    Critical --> |No| Fallback["Return empty/zero defaults"]
 ```
 
 **Section sources**
 - [dhan_transport.py](file://ntrade/brokers/dhan_transport.py)
+- [rate_limit.py](file://ntrade/execution/rate_limit.py)
+- [retry.py](file://ntrade/execution/retry.py)
 - [dhan.py](file://ntrade/brokers/dhan.py)
 
 ### Broker-Specific Order Routing and Fill Handling
@@ -466,7 +528,8 @@ Broker-->>Inst : Order(updated)
 
 ## Dependency Analysis
 - DhanBroker depends on DhanAuthProvider, DhanTransport, and DhanMapper.
-- DhanTransport depends on DhanMapper and the underlying Tradehull library.
+- DhanBroker owns the shared `BrokerRateGate`, which DhanTransport acquires for every outbound call.
+- DhanTransport depends on DhanMapper, the underlying Tradehull library, and RetryPolicy.
 - Capability system decouples broker-specific extensions from the base API.
 - Tests validate capability availability and paper broker behavior.
 
@@ -475,7 +538,12 @@ graph LR
 DhanBroker["DhanBroker"] --> AuthProv["DhanAuthProvider"]
 DhanBroker --> Transport["DhanTransport"]
 DhanBroker --> Mapper["DhanMapper"]
+DhanBroker --> Gate["BrokerRateGate"]
+Transport --> Gate
 Transport --> Mapper
+Transport --> Retry["RetryPolicy"]
+Gate --> Quota["Quota"]
+Gate --> RateLim["RateLimited"]
 CapSys["Capabilities"] --> DhanBroker
 Tests["Tests"] --> CapSys
 Tests --> PaperBroker["PaperBroker"]
@@ -495,25 +563,29 @@ Tests --> PaperBroker["PaperBroker"]
 - [test_brokers.py](file://tests/test_brokers.py)
 
 ## Performance Considerations
-- Retry policies mitigate transient network issues; avoid excessive retries to respect rate limits.
+- Retry policies mitigate transient network issues; DH-904 (RateLimited) is never retried — retrying a throttled call only amplifies quota exhaustion.
 - WebSocket depth snapshot bounded by timeout to prevent blocking.
+- The `BrokerRateGate` backpressures all concurrent calls: `ParallelHistoryFetcher` uses 4 workers (tuned to the 5/s DATA quota) so the gate never exceeds the quota.
 - Clock injection ensures reproducible timing in replay/backtest scenarios.
-- Avoid unnecessary object creation in tight loops; reuse mappers where possible.
+- `clock` and `sleep` are injectable on `BrokerRateGate` so rate-gate tests are deterministic.
 
 ## Troubleshooting Guide
 - Authentication failures: Check shared token store, env variables, and PIN/TOTP settings; observe cooldown logs.
-- Zero LTP or empty quotes: Inspect retry behavior and network connectivity; consider refreshing instrument quotes before placing orders.
-- Unsupported capabilities: Ensure the current broker supports the requested capability; use available() to list supported features.
+- Zero LTP or empty quotes: Inspect retry behavior and network connectivity; consider refreshing instrument quotes before placing orders. A DH-904 surfaces as `RateLimited` — check the pre-deploy quota-headroom report (`BrokerRateGate.status()`).
+- Unsupported capabilities: Ensure the current broker supports the requested capability; use `available()` to list supported features. Capabilities route through `broker._gated(quota, fn)` so every call pays the right quota class.
 - Order rejections: Verify SEBI constraints (F&O MARKET→LIMIT conversion) and LTP availability.
+- Rate-limited calls: `get_balance()` / `get_positions()` raise on transport failure (not collapsing to `0.0`/`[]`); `PositionSyncEngine` keeps the previous state on failure (failure-safe).
 
 **Section sources**
 - [dhan_auth.py](file://ntrade/brokers/dhan_auth.py)
 - [dhan_transport.py](file://ntrade/brokers/dhan_transport.py)
+- [rate_limit.py](file://ntrade/execution/rate_limit.py)
+- [retry.py](file://ntrade/execution/retry.py)
 - [dhan.py](file://ntrade/brokers/dhan.py)
 - [capabilities.py](file://ntrade/brokers/capabilities.py)
 
 ## Conclusion
-nTrade’s broker abstraction cleanly separates domain logic from broker specifics. BrokerAdapter defines a stable contract; DhanBroker delivers production-grade functionality with robust auth, transport, and normalization; PaperBroker offers deterministic simulation. The capability system enables dynamic, safe extension points. Together, these patterns allow seamless switching between live and test environments without code changes.
+nTrade's broker abstraction cleanly separates domain logic from broker specifics. BrokerAdapter defines a stable contract; DhanBroker delivers production-grade functionality with robust auth, transport, and normalization; PaperBroker offers deterministic simulation. The capability system enables dynamic, safe extension points. The `BrokerRateGate` is the single choke point for all outbound broker REST calls, with four quota classes (QUOTE, DATA, ORDER, NON_TRADING) and DH-904 surfaced as a typed `RateLimited` exception that is never retried. Together, these patterns allow seamless switching between live and test environments without code changes.
 
 ## Appendices
 

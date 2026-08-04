@@ -93,6 +93,31 @@ def _cooldown_active(cooldown_path: str) -> bool:
         return False
 
 
+def _arm_cooldown(cooldown_path: str) -> None:
+    """Record a TOTP attempt timestamp without touching the token store.
+
+    M-5: failed mint attempts must arm the cooldown too — previously only a
+    successful mint persisted it, so a wrong PIN/TOTP could be hammered in a
+    tight retry loop and trip Dhan's anti-brute-force lockout.
+    """
+    if not cooldown_path:
+        return
+    try:
+        last_success = 0.0
+        try:
+            last_success = float(
+                json.loads(Path(cooldown_path).read_text()).get("last_success_at", 0))
+        except Exception:
+            pass
+        Path(cooldown_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(cooldown_path).write_text(json.dumps(
+            {"broker": "dhan", "last_attempt_at": time.time(),
+             "last_success_at": last_success}))
+        os.chmod(cooldown_path, 0o600)
+    except Exception:
+        pass
+
+
 def _persist_shared(token_path: str, cooldown_path: str, token: str, *, source: str = "TOTP") -> None:
     try:
         exp, _ = jwt_expiry(token)
@@ -255,10 +280,15 @@ def get_tradehull(env: dict | None = None, env_path: str = ".env", gate=None):
         )
     if _cooldown_active(cooldown_path):
         raise ConnectionError(f"Dhan TOTP login is on cooldown (see {cooldown_path}). Wait ~90s.")
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        tsl = Tradehull(client_code, mode="pin_totp", pin=pin, totp_secret=totp_secret)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            tsl = Tradehull(client_code, mode="pin_totp", pin=pin, totp_secret=totp_secret)
+    except Exception as exc:
+        _arm_cooldown(cooldown_path)  # M-5: a failed mint arms the cooldown too
+        raise ConnectionError(f"Dhan PIN+TOTP mint raised: {exc}") from exc
     ok, _ = _login_ok_status(tsl, gate=gate)
     if not ok:
+        _arm_cooldown(cooldown_path)  # M-5: a dead mint arms the cooldown too
         raise ConnectionError("Dhan PIN+TOTP login failed. Check DHAN_PIN / DHAN_TOTP_SECRET.")
     _persist_shared(token_path, cooldown_path, tsl.token_id, source="TOTP")
     return tsl

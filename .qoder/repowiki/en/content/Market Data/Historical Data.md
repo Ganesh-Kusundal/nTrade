@@ -17,15 +17,16 @@
 - [test_history_stream.py](file://tests/test_history_stream.py)
 - [dhan_mapper.py](file://ntrade/brokers/dhan_mapper.py)
 - [test_candle_timezone.py](file://tests/test_candle_timezone.py)
+- [test_dhan_transport.py](file://tests/test_dhan_transport.py)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated HistoricalSeries.resample() section to document the K-025 alignment with CandleEngine bucketing
-- Added detailed explanation of label='right' and closed='left' parameters for parity between backtest and live environments
-- Enhanced resampling documentation with specific technical details about timestamp labeling conventions
-- Updated DhanMapper.resample_history() documentation to reflect consistent K-025 alignment
-- Added comprehensive K-025 validation and testing references
+- Enhanced DhanMapper.resample_history() documentation with comprehensive K-025 alignment details
+- Added detailed cross-path parity validation between HistoricalSeries.resample() and DhanMapper.resample_history()
+- Updated night-session handling documentation with specific test cases for calendar day boundaries
+- Expanded validation section with new test coverage for right-edge labeling convention
+- Added comprehensive examples of 2m/4m interval grid divergence behavior
 
 ## Table of Contents
 1. Introduction
@@ -103,7 +104,7 @@ DM --> |"Resampled OHLCV"| BS
 
 **Section sources**
 - [history.py:14-149](file://ntrade/domain/market/history.py#L14-L149)
-- [candles.py:18-67](file://ntrade/domain/market/candles.py#L18-L67)
+- [candles.py:18-67](file://ntrade/domain/market/candles.py#L18-67)
 - [base.py:83-90](file://ntrade/brokers/base.py#L83-90)
 - [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-L257)
 - [candle_engine.py:19-82](file://ntrade/engines/candle_engine.py#L19-L82)
@@ -127,7 +128,7 @@ DM --> |"Resampled OHLCV"| BS
 - [history.py:14-149](file://ntrade/domain/market/history.py#L14-L149)
 - [candles.py:18-67](file://ntrade/domain/market/candles.py#L18-67)
 - [base.py:83-90](file://ntrade/brokers/base.py#L83-90)
-- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-257)
+- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-L257)
 - [candle_engine.py:19-82](file://ntrade/engines/candle_engine.py#L19-L82)
 - [market_feed.py:23-105](file://ntrade/sources/market_feed.py#L23-L105)
 - [event_store.py:76-236](file://ntrade/storage/event_store.py#L76-236)
@@ -168,7 +169,7 @@ Note over ES : Events appended for deterministic replay
 **Diagram sources**
 - [history.py:52-88](file://ntrade/domain/market/history.py#L52-L88)
 - [base.py:83-90](file://ntrade/brokers/base.py#L83-90)
-- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-257)
+- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-L257)
 - [dhan_mapper.py:101-147](file://ntrade/brokers/dhan_mapper.py#L101-L147)
 - [candle_engine.py:38-82](file://ntrade/engines/candle_engine.py#L38-L82)
 - [event_store.py:89-114](file://ntrade/storage/event_store.py#L89-114)
@@ -229,11 +230,11 @@ BrokerAdapter <|-- DhanBroker
 
 **Diagram sources**
 - [base.py:83-90](file://ntrade/brokers/base.py#L83-90)
-- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-257)
+- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-L257)
 
 **Section sources**
 - [base.py:83-90](file://ntrade/brokers/base.py#L83-90)
-- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-257)
+- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-L257)
 
 ### CandleEngine: Tick-to-Candle Aggregation
 - Subscribes to TickEvent, buckets by timeframe, updates open/high/low/close/volume, and publishes CandleClosedEvent when a new bucket starts.
@@ -272,7 +273,7 @@ Source->>Bus : TickEvent(ts, price, quantity)
 ```
 
 **Diagram sources**
-- [market_feed.py:47-105](file://ntrade/sources/market_feed.py#L47-105)
+- [market_feed.py:47-105](file://ntrade/sources/market_feed.py#L47-L105)
 - [dhan_feed.py:98-233](file://ntrade/sources/dhan_feed.py#L98-L233)
 
 **Section sources**
@@ -368,12 +369,13 @@ ResetIndex --> ReturnNew["Return new HistoricalSeries<br/>with rule timeframe"]
 - [history.py:122-136](file://ntrade/domain/market/history.py#L122-136)
 
 ### DhanMapper.resample_history(): Broker-Specific Resampling with K-025 Alignment
-**Updated** The DhanMapper.resample_history method applies the same K-025 aligned timestamp conventions for broker-specific resampling operations.
+**Updated** The DhanMapper.resample_history method applies the same K-025 aligned timestamp conventions for broker-specific resampling operations with comprehensive validation.
 
 - **IST Origin Anchoring**: Uses 09:15 IST market open as origin to keep night-session candles within their calendar day.
 - **K-025 Parity**: Applies `closed='left', label='right'` to match CandleEngine's bucketing convention.
 - **Grid Parity Considerations**: Exact grid parity with CandleEngine holds only for 3m intervals due to epoch alignment; 2m/4m intervals sit 1-3min off the engine's epoch grid by design.
 - **Night Session Handling**: Preserves calendar day boundaries for night sessions while maintaining right-edge labeling.
+- **Cross-Path Validation**: Comprehensive tests ensure parity between HistoricalSeries.resample() and DhanMapper.resample_history() implementations.
 
 ```mermaid
 flowchart TD
@@ -420,7 +422,7 @@ DM --> |"K-025 aligned resampling"| BS
 **Diagram sources**
 - [history.py:52-88](file://ntrade/domain/market/history.py#L52-88)
 - [base.py:83-90](file://ntrade/brokers/base.py#L83-90)
-- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-257)
+- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-L257)
 - [candle_engine.py:29-82](file://ntrade/engines/candle_engine.py#L29-82)
 - [market_feed.py:23-105](file://ntrade/sources/market_feed.py#L23-L105)
 - [dhan_feed.py:98-233](file://ntrade/sources/dhan_feed.py#L98-L233)
@@ -431,7 +433,7 @@ DM --> |"K-025 aligned resampling"| BS
 **Section sources**
 - [history.py:52-88](file://ntrade/domain/market/history.py#L52-88)
 - [base.py:83-90](file://ntrade/brokers/base.py#L83-90)
-- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-257)
+- [dhan.py:189-257](file://ntrade/brokers/dhan.py#L189-L257)
 - [candle_engine.py:29-82](file://ntrade/engines/candle_engine.py#L29-82)
 - [market_feed.py:23-105](file://ntrade/sources/market_feed.py#L23-L105)
 - [dhan_feed.py:98-233](file://ntrade/sources/dhan_feed.py#L98-L233)
@@ -456,6 +458,7 @@ Common issues and resolutions:
 - Indicator failures: compute_bundle logs warnings; check input DataFrame has required columns.
 - **Resample timestamp mismatch**: If resampled timestamps don't match expected CandleEngine labels, verify the resample uses `closed='left', label='right'` configuration for K-025 parity.
 - **Night session issues**: For DhanMapper resampling, ensure timestamps are properly normalized to naive IST wall time before grouping by calendar day.
+- **Grid parity confusion**: Remember that exact grid parity with CandleEngine only holds for 3m intervals; 2m/4m intervals intentionally diverge due to 09:15 IST origin anchoring.
 
 **Section sources**
 - [history.py:52-88](file://ntrade/domain/market/history.py#L52-88)
@@ -494,6 +497,7 @@ nTrade's historical data subsystem provides robust, zero-parity access across li
 - Use EventStore.recovery_events to reconstruct causal sequences and identify missing market events.
 - **K-025 Validation**: Verify resampled timestamps align with CandleEngine labels using the formula: `datetime.fromtimestamp(engine._bucket(t) + engine.seconds, tz=timezone.utc).replace(tzinfo=None)`
 - **Night Session Validation**: Ensure resampled night-session candles remain within their calendar day boundaries.
+- **Cross-Path Parity Validation**: Test that both HistoricalSeries.resample() and DhanMapper.resample_history() produce consistent right-edge labeling conventions.
 
 **Section sources**
 - [history.py:116-124](file://ntrade/domain/market/history.py#L116-124)
@@ -515,10 +519,12 @@ nTrade's historical data subsystem provides robust, zero-parity access across li
 - **K-025 Parity Tests**: Comprehensive validation ensures resampled timestamps match CandleEngine's closed-candle labels exactly.
 - **Timezone Independence Tests**: Validates UTC-pinned bucketing and consistent labeling across different host timezones.
 - **Night Session Tests**: Ensures proper calendar day grouping for night-session candles.
+- **Cross-Path Parity Tests**: Verifies that both resample implementations share the same right-edge labeling convention.
 
 **Section sources**
 - [test_history_stream.py:13-70](file://tests/test_history_stream.py#L13-70)
 - [test_history_stream.py:107-148](file://tests/test_history_stream.py#L107-148)
+- [test_history_stream.py:150-205](file://tests/test_history_stream.py#L150-205)
 - [test_candle_timezone.py:32-55](file://tests/test_candle_timezone.py#L32-55)
 - [test_dhan_transport.py:156-216](file://tests/test_dhan_transport.py#L156-216)
 
@@ -530,10 +536,11 @@ The K-025 alignment ensures perfect parity between backtest and live environment
 - **DhanMapper Resampling**: Applies the same convention with IST-origin anchoring for broker-specific resampling operations.
 - **Validation**: Tests verify that resampled timestamps equal `engine_labels = [datetime.fromtimestamp(engine._bucket(t) + engine.seconds, tz=timezone.utc).replace(tzinfo=None) for t in timestamps]`.
 - **Grid Parity Notes**: Exact grid parity with CandleEngine holds only for 3m intervals; 2m/4m intervals intentionally sit 1-3min off the engine's epoch grid to maintain calendar day boundaries.
+- **Right-Edge Convention**: Both implementations consistently label bars at the bin's right edge (bin start + span), ensuring semantic consistency even when grids diverge.
 
 **Section sources**
 - [history.py:129-135](file://ntrade/domain/market/history.py#L129-135)
 - [dhan_mapper.py:130-140](file://ntrade/brokers/dhan_mapper.py#L130-140)
-- [test_history_stream.py:107-148](file://tests/test_history_stream.py#L107-148)
+- [test_history_stream.py:150-205](file://tests/test_history_stream.py#L150-205)
 - [test_candle_timezone.py:32-55](file://tests/test_candle_timezone.py#L32-55)
 - [test_dhan_transport.py:156-216](file://tests/test_dhan_transport.py#L156-216)

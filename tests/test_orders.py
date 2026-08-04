@@ -66,7 +66,7 @@ def test_stop_order():
 
 def test_option_limit_price_must_not_be_market():
     """SEBI: F&O market orders banned — DhanBroker force-converts to LIMIT."""
-    from datetime import date
+    from datetime import date, datetime
 
     import types
 
@@ -77,7 +77,8 @@ def test_option_limit_price_must_not_be_market():
     broker._connected = True
     broker.tsl = types.SimpleNamespace(order_placement=lambda **kw: "ORD-1")
     opt._broker = broker
-    opt._quote = opt._quote.with_update(ltp=50.0)
+    # H-2: the conversion guard requires a fresh timestamped quote
+    opt._quote = opt._quote.with_update(ltp=50.0, timestamp=datetime.now())
     order = opt.order.market(OrderSide.BUY, quantity=75)
     assert order.order_type == OrderType.LIMIT
     assert order.price > 50.0  # 2% above LTP for instant fill

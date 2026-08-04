@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     nifty = session.index("NIFTY")
-    rel = session.index("RELIANCE")
+    rel = session.stock("RELIANCE")  # equity — index("RELIANCE") makes get_depth return None
 
     # ------------------------------------------------------------ market data
     check("quote.ltp (NIFTY)", lambda: nifty.refresh() and nifty.market.ltp(), sane=lambda v: v > 0)

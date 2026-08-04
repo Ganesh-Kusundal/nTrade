@@ -1,1 +1,0 @@
-`python check_connection.py` validates Dhan Tradehull connectivity by fetching NIFTY LTP and account balance; `pytest` runs the full offline + kernel/backtest/replay/live suites from the `tests/` directory.

@@ -1,1 +1,0 @@
-Provides interchangeable live-broker and simulated execution targets with shared slippage/commission/Indian statutory cost models, a strategy-to-target router, and stdlib-only retry and multi-window rate-limiting primitives to enforce zero-parity between paper and live order fills.

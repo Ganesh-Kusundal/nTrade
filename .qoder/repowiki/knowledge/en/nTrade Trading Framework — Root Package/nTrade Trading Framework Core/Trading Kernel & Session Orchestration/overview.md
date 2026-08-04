@@ -1,1 +1,0 @@
-Event-driven trading kernel that wires market data, indicators, strategies, risk, portfolio and execution engines around a thread-safe pub/sub bus with a deterministic clock abstraction for live, replay and simulation modes.

@@ -1,1 +1,0 @@
-Defines the core instrument hierarchy (equities, indices, futures, options, etc.) and composes six lazy capability objects — market, trade, stream, analytics, derivatives, and extensions — that expose a fluent API over each instrument's internal state.

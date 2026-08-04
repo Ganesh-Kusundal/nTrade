@@ -41,23 +41,35 @@ The architecture enables testing isolation, component replacement, and maintaina
 
 ## Project Structure
 At a high level, nTrade organizes code into distinct layers:
-- Public API (facade + factories)
-- Trading Kernel (event-centric orchestration)
+- Public API (TradingSession preferred entry point; Market facade legacy wrapper)
+- Trading Kernel (event-centric, zero parity — TradingKernel, ResilientKernel, StrategyRunner, LiveRunner)
+- Sources / Sim / Data (interchangeable event sources — sources/, sim/, data/)
 - Domain (pure business logic and rich objects)
-- Broker (adapters behind domain objects)
-- Infrastructure (transport, persistence, replay)
+- Broker (adapters behind domain objects — DhanBroker composes DhanTransport/DhanAuthProvider/DhanMapper)
+- Infrastructure (BrokerRateGate, RetryPolicy, token store, EventStore, transport)
 
 ```mermaid
 graph TB
 subgraph "Public API"
-FAC["Market Facade"]
+TS["TradingSession (preferred entry point)"]
+FAC["Market Facade (legacy wrapper)"]
 FACT["InstrumentFactory"]
 REG["BrokerRegistry / SymbolMaster"]
 end
 subgraph "Trading Kernel"
-TS["TradingSession"]
 TK["TradingKernel"]
+RK["ResilientKernel"]
+RS["StrategyRunner"]
+LR["LiveRunner"]
 EB["EventBus"]
+CL["TradingClock (Live/Replay/Sim)"]
+end
+subgraph "Sources / Sim / Data"
+SRC["sources/ (MarketFeedSource, DhanMarketFeedSource, Synthetic)"]
+SIM["sim/ (synthesize_1m_ticks, SimTick)"]
+DATA["data/ (ParallelHistoryFetcher, ParquetStorage, GapDetector, ScannerLoader)"]
+RE["ReplayEngine"]
+BS["BacktestSimulator"]
 end
 subgraph "Domain"
 INST["Instrument (base)"]
@@ -65,53 +77,76 @@ STATE["SessionState / MarketState"]
 end
 subgraph "Broker Layer"
 BBASE["BrokerAdapter (ABC)"]
-DHAN["DhanBroker"]
+DHAN["DhanBroker (composes DhanTransport, DhanAuthProvider, DhanMapper)"]
 PAPER["PaperBroker"]
 end
 subgraph "Infrastructure"
+RT["BrokerRateGate (5/s, sliding window)"]
+RP["RetryPolicy (exponential backoff)"]
+TS2["Token store + cooldown file"]
 ROUTER["ExecutionRouter"]
-STORE["EventStore (storage)"]
+STORE["EventStore (append-only JSONL)"]
 end
-FAC --> TS
 TS --> TK
-TK --> EB
-TK --> ROUTER
+FAC --> TS
 TS --> FACT
+TS --> REG
+TK --> EB
+TK --> CL
+TK --> ROUTER
+TK --> STORE
+RK --> TK
+RS --> TK
+LR --> TK
+TK --> SRC
+TK --> SIM
+TK --> DATA
+TK --> RE
+TK --> BS
 FACT --> INST
 INST --> BBASE
 BBASE --> DHAN
 BBASE --> PAPER
-TK --> STORE
+DATA --> RT
+SRC --> RT
+DHAN --> TS2
+DHAN --> RT
+DHAN --> RP
 ```
 
 **Diagram sources**
-- [facade.py:27-101](file://ntrade/facade.py#L27-L101)
-- [factories.py:20-84](file://ntrade/factories.py#L20-L84)
-- [registry.py:16-125](file://ntrade/registry.py#L16-L125)
 - [trading_session.py:39-306](file://ntrade/kernel/trading_session.py#L39-L306)
 - [session.py:38-198](file://ntrade/kernel/session.py#L38-L198)
 - [event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-L81)
-- [base.py:50-305](file://ntrade/domain/instruments/base.py#L50-L305)
+- [resilient.py:1-147](file://ntrade/kernel/resilient.py#L1-L147)
+- [base.py:50-305](file://ntrade/domain/instruments/base.py#L50-305)
 - [session_state.py:10-46](file://ntrade/domain/session.py#L10-L46)
-- [base_broker.py:25-163](file://ntrade/brokers/base.py#L25-L163)
-- [dhan_broker.py:54-200](file://ntrade/brokers/dhan.py#L54-L200)
-- [paper_broker.py:23-200](file://ntrade/brokers/paper.py#L23-L200)
+- [base_broker.py:25-163](file://ntrade/brokers/base.py#L25-163)
+- [dhan.py:54-200](file://ntrade/brokers/dhan.py#L54-L200)
+- [paper.py:23-200](file://ntrade/brokers/paper.py#L23-L200)
 - [router.py:19-49](file://ntrade/execution/router.py#L19-L49)
+- [parquet_store.py:1-292](file://ntrade/data/parquet_store.py#L1-L292)
 
 **Section sources**
-- [ARCHITECTURE.md:20-56](file://ARCHITECTURE.md#L20-L56)
-- [ARCHITECTURE.md:327-356](file://ARCHITECTURE.md#L327-L356)
+- [ARCHITECTURE.md:20-75](file://ARCHITECTURE.md#L20-L75)
+- [ARCHITECTURE.md:470-490](file://ARCHITECTURE.md#L470-L490)
+**Section sources**
+- [ARCHITECTURE.md:20-75](file://ARCHITECTURE.md#L20-L75)
+- [ARCHITECTURE.md:470-490](file://ARCHITECTURE.md#L470-L490)
 
 ## Core Components
-- Market Facade: Thin adapter over TradingSession for backward compatibility; exposes instrument creation and account methods.
-- TradingSession: Unified entry point combining broker connection, instrument creation via InstrumentFactory, engine kernel, and strategy runner.
+- TradingSession (preferred entry point): Combines broker connection, InstrumentFactory, TradingKernel lifecycle, and strategy/position management.
+- Market Facade (legacy): Thin backward-compatible wrapper over TradingSession; use TradingSession directly for new code.
 - TradingKernel: Orchestrates engines, wires EventBus, sets execution target (BrokerExecution or SimulatedExecution), and manages lifecycle.
+- ResilientKernel: Crash recovery on top of EventStore — replays causal market stream without re-trading strategies.
+- StrategyRunner: Multi-strategy lifecycle management on one kernel with per-strategy RiskEngine isolation.
+- LiveRunner: Orchestration harness — starts kernel + feed, polls orders/syncs positions, bridges RiskHaltedEvent to broker kill-switch.
 - EventBus: Synchronous pub/sub with thread-safe dispatch and history recording.
 - Instrument (domain): Rich object owning state (quote, depth, history, stream, indicators, signals) and capability facades; interacts with BrokerAdapter via constructor injection.
-- BrokerAdapter (ABC): Abstract boundary hiding transport; defines quote, depth, historical, order placement, and optional lifecycle methods.
-- DhanBroker and PaperBroker: Concrete implementations of BrokerAdapter for live and paper trading.
-- ExecutionRouter: Routes order intents to execution targets by strategy name or default.
-- Factories and Registry: InstrumentFactory creates instruments via SymbolMaster flyweight; BrokerRegistry maps names to broker factories.
+- DhanBroker: Composes DhanTransport (BrokerRateGate choke point), DhanAuthProvider (token store + cooldown + PIN/TOTP fallback), and DhanMapper (wire→domain normalization).
+- BrokerRateGate: Multi-window sliding-window rate gate (Quota.QUOTE/DATA/ORDER/NON_TRADING) — single choke point for all outbound broker REST calls.
+- RetryPolicy: Exponential backoff for transient failures; DH-904 surfaced as typed RateLimited (never retried).
+- EventStore: Append-only JSONL event record for audit, deterministic replay, and crash recovery.
 
 **Section sources**
 - [facade.py:27-101](file://ntrade/facade.py#L27-L101)
@@ -128,12 +163,14 @@ TK --> STORE
 
 ## Architecture Overview
 nTrade follows Clean Architecture with strict dependency direction:
-- Public API depends on TradingSession and Factories
-- TradingSession depends on TradingKernel, InstrumentFactory, StrategyRunner
-- TradingKernel depends on engines, EventBus, ExecutionRouter, and optionally BrokerAdapter
+- Public API uses TradingSession as the preferred entry point (Market facade is legacy)
+- TradingSession depends on TradingKernel, InstrumentFactory, and BrokerRegistry
+- TradingKernel depends on engines, EventBus, ExecutionRouter, sources/, sim/, data/, and optionally BrokerAdapter
+- ResilientKernel wraps TradingKernel for crash recovery over EventStore
+- LiveRunner orchestrates kernel + feed, bridging RiskEngine breakers to broker kill-switch
 - Domain layer is pure Python with no broker imports; broker injected via constructor
-- Broker layer implements BrokerAdapter; domain calls broker_adapter lazily
-- Infrastructure includes EventStore and transport abstractions
+- Broker layer (DhanBroker composes DhanTransport/DhanAuthProvider/DhanMapper) implements BrokerAdapter
+- Infrastructure includes BrokerRateGate, RetryPolicy, token store, EventStore, and transport abstractions
 
 ```mermaid
 classDiagram
@@ -396,15 +433,27 @@ Strict dependency direction ensures maintainability and testability:
 
 ```mermaid
 graph LR
-API["Public API"] --> SESSION["TradingSession"]
+API["Public API (TradingSession / Market facade)"] --> SESSION["TradingSession"]
 SESSION --> KERNEL["TradingKernel"]
+SESSION --> FACT["InstrumentFactory"]
+SESSION --> REG["BrokerRegistry"]
 KERNEL --> ENGINES["Engines"]
 KERNEL --> BUS["EventBus"]
 KERNEL --> ROUTER["ExecutionRouter"]
-KERNEL --> BROKER["BrokerAdapter (optional)"]
+KERNEL --> STORE["EventStore"]
+KERNEL --> SRC["sources/ (feed)"]
+KERNEL --> SIM["sim/"]
+KERNEL --> DATA["data/ (Parquet)"]
+RKERNEL["ResilientKernel"] --> KERNEL
+LRUN["LiveRunner"] --> KERNEL
 DOMAIN["Domain"] --> INSTRUMENT["Instrument"]
-INSTRUMENT --> BROKER
-INFRA["Infrastructure"] --> ROUTER
+INSTRUMENT --> BROKER["BrokerAdapter"]
+BROKER --> DHAN["DhanBroker"]
+DHAN --> DT["DhanTransport"]
+DHAN --> DA["DhanAuthProvider"]
+DHAN --> DM["DhanMapper"]
+DT --> GATE["BrokerRateGate"]
+INFRA["Infrastructure (BrokerRateGate, RetryPolicy)"] --> GATE
 ```
 
 **Diagram sources**
@@ -415,15 +464,20 @@ INFRA["Infrastructure"] --> ROUTER
 - [base_broker.py:25-163](file://ntrade/brokers/base.py#L25-L163)
 - [router.py:19-49](file://ntrade/execution/router.py#L19-L49)
 
-**Section sources**
-- [ARCHITECTURE.md:20-56](file://ARCHITECTURE.md#L20-L56)
-
 ## Performance Considerations
 - EventBus uses RLock for thread-safe dispatch; handler exceptions are swallowed to prevent kernel crashes.
 - Instrument state updates are immutable snapshots (Quote, MarketDepth) to ensure consistency.
 - Lazy broker initialization reduces startup overhead; hydrate metadata once per instrument.
 - ExecutionRouter selects targets by strategy name, minimizing branching overhead.
 - EventStore supports deterministic replay and crash recovery; selective recording avoids unnecessary I/O.
+- BrokerRateGate serializes all outbound broker calls via a sliding-window deque; injectable clock for tests.
+- RetryPolicy provides exponential backoff for transient LTP failures.
+
+**Section sources**
+- [ARCHITECTURE.md:20-75](file://ARCHITECTURE.md#L20-L75)
+- [ARCHITECTURE.md:470-490](file://ARCHITECTURE.md#L470-L490)
+- [ARCHITECTURE.md:370-400](file://ARCHITECTURE.md#L370-L400)
+- [ntrade/kernel/event_bus.py:24-81](file://ntrade/kernel/event_bus.py#L24-L81)
 
 [No sources needed since this section provides general guidance]
 

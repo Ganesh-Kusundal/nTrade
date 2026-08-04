@@ -1,7 +1,0 @@
-- Concrete instrument subclasses declare a class-level `KIND` string and an optional `DEFAULT_EXCHANGE` constant to identify asset type and default exchange.
-- Capabilities are implemented as small, stateless view classes holding a single `_inst` reference to their parent Instrument, exposing methods that delegate to the instrument's private attributes rather than mutating them directly.
-- Expensive or broker-dependent objects (capabilities, `OrderFacade`, `BrokerExtensionFacade`) are loaded lazily inside method bodies or via `@cached_property` to keep Instrument construction broker-free.
-- Fluent builders return `self` (or the builder instance) to enable chained calls such as `instrument.trade.buy().limit(price).quantity(qty).place()`.
-- Cross-module type references are placed under `if TYPE_CHECKING:` guards to prevent circular import errors between domain layers.
-- Stateful operations on Instrument return `self` to support method chaining and in-place mutation patterns (e.g. `apply_quote`, `record_corporate_action`, `set_signal`).
-- Optional numeric fields fall back to sentinel values like `float('nan')` or `0.0` so downstream code can safely access derived properties without null checks.

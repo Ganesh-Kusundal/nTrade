@@ -53,18 +53,22 @@ End-to-end journey:
 - [index.md:1-55](file://user-guide/index.md#L1-L55)
 
 ## Project Structure
-The repository organizes code into clear layers: public API, kernel (event-centric), domain (pure Python), brokers (adapters), and infrastructure (transport, persistence, replay). Documentation lives under user-guide/ and covers progressive topics for users.
+The repository organizes code into clear layers: public API (TradingSession as preferred entry point), kernel (event-centric with ResilientKernel crash recovery), domain (pure Python, no broker imports), brokers (adapters hidden behind domain objects), data (ParquetStorage, ParallelHistoryFetcher, GapDetector, ScannerLoader), and infrastructure (transport, persistence, rate-gate, replay). Documentation lives under user-guide/ and covers progressive topics for users.
 
 ```mermaid
 graph TB
 subgraph "Public API"
 Facade["Market (legacy facade)"]
-Session["TradingSession (unified entry)"]
+Session["TradingSession (preferred entry point)"]
 end
 subgraph "Kernel"
 Kernel["TradingKernel"]
 Runner["StrategyRunner"]
+Resilient["ResilientKernel (crash recovery)"]
 Bus["EventBus"]
+end
+subgraph "Live Orchestration"
+LiveRunner["LiveRunner (watchdog + fail-closed)"]
 end
 subgraph "Domain"
 Instruments["Instruments (Equity/Index/Future/Option)"]
@@ -82,7 +86,9 @@ end
 Facade --> Session
 Session --> Kernel
 Kernel --> Runner
+Kernel --> Resilient
 Kernel --> Bus
+Session --> LiveRunner
 Session --> Instruments
 Instruments --> MarketData
 Instruments --> Analytics
@@ -93,25 +99,28 @@ Kernel --> BrokerExec
 ```
 
 **Diagram sources**
-- [ARCHITECTURE.md:20-51](file://ARCHITECTURE.md#L20-L51)
-- [ARCHITECTURE.md:328-365](file://ARCHITECTURE.md#L328-L365)
+- [ARCHITECTURE.md:20-60](file://ARCHITECTURE.md#L20-L60)
+- [ARCHITECTURE.md:410-470](file://ARCHITECTURE.md#L410-L470)
 
 **Section sources**
-- [ARCHITECTURE.md:20-51](file://ARCHITECTURE.md#L20-L51)
-- [ARCHITECTURE.md:328-365](file://ARCHITECTURE.md#L328-L365)
+- [ARCHITECTURE.md:20-60](file://ARCHITECTURE.md#L20-L60)
+- [ARCHITECTURE.md:410-470](file://ARCHITECTURE.md#L410-L470)
 
 ## Core Components
 Key components exposed to users:
-- TradingSession: unified entry point for connect/paper/replay modes; instrument creation; strategy registration; lifecycle control.
+- TradingSession: **preferred entry point** for connect/paper/replay modes; composes BrokerAdapter, TradingKernel, and LiveRunner; instrument creation; strategy registration; lifecycle control.
 - InstrumentFactory: creates shared instruments via SymbolMaster flyweight.
 - BrokerRegistry: maps names to broker factories (dhan, paper).
 - Market (legacy facade): thin adapter over TradingSession for backward compatibility.
+- ResilientKernel: crash recovery on top of the EventStore (record → replay → restore).
+- LiveRunner: orchestration harness with feed watchdog and fail-closed kill switch.
 - Public package exports: events, kernels, execution targets, costs, sources, and utilities.
 
 Highlights:
-- Zero-parity design: same strategy runs identically across backtest, replay, and live.
-- Event-centric kernel: canonical events drive engines and projections.
+- Zero-parity design: same strategy runs identically across backtest, replay, and live (verified by test).
+- Event-centric kernel with optional ResilientKernel: canonical events drive engines and projections; crashes recover via EventStore replay without re-running strategies.
 - Capability pattern: broker-specific features are opt-in and fail fast if unsupported.
+- Risk circuit breakers: max_daily_loss, max_drawdown_pct, price_deviation_pct with fail-closed kill switch wiring.
 
 **Section sources**
 - [trading_session.py:39-143](file://ntrade/kernel/trading_session.py#L39-L143)
@@ -189,7 +198,7 @@ Market --> TradingSession : "delegates"
 ## Detailed Component Analysis
 
 ### TradingSession
-TradingSession is the single entry point for all user workflows. It composes a broker adapter, a TradingKernel, and a StrategyRunner. It exposes constructors for live, paper, and replay modes, instrument creation helpers, account/portfolio accessors, and lifecycle methods.
+TradingSession is the **preferred entry point** for all user workflows. It composes a broker adapter, a TradingKernel (optionally ResilientKernel), and a LiveRunner. It exposes constructors for live, paper, and replay modes, instrument creation helpers, account/portfolio accessors, and lifecycle methods.
 
 Key behaviors:
 - Mode selection: connect("dhan"), paper(), replay(events).
@@ -341,8 +350,10 @@ This index equips you to navigate nTrade’s user documentation effectively. Sta
 - [pyproject.toml:5-15](file://pyproject.toml#L5-L15)
 
 ### Quick Reference: Modes and Entry Points
-- Preferred entry: TradingSession.connect("dhan") for live, TradingSession.paper() for offline, TradingSession.replay(events) for replay.
-- Legacy entry: Market(broker="dhan"/"paper") remains supported.
+- Preferred entry: `TradingSession.connect("dhan")` for live, `TradingSession.paper()` for offline, `TradingSession.replay(events)` for replay.
+- Crash recovery: `ResilientKernel.recover()` rehydrates fills/positions/balance from the EventStore.
+- Live orchestration: `LiveRunner` provides feed watchdog and fail-closed kill switch.
+- Legacy entry: `Market(broker="dhan"/"paper")` remains supported.
 
 **Section sources**
 - [01-install-brokers.md:58-74](file://user-guide/01-install-brokers.md#L58-L74)

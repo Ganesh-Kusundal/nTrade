@@ -1,1 +1,0 @@
-Pure Python using dataclasses for immutable value objects, pandas for indicator calculations and option-chain manipulation, and type hints throughout; no persistence or networking in this layer.

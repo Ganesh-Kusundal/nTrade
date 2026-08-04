@@ -2,10 +2,13 @@
 
 Strategies never poll; they react to events through hooks and emit signals via
 ``emit_signal()``. The engine dispatches each subscribed event type to every
-registered strategy, swallowing per-strategy errors.
+registered strategy; a failing strategy is logged (with traceback) and its
+error counter bumped, but never takes down sibling strategies.
 """
 
 from __future__ import annotations
+
+import logging
 
 from ntrade.events.market import (
     CandleClosedEvent, IndicatorUpdatedEvent, QuoteUpdatedEvent, TickEvent,
@@ -13,6 +16,8 @@ from ntrade.events.market import (
 from ntrade.events.order import OrderFilledEvent
 from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
 from ntrade.events.risk import SignalGeneratedEvent
+
+logger = logging.getLogger("ntrade.strategy")
 
 
 class Strategy:
@@ -99,5 +104,12 @@ class StrategyEngine:
                 try:
                     fn(event)
                 except Exception:
-                    continue
+                    # Never silent: a broken live strategy must be visible.
+                    # The hook is isolated so sibling strategies keep running.
+                    strategy._error_count = getattr(strategy, "_error_count", 0) + 1
+                    logger.exception(
+                        "strategy %s.%s failed on %s (errors=%d)",
+                        getattr(strategy, "name", strategy), hook,
+                        type(event).__name__, strategy._error_count,
+                    )
         return handler

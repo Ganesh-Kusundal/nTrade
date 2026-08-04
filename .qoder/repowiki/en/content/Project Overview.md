@@ -43,23 +43,36 @@ This document provides both conceptual overviews for beginners and technical det
 
 ## Project Structure
 At a high level, nTrade organizes functionality into layers:
-- Public API facade and factories
-- Trading kernel (event-centric, zero parity)
+- Public API (TradingSession preferred entry point; legacy Market facade; factories)
+- Trading kernel (event-centric, zero parity — TradingKernel, ResilientKernel, StrategyRunner, LiveRunner)
+- Sources / Sim / Data (interchangeable event sources — sources/, sim/, data/)
 - Domain layer (pure Python, no broker imports)
-- Broker adapters (hidden behind domain objects)
-- Infrastructure (transport, persistence, replay)
+- Broker adapters (hidden behind domain objects — DhanBroker decomposes into DhanTransport/DhanAuthProvider/DhanMapper)
+- Infrastructure (BrokerRateGate, RetryPolicy, token store, EventStore, transport)
 
 ```mermaid
 graph TB
 subgraph "Public API"
-Facade["Market"]
+Session["TradingSession (preferred entry point)"]
+Facade["Market (legacy wrapper)"]
 Factory["InstrumentFactory"]
+Registry["BrokerRegistry / SymbolMaster"]
 end
 subgraph "Trading Kernel"
 Kernel["TradingKernel"]
+RKernel["ResilientKernel"]
+Runner["StrategyRunner"]
+LiveRun["LiveRunner"]
 Bus["EventBus"]
-Clock["TradingClock"]
+Clock["TradingClock (Live/Replay/Sim)"]
 Engines["Engines (market, candle, indicator, strategy, risk, order, portfolio)"]
+end
+subgraph "Sources / Sim / Data"
+Sources["sources/ (DhanFeed, Synthetic, Simulated)"]
+Sim["sim/ (synthesize_1m_ticks, SimTick)"]
+Data["data/ (ParallelHistoryFetcher, ParquetStorage, GapDetector, ScannerLoader)"]
+Replay["ReplayEngine"]
+Backtest["BacktestSimulator"]
 end
 subgraph "Domain Layer"
 Instruments["Instruments (Equity, Index, Option, OptionChain)"]
@@ -68,22 +81,39 @@ Analytics["Analytics (Greeks, Indicators)"]
 end
 subgraph "Broker Layer"
 Adapter["BrokerAdapter (Paper, Dhan)"]
+DHAN["DhanBroker (DhanTransport, DhanAuthProvider, DhanMapper)"]
 end
 subgraph "Infrastructure"
-Sources["Sources (Dhan, Synthetic, Simulated)"]
-Storage["EventStore"]
+RateGate["BrokerRateGate (sliding-window)"]
+Retry["RetryPolicy (exponential backoff)"]
+Tokens["Token store + cooldown"]
+Storage["EventStore (append-only JSONL)"]
 end
-Facade --> Factory
-Facade --> Kernel
+Session --> Kernel
+Session --> Factory
+Session --> Registry
+Facade --> Session
 Kernel --> Bus
 Kernel --> Clock
 Kernel --> Engines
+Kernel --> Storage
+Kernel --> Sources
+Kernel --> Sim
+Kernel --> Data
+Kernel --> Replay
+Kernel --> Backtest
+RKernel --> Kernel
+Runner --> Kernel
+LiveRun --> Kernel
 Engines --> Instruments
 Engines --> Orders
 Engines --> Analytics
 Instruments --> Adapter
-Sources --> Kernel
-Storage --> Kernel
+Adapter --> DHAN
+DHAN --> RateGate
+DHAN --> Tokens
+DHAN --> Retry
+Data --> RateGate
 ```
 
 **Diagram sources**
@@ -93,14 +123,20 @@ Storage --> Kernel
 - [ntrade/brokers/base.py:1-163](file://ntrade/brokers/base.py#L1-L163)
 
 **Section sources**
-- [ARCHITECTURE.md:1-389](file://ARCHITECTURE.md#L1-L389)
+- [ARCHITECTURE.md:1-527](file://ARCHITECTURE.md#L1-L527)
 - [ntrade/__init__.py:1-105](file://ntrade/__init__.py#L1-L105)
 
 ## Core Components
+- TradingSession (preferred entry point): Combines broker connection, InstrumentFactory, TradingKernel lifecycle, and strategy/position management. Market facade is a legacy wrapper.
 - TradingKernel: Coordinates the engine stack, wires events, manages lifecycle, and supports replay/live/backtest modes. It exposes methods to register instruments and strategies, publish events, poll orders, and sync positions.
+- ResilientKernel: Crash recovery by replaying causal events (market + OrderFilled) from EventStore without re-trading; pauses EventStore writes during recovery and reseeds execution sequence.
+- LiveRunner: Orchestration harness — starts kernel + feed, polls orders/syncs positions, bridges RiskHaltedEvent to broker kill-switch (instrument.broker.kill_switch).
 - EventBus: A tiny synchronous pub/sub bus with thread-safe dispatch and history recording. Handlers are registered by base class via MRO; exceptions are swallowed to keep the kernel resilient.
 - Instrument: Abstract root of all market entities. Owns state (quote, depth, history, stream, indicators, signals, metadata) and exposes capability objects for market data, trading, streaming, analytics, derivatives, and provider extensions. Broker transport is hidden behind BrokerAdapter.
 - BrokerAdapter: Abstract base defining the transport boundary between domain objects and brokers. Subclasses implement quote/history/order placement and optional lifecycle operations. Supports clock injection for zero-parity timestamps.
+- DhanBroker decomposition: DhanBroker composes DhanTransport (all REST via _invoke(Quota, fn) → BrokerRateGate), DhanAuthProvider (token store + cooldown + PIN/TOTP fallback), and DhanMapper (wire→domain normalization, chain_from_dhan_df). Bracket (BO) orders route to Dhan's place_super_order API; get_instrument_metadata() hydrates tick/lot/freeze qty via Instrument.hydrate().
+- BrokerRateGate: Multi-window sliding-window rate gate (Quota.QUOTE 1/s, DATA 5/s, ORDER 10/s/1000/h/7000/day) — single choke point for all outbound broker REST calls; penalizes on DH-904.
+- RetryPolicy: Exponential backoff for transient LTP failures; DH-904 surfaced as typed RateLimited (never retried, fails loud).
 - OptionChain: Composite object containing Option instruments with analytics (PCR, max pain, IV surface, Greeks table) and convenient accessors (calls, puts, atm, nearest expiry).
 - Order and OrderFacade: Rich order model with natural entry points on instruments (stock.order.buy/sell/limit/market/stop/cover/bracket). Lifecycle methods delegate to the broker adapter.
 
@@ -119,19 +155,22 @@ Practical examples:
 
 ## Architecture Overview
 nTrade follows Clean Architecture principles with layered separation:
-- Public API (facade + factories)
-- Trading Kernel (event-centric, zero parity)
+- Public API (TradingSession preferred entry point; legacy Market facade; factories)
+- Trading Kernel (event-centric, zero parity — TradingKernel, ResilientKernel, StrategyRunner, LiveRunner)
+- Sources / Sim / Data (interchangeable event sources — sources/, sim/, data/)
 - Domain Layer (pure Python, no broker imports)
-- Broker Layer (adapters hidden behind domain objects)
-- Infrastructure (transport, persistence, replay)
+- Broker Layer (adapters hidden behind domain objects — DhanBroker decomposes into DhanTransport/DhanAuthProvider/DhanMapper)
+- Infrastructure (BrokerRateGate, RetryPolicy, token store, EventStore, transport)
 
-The kernel orchestrates engines (market, candle, indicator, strategy, risk, order, portfolio) and execution targets (SimulatedExecution, BrokerExecution). Modes differ only in clock and execution target; the engine stack remains identical.
+The kernel orchestrates engines (market, candle, indicator, strategy, risk, order, portfolio) and execution targets (SimulatedExecution, BrokerExecution). Modes differ only in clock and execution target; the engine stack remains identical. TradingSession is the preferred entry point (Market facade is a legacy wrapper). BrokerRateGate is the single choke point for all outbound broker REST calls with sliding-window enforcement; RetryPolicy provides exponential backoff and surfaces DH-904 as a typed RateLimited exception.
 
 ```mermaid
 sequenceDiagram
 participant User as "User Code"
 participant Session as "TradingSession"
 participant Kernel as "TradingKernel"
+participant RKernel as "ResilientKernel"
+participant Runner as "LiveRunner"
 participant Bus as "EventBus"
 participant MarketEngine as "MarketEngine"
 participant CandleEngine as "CandleEngine"
@@ -141,11 +180,13 @@ participant RiskEngine as "RiskEngine"
 participant OrderEngine as "OrderEngine"
 participant Execution as "ExecutionRouter"
 participant Broker as "BrokerAdapter"
+participant Store as "EventStore"
 User->>Session : connect("dhan")
 Session->>Kernel : start()
 Kernel->>Bus : publish(KernelStartedEvent)
 Kernel->>Bus : publish(SessionStartedEvent)
-Note over Kernel,Bus : Historical data fed via SimulatedFeedSource -> Tick/Quote/Closed events
+Kernel->>Store : append (if store configured)
+Note over Kernel,Bus : Market data fed via FeedSource -> Tick/Quote/Closed events
 Bus-->>MarketEngine : QuoteUpdatedEvent
 MarketEngine-->>Kernel : Instrument read-model updated
 Bus-->>CandleEngine : CandleClosedEvent
@@ -157,12 +198,15 @@ RiskEngine-->>Kernel : Approved/Rejected
 Kernel->>OrderEngine : OrderIntentEvent
 OrderEngine->>Execution : place(order)
 alt Live mode
-Execution->>Broker : place_order(order)
+Execution->>Broker : place_order(order) via BrokerExecution
 Broker-->>Execution : OrderAccepted/Filled
 else Simulated mode
 Execution-->>OrderEngine : Accepted/Filled
 end
 OrderEngine-->>Kernel : PositionUpdated/BalanceChanged
+Runner->>Kernel : poll_orders() / sync_positions() (every poll_interval)
+Runner->>RiskEngine : subscribe(RiskHaltedEvent -> kill_switch)
+Note over RKernel,Store : On restart: recover() replays store.recovery_events() into fresh kernel with NO strategies, then reseeds execution sequence
 ```
 
 **Diagram sources**
@@ -173,7 +217,7 @@ OrderEngine-->>Kernel : PositionUpdated/BalanceChanged
 - [ntrade/brokers/base.py:1-163](file://ntrade/brokers/base.py#L1-L163)
 
 **Section sources**
-- [ARCHITECTURE.md:1-389](file://ARCHITECTURE.md#L1-L389)
+- [ARCHITECTURE.md:1-527](file://ARCHITECTURE.md#L1-L527)
 - [ntrade/__init__.py:1-105](file://ntrade/__init__.py#L1-L105)
 
 ## Detailed Component Analysis
@@ -210,6 +254,16 @@ class TradingKernel {
 +poll_orders()
 +sync_positions()
 }
+class ResilientKernel {
++recover() ResilientKernel
++snapshot() dict
++last_event_ts() datetime
+}
+class LiveRunner {
++start()
++stop()
++step()
+}
 class EventBus {
 +subscribe(event_type, handler)
 +unsubscribe(event_type, handler)
@@ -221,6 +275,8 @@ class TradingClock {
 }
 TradingKernel --> EventBus : "uses"
 TradingKernel --> TradingClock : "uses"
+ResilientKernel --> TradingKernel : "wraps"
+LiveRunner --> TradingKernel : "orchestrates"
 ```
 
 **Diagram sources**
@@ -373,9 +429,9 @@ BrokerAdapter defines the contract for market data and order lifecycle. It suppo
 classDiagram
 class BrokerAdapter {
 +name : str
--_subscriptions : dict[str, Instrument]
--_connected : bool
--_clock : TradingClock
++_subscriptions : dict[str, Instrument]
++_connected : bool
++_clock : TradingClock
 +set_clock(clock)
 +connect()
 +disconnect()
@@ -403,9 +459,31 @@ class BrokerAdapter {
 class PaperBroker {
 }
 class DhanBroker {
++transport : DhanTransport
++auth : DhanAuthProvider
++mapper : DhanMapper
++get_option_chain()
++get_instrument_metadata()
+}
+class DhanTransport {
++_invoke(quota, fn) : routed through BrokerRateGate
+}
+class DhanAuthProvider {
++token store + cooldown + PIN/TOTP fallback
+}
+class DhanMapper {
++chain_from_dhan_df() : Dhan wire to OptionChain
+}
+class BrokerRateGate {
++acquire(quota) : multi-window sliding window
++penalize(quota, retry_after)
 }
 BrokerAdapter <|-- PaperBroker
 BrokerAdapter <|-- DhanBroker
+DhanBroker --> DhanTransport : "composes"
+DhanBroker --> DhanAuthProvider : "composes"
+DhanBroker --> DhanMapper : "composes"
+DhanTransport --> BrokerRateGate : "choke point"
 ```
 
 **Diagram sources**
@@ -453,21 +531,36 @@ nTrade enforces strict dependency rules:
 
 ```mermaid
 graph LR
-Domain["Domain Layer"] --> |no imports| BrokerLayer["Broker Layer"]
-Kernel["TradingKernel"] --> |wires| Engines["Engines"]
-Engines --> |publish/consume| Bus["EventBus"]
-Engines --> |use| Domain
-BrokerLayer --> |implements| Adapter["BrokerAdapter"]
-Sources["Sources"] --> |feed| Kernel
+API["Public API (TradingSession / Market facade)"] --> SESSION["TradingSession"]
+SESSION --> KERNEL["TradingKernel"]
+SESSION --> FACT["InstrumentFactory"]
+SESSION --> REG["BrokerRegistry"]
+RCK["ResilientKernel"] --> KERNEL
+LRUN["LiveRunner"] --> KERNEL
+KERNEL --> ENGINES["Engines"]
+ENGINES --> |publish/consume| Bus["EventBus"]
+KERNEL --> SRC["Sources (sources/)"]
+KERNEL --> SIM["sim/"]
+KERNEL --> DATA["data/ (Parquet)"]
+KERNEL --> STORE["EventStore"]
+DOMAIN["Domain Layer"] --> |no imports| BROKER["Broker Layer"]
+BROKER --> |implements| ADAPTER["BrokerAdapter"]
+BROKER --> DTRAN["DhanTransport"]
+BROKER --> DAUT["DhanAuthProvider"]
+BROKER --> DMAP["DhanMapper"]
+DTRAN --> |via| GATE["BrokerRateGate"]
+ENGINES --> DOMAIN
+SRC --> GATE
+DATA --> GATE
 ```
 
 **Diagram sources**
-- [ARCHITECTURE.md:1-389](file://ARCHITECTURE.md#L1-L389)
+- [ARCHITECTURE.md:1-527](file://ARCHITECTURE.md#L1-L527)
 - [ntrade/kernel/session.py:1-198](file://ntrade/kernel/session.py#L1-L198)
 - [ntrade/kernel/event_bus.py:1-81](file://ntrade/kernel/event_bus.py#L1-L81)
 
 **Section sources**
-- [ARCHITECTURE.md:1-389](file://ARCHITECTURE.md#L1-L389)
+- [ARCHITECTURE.md:1-527](file://ARCHITECTURE.md#L1-L527)
 
 ## Performance Considerations
 - EventBus uses a reentrant lock for thread-safe dispatch and maintains a bounded history deque

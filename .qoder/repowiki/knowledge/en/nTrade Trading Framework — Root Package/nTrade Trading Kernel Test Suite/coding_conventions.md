@@ -1,6 +1,0 @@
-- Each test module imports pytest at the top and uses `pytest.raises(...)` for exception assertions instead of try/except blocks.
-- Kernel construction is factored into a local `_kernel()` helper that defaults `mode="replay"`, `clock=ReplayClock()`, and registers an Equity instrument before returning the kernel.
-- Strategies are defined inline as subclasses of `ntrade.engines.strategy_engine.Strategy` with a `name` attribute and an `on_tick` / `on_candle_closed` handler that calls `self.emit_signal(...)`.
-- Broker classes are instantiated without calling `__init__` (via `cls.__new__(cls)`) and then have their internal attributes (e.g., `tsl`, `_connected`) patched with `types.SimpleNamespace` to avoid network I/O.
-- Assertions check both the observable outcome (e.g., position quantity, balance) and the event bus history (`kernel.bus.history`) to verify the full event sequence through the pipeline.
-- Deterministic time is produced using `datetime(2026, 1, 1, 9, 15, ...)` timestamps so candle bucketing and clock-driven logic is reproducible across runs.

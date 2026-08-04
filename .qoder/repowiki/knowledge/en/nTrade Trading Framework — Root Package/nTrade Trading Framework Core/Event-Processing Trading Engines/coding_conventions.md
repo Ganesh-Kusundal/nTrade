@@ -1,6 +1,0 @@
-- Engines subscribe to events in `__init__` via `context.bus.subscribe(EventType, self.on_handler)` and process events through single-responsibility handler methods named after the event they consume.
-- All cross-engine communication goes exclusively through `self.ctx.bus.publish(Event(...))`; engines never call each other's methods directly.
-- Engine constructors accept configuration via keyword arguments with `None` defaults and gate behavior with explicit `if self.<limit> is not None` checks rather than sentinel values.
-- Strategies subclass `Strategy`, set a `name` attribute, override only the hooks they need (empty pass-throughs exist for all event types), and emit actions via `self.emit_signal(...)` which returns a `SignalGeneratedEvent`.
-- Broker-facing operations are wrapped in try/except blocks returning `None` on failure so transient errors do not corrupt local state (see `_safe_positions`, `_safe_balance`, `_safe_float` in PositionSyncEngine).
-- Per-symbol state is stored in dicts keyed by symbol with bounded buffers enforced by slicing off excess entries beyond `max_candles` or `max_rows`.

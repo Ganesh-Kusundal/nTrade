@@ -1,5 +1,0 @@
-- Domain state is modeled as `dataclass` objects, with read-only collections using `@dataclass(frozen=True)` and tuple fields for immutability and thread safety.
-- Broker interaction is always delegated through `self.instrument.broker_adapter`, never called directly, so the domain stays broker-agnostic.
-- String inputs for enum-like parameters (`side`, `order_type`, `trade_type`) are accepted and coerced via `Enum(value.upper())` at call sites rather than enforced by type hints.
-- Each book entry class exposes a `to_dict()` method and each collection exposes a `to_dicts()` escape hatch for backward-compatible serialization while keeping the primary interface typed.
-- Cross-module imports that could cause cycles are guarded by `if TYPE_CHECKING:` blocks, keeping runtime imports clean.

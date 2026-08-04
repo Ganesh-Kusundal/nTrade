@@ -1,1 +1,0 @@
-Pure Python with `threading.RLock` for concurrency control; no external async frameworks. Uses a custom synchronous EventBus with MRO-based event dispatch and bounded deque history. Deterministic replay via `ReplayClock`/`SimulationClock` instead of real-time scheduling.

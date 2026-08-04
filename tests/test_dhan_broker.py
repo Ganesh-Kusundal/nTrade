@@ -236,6 +236,30 @@ def test_get_depth_index_returns_none():
     assert broker.get_depth(Index("NIFTY")) is None
 
 
+def test_get_depth_uses_dhan_symbol_for_option_short_label():
+    """Chain ATM labels like 'NIFTY 24600 CE' must be mapped to CALL form
+    before depth subscribe — otherwise Tradehull returns None silently."""
+    seen = {}
+
+    def capture_subscribe(pairs):
+        seen["pairs"] = pairs
+        return {"NIFTY 04 AUG 24600 CALL|NFO": "client"}
+
+    broker = make_broker(
+        full_market_depth_data=capture_subscribe,
+        get_market_depth_df=lambda dc: (
+            pd.DataFrame([{"bid_price": 50.0, "bid_qty": 100}]),
+            pd.DataFrame([{"ask_price": 50.5, "ask_qty": 80}]),
+        ),
+    )
+    opt = Option("NIFTY 24600 CE", exchange="NFO", strike=24600,
+                 expiry=date(2026, 8, 4), option_type="CE", underlying_symbol="NIFTY")
+    depth = broker.get_depth(opt, settle=0.0)
+    assert seen["pairs"] == [("NIFTY 04 AUG 24600 CALL", "NFO")]
+    assert depth is not None
+    assert depth.best_bid().price == 50.0
+
+
 def test_get_depth_nse_works():
     """Dhan's full_market_depth_data returns an OrderedDict keyed 'SYM|EXCH';
     get_market_depth_df consumes the individual client and yields bid_price/
@@ -500,6 +524,57 @@ def test_place_order_rejection_propagates():
     assert order.status.value == "REJECTED"
 
 
+# ------------------------------------------------------------- SEBI (H-2)
+def _fno_market_order(side=OrderSide.BUY):
+    from ntrade.domain.instruments.derivatives import Future
+    fut = Future("NIFTY FUT")  # exchange NFO -> SEBI conversion applies
+    order = Order(instrument=fut, side=side, quantity=25,
+                  order_type=OrderType.MARKET, trade_type=TradeType.MIS)
+    return fut, order
+
+
+def test_sebi_market_to_limit_fresh_quote_default_band():
+    from datetime import datetime
+    broker = make_broker(order_placement=lambda **kw: "ORD-77")
+    fut, order = _fno_market_order(OrderSide.BUY)
+    fut._quote = fut._quote.with_update(ltp=24500.0, timestamp=datetime.now())
+    broker.place_order(order)
+    assert order.order_type == OrderType.LIMIT
+    assert order.price == round(24500.0 * 1.02, 1)
+    fut2, sell = _fno_market_order(OrderSide.SELL)
+    fut2._quote = fut2._quote.with_update(ltp=24500.0, timestamp=datetime.now())
+    broker.place_order(sell)
+    assert sell.price == round(24500.0 * 0.98, 1)
+
+
+def test_sebi_market_to_limit_rejects_stale_quote():
+    from datetime import datetime, timedelta
+    broker = make_broker(order_placement=lambda **kw: "ORD-78")
+    fut, order = _fno_market_order()
+    fut._quote = fut._quote.with_update(
+        ltp=24500.0, timestamp=datetime.now() - timedelta(seconds=60))
+    with pytest.raises(RuntimeError, match="max age"):
+        broker.place_order(order)
+
+
+def test_sebi_market_to_limit_rejects_untimestamped_quote():
+    broker = make_broker(order_placement=lambda **kw: "ORD-79")
+    fut, order = _fno_market_order()
+    fut._quote = fut._quote.with_update(ltp=24500.0)  # no timestamp -> stale
+    with pytest.raises(RuntimeError, match="untimestamped"):
+        broker.place_order(order)
+
+
+def test_sebi_band_is_configurable():
+    from datetime import datetime
+    broker = make_broker(order_placement=lambda **kw: "ORD-80")
+    broker._sebi_band_pct = 1.0
+    fut, order = _fno_market_order()
+    fut._quote = fut._quote.with_update(ltp=24500.0, timestamp=datetime.now())
+    broker.place_order(order)
+    assert order.price == round(24500.0 * 1.01, 1)
+
+
 def test_depth20_capability_only_for_dhan():
     from ntrade.brokers.capabilities import registered_capabilities
     cap = registered_capabilities()["depth20"]
@@ -677,6 +752,21 @@ def test_order_status_rate_limited_not_swallowed():
                   order_type=OrderType.LIMIT, trade_type=TradeType.MIS,
                   price=10.0, order_id="ORD-3")
     with pytest.raises(RateLimited):
+        broker.get_order_status(order)
+
+
+def test_order_status_transport_error_raises_not_silent_stale():
+    """H-5: a transport failure on the status refresh must raise, not silently
+    return the stale order — the caller's staleness accounting depends on the
+    error surfacing (BrokerExecution counts it and evicts after _stale_limit)."""
+    broker = make_broker()
+    broker._transport = MagicMock()
+    broker._transport.get_order_status.side_effect = RuntimeError("connection dead")
+    rel = Equity("RELIANCE")
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=1,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS,
+                  price=10.0, order_id="ORD-4")
+    with pytest.raises(RuntimeError, match="refresh failed"):
         broker.get_order_status(order)
 
 

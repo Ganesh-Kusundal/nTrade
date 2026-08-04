@@ -1,5 +1,0 @@
-- Domain objects own their state and behaviour (Tell-Don't-Ask) — no static utilities or god services.
-- Broker-specific code is isolated behind the `BrokerAdapter` ABC with a capability registry resolved at call time via `@capability` decorators.
-- All market-time comes from `TradingClock` (`ctx.now()`) instead of `datetime.now()` to keep live/replay/backtest deterministic.
-- Events are frozen dataclasses published through a synchronous `EventBus`; handler errors are swallowed so one bad subscriber cannot crash the kernel.
-- New brokers extend via subclassing `BrokerAdapter` plus registering capabilities, never by editing domain code.

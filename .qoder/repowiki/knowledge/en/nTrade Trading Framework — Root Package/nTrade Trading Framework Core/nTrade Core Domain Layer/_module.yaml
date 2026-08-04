@@ -1,8 +1,0 @@
-schema_version: 1
-module_path: ntrade_core/domain
-title: nTrade Core Domain Layer
-scope:
-    - ntrade/domain/
-source_files: []
-depends_on: []
-related_to: []

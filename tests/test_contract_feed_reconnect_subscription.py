@@ -61,10 +61,11 @@ def test_reconnect_reapplies_code21_and_version_v2():
     assert feed.started is True
 
     # BOTH reconnect facts: the spec is exactly what _subscriptions() returns...
-    assert feed.subscriptions == [(1, 2885, 21)]
+    # SecurityId must be str — int IDs connect but deliver zero ticks.
+    assert feed.subscriptions == [(1, "2885", 21)]
     # ...and every subscription tuple still encodes the full-data code 21.
     assert all(sub[2] == 21 for sub in feed.subscriptions)
     # version v2 is only passed to the real dhanhq.MarketFeed (dhan_feed.py:145),
     # but the durable spec that _build_feed() hands to the same constructor is
     # exactly this list — so code-21 + v2 are reapplied fresh on reconnect.
-    assert src._subscriptions() == [(1, 2885, 21)]
+    assert src._subscriptions() == [(1, "2885", 21)]

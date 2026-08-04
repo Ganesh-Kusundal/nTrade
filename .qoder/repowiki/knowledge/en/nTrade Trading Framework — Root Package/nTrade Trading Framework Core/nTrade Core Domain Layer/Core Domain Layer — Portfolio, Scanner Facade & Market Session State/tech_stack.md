@@ -1,1 +1,0 @@
-Pure Python standard library: `dataclasses` for value objects (often `frozen=True` for results like `ScannerResult`), `abc.ABC` for the scanner interface, `enum.Enum` for market states, and `datetime` for timestamps. No external dependencies in this module.

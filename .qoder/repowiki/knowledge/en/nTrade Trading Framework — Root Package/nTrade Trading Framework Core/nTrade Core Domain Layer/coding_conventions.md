@@ -1,4 +1,0 @@
-- Domain entities are expressed as frozen dataclasses or named tuples to enforce immutability of market values, quotes, and order records.
-- Each instrument exposes behavior via composed capability objects (market, trade, stream, analytics, derivatives, extensions) rather than monolithic classes.
-- Cross-boundary data (broker responses, market feeds) is normalized into typed value objects before entering the domain.
-- Analytics functions are pure math taking domain-typed inputs and returning domain-typed outputs without side effects.

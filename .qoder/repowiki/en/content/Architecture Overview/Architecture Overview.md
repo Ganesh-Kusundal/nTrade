@@ -34,25 +34,37 @@ This document explains nTrade’s Clean Architecture design and its event-centri
 
 ## Project Structure
 nTrade is organized into clear layers:
-- Public API (facade + factories): Market facade and factory entry points for users.
-- Trading Kernel (event-centric): TradingKernel, EventBus, clocks, engines, execution router, replay/backtest simulators.
+- Public API (TradingSession preferred entry point; legacy Market facade; factories): TradingSession connects broker, instruments, kernel, and strategy management.
+- Trading Kernel (event-centric): TradingKernel, ResilientKernel, StrategyRunner, LiveRunner, EventBus, clocks, engines, execution router, replay/backtest simulators.
+- Sources / Sim / Data (interchangeable event sources): sources/ (feed), sim/ (tick synthesis), data/ (Parquet storage + gap detection).
 - Domain Layer: Instruments, market data models, analytics, orders, session state.
-- Broker Layer: Adapter abstraction with concrete brokers and capability extensions.
-- Infrastructure: Transport, persistence (EventStore), replay, synthetic feeds.
+- Broker Layer: Adapter abstraction with concrete brokers and capability extensions; DhanBroker decomposes into DhanTransport/DhanAuthProvider/DhanMapper.
+- Infrastructure: BrokerRateGate (sliding-window rate limiting), RetryPolicy (exponential backoff), token store, transport, persistence (EventStore), replay, synthetic feeds.
 
 ```mermaid
 graph TB
 subgraph "Public API"
-FAC["Market Facade"]
+TS["TradingSession (preferred entry point)"]
+FAC["Market Facade (legacy wrapper)"]
 FCT["InstrumentFactory"]
+REG["BrokerRegistry / SymbolMaster"]
 end
 subgraph "Trading Kernel"
-KS["TradingKernel"]
+TB["TradingKernel"]
+RK["ResilientKernel"]
+RS2["StrategyRunner"]
+LR["LiveRunner"]
 EB["EventBus"]
-CL["TradingClock"]
+CL["TradingClock (Live/Replay/Sim)"]
 ENG["Engines (Market/Candle/Indicator/Strategy/Risk/Order/Portfolio)"]
 RT["ExecutionRouter"]
-RS["ResilientKernel"]
+end
+subgraph "Sources / Sim / Data"
+SRC["sources/ (MarketFeedSource, DhanMarketFeedSource, Synthetic)"]
+SIM["sim/ (synthesize_1m_ticks, SimTick)"]
+DATA["data/ (ParallelHistoryFetcher, ParquetStorage, GapDetector, ScannerLoader)"]
+RE["ReplayEngine"]
+BS["BacktestSimulator"]
 end
 subgraph "Domain Layer"
 INST["Instrument (base)"]
@@ -62,28 +74,39 @@ end
 subgraph "Broker Layer"
 BA["BrokerAdapter (ABC)"]
 CAP["Capability System"]
+DHAN["DhanBroker (DhanTransport, DhanAuthProvider, DhanMapper)"]
 end
 subgraph "Infrastructure"
-ES["EventStore"]
-RE["ReplayEngine"]
-BS["BacktestSimulator"]
-SF["SyntheticFeedSource"]
+GATES["BrokerRateGate (sliding-window)"]
+RTR["RetryPolicy"]
+TOK["Token store + cooldown"]
+ES["EventStore (append-only JSONL)"]
 end
-FAC --> FCT
-FAC --> KS
-KS --> EB
-KS --> CL
-KS --> ENG
-KS --> RT
-RS --> KS
+TS --> TB
+TS --> FCT
+TS --> REG
+FAC --> TS
+TB --> EB
+TB --> CL
+TB --> ENG
+TB --> RT
+RK --> TB
+RS2 --> TB
+LR --> TB
+TB --> SRC
+TB --> SIM
+TB --> DATA
+TB --> RE
+TB --> BS
 INST --> CASH
 INST --> MDEL
 INST --> BA
 BA --> CAP
-KS --> ES
-KS --> RE
-KS --> BS
-KS --> SF
+DHAN --> GATES
+DHAN --> TOK
+DHAN --> RTR
+DATA --> GATES
+SRC --> GATES
 ```
 
 **Diagram sources**
@@ -98,16 +121,22 @@ KS --> SF
 - [ntrade/brokers/capabilities.py:1-74](file://ntrade/brokers/capabilities.py#L1-L74)
 
 **Section sources**
-- [ARCHITECTURE.md:20-51](file://ARCHITECTURE.md#L20-L51)
+- [ARCHITECTURE.md:20-75](file://ARCHITECTURE.md#L20-L75)
 - [ntrade/__init__.py:1-105](file://ntrade/__init__.py#L1-L105)
 
 ## Core Components
-- TradingSession: Unified entry point combining broker connection, instrument creation, kernel lifecycle, and strategy management.
+- TradingSession (preferred entry point): Unified entry point combining broker connection, instrument creation via InstrumentFactory, TradingKernel lifecycle, and strategy/position management. Market facade is a legacy wrapper.
 - TradingKernel: Wires the engine stack, event bus, clock, and execution target; supports live/replay/backtest with identical stacks.
+- ResilientKernel: Crash recovery by replaying causal events (market + OrderFilled) from EventStore without re-trading; pauses EventStore writes during recovery, reseeds execution sequence.
+- StrategyRunner: Multi-strategy lifecycle management on one kernel with per-strategy RiskEngine isolation and shared reference-counted global RiskEngine pause/restore.
+- LiveRunner: Orchestration harness — starts kernel + feed, polls orders/syncs positions, bridges RiskHaltedEvent to broker kill-switch (instrument.broker.kill_switch), monitors feed watchdog.
 - EventBus: Synchronous pub/sub with MRO-based subscription, reentrant dispatch, and per-event history.
 - Engines: Market, Candle, Indicator, Strategy, Risk, Order, Portfolio, PositionSync — each subscribes to canonical events and publishes derived events.
 - Execution Router: Routes order intents to SimulatedExecution or BrokerExecution based on mode.
-- ResilientKernel: Crash recovery by replaying causal events from EventStore without re-trading.
+- DhanBroker decomposition: Composes DhanTransport (all REST via _invoke(Quota, fn) → BrokerRateGate), DhanAuthProvider (token store + cooldown + PIN/TOTP fallback), and DhanMapper (wire→domain normalization, chain_from_dhan_df).
+- BrokerRateGate: Multi-window sliding-window rate gate (Quota.QUOTE/DATA/ORDER/NON_TRADING) — single choke point for all outbound broker REST calls; penalizes on DH-904.
+- RetryPolicy: Exponential backoff for transient failures; DH-904 surfaced as typed RateLimited (never retried).
+- EventStore: Append-only JSONL event record for audit, deterministic replay, and crash recovery.
 
 Key responsibilities and interactions are implemented in the following files:
 - Session orchestration and lifecycle: [ntrade/kernel/trading_session.py:1-306](file://ntrade/kernel/trading_session.py#L1-L306)
@@ -126,22 +155,26 @@ Key responsibilities and interactions are implemented in the following files:
 - [ntrade/kernel/resilient.py:1-147](file://ntrade/kernel/resilient.py#L1-L147)
 
 ## Architecture Overview
-The framework enforces a strict dependency rule: domain layer imports nothing from broker layer. Instruments receive a BrokerAdapter via constructor injection and access broker capabilities through a facade that resolves at call time. The kernel is event-centric: brokers, replays, and simulators are interchangeable event sources; instruments become read models updated by events rather than pulling state.
+The framework enforces a strict dependency rule: domain layer imports nothing from broker layer. Instruments receive a BrokerAdapter via constructor injection and access broker capabilities through a facade that resolves at call time. The kernel is event-centric: brokers, replays, and simulators are interchangeable event sources; instruments become read models updated by events rather than pulling state. TradingSession is the preferred entry point (Market facade is a legacy wrapper); DhanBroker decomposes into DhanTransport (rate-gated REST via BrokerRateGate), DhanAuthProvider (token store + cooldown + PIN/TOTP fallback), and DhanMapper (wire→domain normalization).
 
 ```mermaid
 sequenceDiagram
 participant Source as "Market Data Source"
 participant Bus as "EventBus"
+participant Store as "EventStore"
+participant RCK as "ResilientKernel"
 participant MK as "MarketEngine"
 participant CD as "CandleEngine"
 participant IN as "IndicatorEngine"
 participant ST as "StrategyEngine"
 participant RK as "RiskEngine"
 participant OE as "OrderEngine"
+participant LR as "LiveRunner"
 participant EX as "ExecutionRouter"
 participant BE as "BrokerExecution/SimulatedExecution"
 participant PO as "PortfolioEngine"
 Source->>Bus : TickEvent / QuoteEvent / DepthEvent
+Bus->>Store : append (if configured)
 Bus-->>MK : Dispatch
 MK->>MK : Update Instrument Read Model
 MK->>Bus : QuoteUpdatedEvent
@@ -153,6 +186,9 @@ RK-->>OE : Approved Intent
 OE->>EX : OrderIntentEvent
 EX->>BE : Place Order
 BE-->>PO : PositionUpdatedEvent / BalanceChangedEvent
+LR->>OE : poll_orders() / sync_positions()
+LR->>RK : RiskHaltedEvent -> kill_switch
+Note over RCK,Store : On restart: recover() replays store.recovery_events() into fresh kernel with NO strategies, then reseeds execution sequence
 ```
 
 **Diagram sources**
@@ -161,8 +197,8 @@ BE-->>PO : PositionUpdatedEvent / BalanceChangedEvent
 - [ntrade/engines/strategy_engine.py:1-102](file://ntrade/engines/strategy_engine.py#L1-L102)
 
 **Section sources**
-- [ARCHITECTURE.md:20-51](file://ARCHITECTURE.md#L20-L51)
-- [ARCHITECTURE.md:156-215](file://ARCHITECTURE.md#L156-L215)
+- [ARCHITECTURE.md:20-75](file://ARCHITECTURE.md#L20-L75)
+- [ARCHITECTURE.md:200-260](file://ARCHITECTURE.md#L200-L260)
 
 ## Detailed Component Analysis
 
@@ -418,7 +454,7 @@ EX --> PO["PortfolioEngine"]
 - [ntrade/engines/strategy_engine.py:1-102](file://ntrade/engines/strategy_engine.py#L1-L102)
 
 **Section sources**
-- [ARCHITECTURE.md:156-215](file://ARCHITECTURE.md#L156-L215)
+- [ARCHITECTURE.md:200-260](file://ARCHITECTURE.md#L200-L260)
 
 ## Dependency Analysis
 - Dependency direction: Public API depends on Kernel and Domain; Kernel depends on Engines, Execution, Storage; Domain depends on no Broker layer; Broker layer depends on Domain types only.
@@ -427,14 +463,27 @@ EX --> PO["PortfolioEngine"]
 
 ```mermaid
 graph LR
-API["Public API"] --> KERNEL["TradingKernel"]
+API["Public API (TradingSession / Market facade)"] --> SESSION["TradingSession"]
+SESSION --> KERNEL["TradingKernel"]
+SESSION --> FACT["InstrumentFactory"]
+SESSION --> REG["BrokerRegistry"]
+RCK["ResilientKernel"] --> KERNEL
+LRUN["LiveRunner"] --> KERNEL
 KERNEL --> ENGINES["Engines"]
-KERNEL --> EXEC["ExecutionRouter"]
+ENGINES --> |publish/consume| Bus["EventBus"]
+KERNEL --> SRC["Sources (sources/)"]
+KERNEL --> SIM["sim/"]
+KERNEL --> DATA["data/ (Parquet)"]
 KERNEL --> STORE["EventStore"]
 DOMAIN["Domain Layer"] --> |no import| BROKER["Broker Layer"]
-BROKER --> DOMAIN
+BROKER --> |implements| ADAPTER["BrokerAdapter"]
+BROKER --> DTRAN["DhanTransport"]
+BROKER --> DAUT["DhanAuthProvider"]
+BROKER --> DMAP["DhanMapper"]
+DTRAN --> GATE["BrokerRateGate"]
 ENGINES --> DOMAIN
-EXEC --> BROKER
+SRC --> GATE
+DATA --> GATE
 ```
 
 **Diagram sources**
@@ -443,7 +492,7 @@ EXEC --> BROKER
 - [ntrade/brokers/base.py:1-163](file://ntrade/brokers/base.py#L1-L163)
 
 **Section sources**
-- [ARCHITECTURE.md:20-51](file://ARCHITECTURE.md#L20-L51)
+- [ARCHITECTURE.md:20-75](file://ARCHITECTURE.md#L20-L75)
 
 ## Performance Considerations
 - EventBus serialization ensures thread-safe dispatch under concurrent producers (websocket callbacks vs runner loop).

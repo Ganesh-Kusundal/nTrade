@@ -1,1 +1,0 @@
-No build or test commands required; the module is importable as `ntrade.domain.analytics`. The `greeks.py` module is fully self-contained with no external dependencies.

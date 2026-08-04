@@ -1,1 +1,0 @@
-No build or test commands required; the module is imported directly by other layers. Built-in scanners are discovered lazily via `from ntrade.scanners.builtin import ...` inside `ScannerFacade._register_builtins`, so the scanner package must be importable at runtime but is not needed to construct the facade itself.

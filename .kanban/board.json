@@ -649,6 +649,78 @@
       "title": "DhanTransport.get_balance must not swallow errors to 0.0 (silent-zero regression; position-sync keeps state on raise)",
       "created": "2026-08-02T18:03:26Z",
       "updated": "2026-08-02T18:12:25Z"
+    },
+    {
+      "id": "T-038",
+      "type": "task",
+      "status": "done",
+      "title": "Add pyarrow + duckdb to pyproject.toml deps and install in venv (unblocks ntrade.data import)",
+      "created": "2026-08-03T13:21:13Z",
+      "updated": "2026-08-03T15:13:41Z"
+    },
+    {
+      "id": "F-002",
+      "type": "feature",
+      "status": "done",
+      "title": "Implement ntrade/data/scanner_loader.py (ScannerLoader.load_universe, partition-pruned 2-3mo reads)",
+      "created": "2026-08-03T13:21:13Z",
+      "updated": "2026-08-03T15:13:41Z"
+    },
+    {
+      "id": "D-021",
+      "type": "debt",
+      "status": "done",
+      "title": "Remove dead Quota import in parquet_store.py",
+      "created": "2026-08-03T13:21:13Z",
+      "updated": "2026-08-03T16:43:23Z"
+    },
+    {
+      "id": "T-039",
+      "type": "task",
+      "status": "done",
+      "title": "Write tests/test_data_layer.py — PaperBroker round trip (fetch → upsert idempotency → gap detect → scanner load → derivative tagging)",
+      "created": "2026-08-03T13:21:13Z",
+      "updated": "2026-08-03T17:30:00Z"
+    },
+    {
+      "id": "T-040",
+      "type": "task",
+      "status": "done",
+      "title": "Refresh graphify knowledge graph to include ntrade/data layer",
+      "created": "2026-08-03T13:21:13Z",
+      "updated": "2026-08-03T17:30:00Z"
+    },
+    {
+      "id": "B-017",
+      "type": "bug",
+      "status": "done",
+      "title": "ParquetStorage.upsert crashes (KeyError) on partial-overlap re-fetch — existing[mask] treats MultiIndex difference as column labels, breaks fetch_missing pipeline",
+      "created": "2026-08-03T17:15:37Z",
+      "updated": "2026-08-03T17:35:48Z"
+    },
+    {
+      "id": "T-041",
+      "type": "task",
+      "status": "done",
+      "title": "Benchmark ParallelHistoryFetcher.fetch() throughput vs instrument count using PaperBroker seed",
+      "created": "2026-08-03T17:15:40Z",
+      "updated": "2026-08-03T17:35:49Z"
+    },
+    {
+      "id": "D-022",
+      "type": "debt",
+      "status": "done",
+      "title": "Configure duckdb_scan to default to 1-minute data window (start=now-1min, end=now) for live SQL querying",
+      "created": "2026-08-03T17:15:41Z",
+      "updated": "2026-08-03T17:35:53Z"
+    },
+    {
+      "id": "F-003",
+      "type": "feature",
+      "status": "done",
+      "title": "Add universe/CSV loader mapping Nifty 50/100/200/500 CSV symbols to Equity instruments via InstrumentFactory",
+      "created": "2026-08-03T17:15:45Z",
+      "updated": "2026-08-03T17:35:54Z"
     }
   ],
   "flows": {

@@ -1,4 +1,4 @@
-# nTrade — kanban digest (2026-08-03T02:36:49Z)
+# nTrade — kanban digest (2026-08-03T17:37:19Z)
 
 nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). It provides an instrument-centric API where every market entity (Equity, Future, Option, Index, Commodity) owns its own state (quote, depth, history, stream) and broker transport is hidden behind a BrokerAdapter. Currently integrated with Dhan via Dhan-Tradehull. Architecture: event-driven kernel with engine pipeline (Market→Candle→Indicator→Strategy→Risk→Portfolio), typed EventBus, execution router supporting live/paper/replay modes. 75 source files, 7269 LOC, 40 test files, 361 passing tests.
 
@@ -12,34 +12,39 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - none
 
 ## Recently completed
+- F-003 [feature/done] Add universe/CSV loader mapping Nifty 50/100/200/500 CSV symbols to Equity instruments via InstrumentFactory (completed 2026-08-03)
+- D-022 [debt/done] Configure duckdb_scan to default to 1-minute data window (start=now-1min, end=now) for live SQL querying (completed 2026-08-03)
+- T-041 [task/done] Benchmark ParallelHistoryFetcher.fetch() throughput vs instrument count using PaperBroker seed (completed 2026-08-03)
+- B-017 [bug/done] ParquetStorage.upsert crashes (KeyError) on partial-overlap re-fetch — existing[mask] treats MultiIndex difference as column labels, breaks fetch_missing pipeline (completed 2026-08-03)
+- T-039 [task/done] Write tests/test_data_layer.py — PaperBroker round trip (fetch → upsert idempotency → gap detect → scanner load → derivative tagging) (completed 2026-08-03)
+- T-040 [task/done] Refresh graphify knowledge graph to include ntrade/data layer (completed 2026-08-03)
+- D-021 [debt/done] Remove dead Quota import in parquet_store.py (completed 2026-08-03)
+- T-038 [task/done] Add pyarrow + duckdb to pyproject.toml deps and install in venv (unblocks ntrade.data import) (completed 2026-08-03)
+- F-002 [feature/done] Implement ntrade/data/scanner_loader.py (ScannerLoader.load_universe, partition-pruned 2-3mo reads) (completed 2026-08-03)
 - D-018 [debt/done] DhanMarketFeedSource reuses broker tsl instead of second get_tradehull probe chain (completed 2026-08-02)
-- D-019 [debt/done] HistoricalSeries._df copy-on-write + kernel clock for is_fresh/fetch (replay parity) (completed 2026-08-02)
-- D-020 [debt/done] Serialize DhanMarketFeedSource stop/reconnect under a lock (completed 2026-08-02)
-- B-013 [bug/done] Remove 2m/3m/4m from _DHAN_TIMEFRAMES; fail fast with correct supported-timeframe error (completed 2026-08-02)
-- F-001 [feature/done] Sub-5m timeframes via 1m fetch + resample (HistoricalSeries.resample) (completed 2026-08-02)
-- B-014 [bug/done] dhan_transport.get_historical raises on unexpected exceptions (no silent empty CandleSeries) (completed 2026-08-02)
-- B-015 [bug/done] Auth: only _clear_shared on invalid-token signal; make refresh_if_needed atomic under lock (completed 2026-08-02)
-- B-016 [bug/done] DhanTransport.get_balance must not swallow errors to 0.0 (silent-zero regression; position-sync keeps state on raise) (completed 2026-08-02)
-- T-035 [task/done] Gate DhanMarketFeedSource login probe (_context_from_env -> get_tradehull) through session BrokerRateGate (completed 2026-08-02)
-- T-036 [task/done] Expose BrokerRateGate.status() telemetry + quota headroom row in live_read_check.py (completed 2026-08-02)
 
 ## Tests
 - last pytest run: 0 failing
 
 ## Drift since previous scan
-- none
+- added: ntrade/data/universe.py
+- added: scripts/benchmark_fetch.py
+- added: tests/test_data_layer.py
+- modified: Dependencies\all_instrument 2026-08-03.csv
+- modified: ntrade/data/__init__.py
+- modified: ntrade/data/parquet_store.py
 
 ## Recent commits
-- 3fe17b4 fix: timeframe/auth/race hardening batch (B-013..B-016, D-018..D-020)
-- a686e3f fix: commit T-022..T-024 remediation batch (bar-aware LIMIT fills, EventStore torn-line recovery, two-way kill switch)
-- 4741c11 T-037 regression test: position sync pays NON_TRADING quota
-- 8eacfc9 T-036 expose BrokerRateGate.status() telemetry + quota headroom in live-read
-- dfe1b4e T-035 gate DhanMarketFeedSource login probe through BrokerRateGate
-- 8bd7b09 T-034 fail closed on DEGRADED live reads
-- 7ff8f90 T-033 add unified pre-deploy gate script
-- 9e284d0 B-012 gate auth probe reads through BrokerRateGate
+- 2424757 review findings sweep: depth retry, LTP failure guard, stale-refresh fix, rate-gate blocked heuristic
+- aa7cfe8 K-027 F-001 resample_history labels bars at right edge (CandleEngine parity)
+- 50f7a2e K-026 simplify gate._equity_trace zero-qty handling (conditional, keep pop)
+- 729e52a K-025 align HistoricalSeries.resample labels with CandleEngine bucketing (label=right)
+- 148911b K-024 derive OrderFacade trade_type default from instrument kind
+- baf8225 K-023 guard VolumeSpike ratio branch in live mode (unit mismatch)
+- 4c7af09 K-022 throttle gap/imbalance scanners symmetrically (30s)
+- cb408dd K-021 propagate RateLimited from broker data reads (no silent empty)
 
-(159 uncommitted changes in working tree)
+(183 uncommitted changes in working tree)
 
 ## Architecture & components
 - **ntrade/backtest/** (0 files): Backtest simulator: uses TradingKernel in replay mode with SimulatedExecution. Zero parity with live
@@ -62,18 +67,12 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - none
 
 ## Knowledge graph (graphify)
-- 6520 nodes · 11043 edges · 391 communities (built 2026-08-02T10:05:57Z)
-- STALE (17 modified, 311 deleted, 9 new since build) — refresh with `/graphify update`
-  - modified: ntrade/brokers/dhan.py
-  - modified: ntrade/brokers/dhan_auth.py
-  - modified: ntrade/brokers/dhan_auth_provider.py
-  - modified: ntrade/brokers/dhan_mapper.py
-  - modified: ntrade/brokers/dhan_transport.py
-  - modified: ntrade/domain/market/history.py
-  - modified: ntrade/execution/__init__.py
-  - modified: ntrade/execution/retry.py
-  - modified: ntrade/kernel/context.py
-  - modified: ntrade/sources/dhan_feed.py
+- 6863 nodes · 12236 edges · 371 communities (built 2026-08-03T17:17:15Z)
+- hubs: Equity(262), PaperBroker(160), TradingKernel(153), ReplayClock(152), DhanTransport(113), TickEvent(108), TradingSession(92), Option(91)
+- STALE (3 modified, 235 deleted, 2 new since build) — refresh with `/graphify update`
+  - modified: ntrade/data/__init__.py
+  - modified: ntrade/data/parquet_store.py
+  - modified: tests/test_data_layer.py
 - AUTO-REFRESH: run `/graphify update` now, then re-run `kanban.py update` to refresh this digest.
 
 ## Data / execution flows
@@ -84,7 +83,8 @@ nTrade is a quantitative trading platform SDK for Indian markets (NSE/BSE/MCX). 
 - **replay**: EventStore → timestamped events → ReplayClock.setTime() → EventBus.publish() → identical engine pipeline as live (zero parity)
 
 ## Dependencies
-- unavailable
+- runtime: pandas>=2.0, numpy>=1.24, python-dotenv>=1.0, Dhan-Tradehull>=3.3.2, pyarrow>=14.0, duckdb>=0.9.0
+- dev: pytest>=8.0, pytest-timeout>=2.2, pytest-cov>=5.0
 
 ## Technical debt & risks
 - none

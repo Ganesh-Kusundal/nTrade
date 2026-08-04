@@ -216,3 +216,60 @@ def test_stop_is_idempotent_and_running_flag_clears():
     assert not feed.running
     assert feed._feed is None
     feed.stop()  # second stop must not raise
+
+
+def _no_wait(feed):
+    feed._reconnect_limiter = type("NoWait", (), {"wait": lambda self: None})()
+    return feed
+
+
+def test_on_close_unexpected_reconnects():
+    """M-2: a broker-side close (no stop() call) must rebuild the socket."""
+    from ntrade.sources.dhan_feed import DhanMarketFeedSource
+
+    class FakeFeed:
+        def start(self):
+            return object()
+
+        def close_connection(self):
+            pass
+
+    builds = []
+
+    def factory(subs):
+        builds.append(FakeFeed())
+        return builds[-1]
+
+    feed = _no_wait(DhanMarketFeedSource(feed_factory=factory))
+    feed.start()
+    assert len(builds) == 1
+    feed._on_close(None)  # unexpected close — no stop() armed the flag
+    assert len(builds) == 2  # rebuilt a fresh single-use socket
+    assert feed.running
+    assert feed._reconnect_called
+
+
+def test_on_close_after_stop_does_not_reconnect():
+    """M-2: a deliberate stop() leaves the feed down — the close callback
+    fired by the teardown must not rebuild the websocket."""
+    from ntrade.sources.dhan_feed import DhanMarketFeedSource
+
+    class FakeFeed:
+        def start(self):
+            return object()
+
+        def close_connection(self):
+            pass
+
+    builds = []
+
+    def factory(subs):
+        builds.append(FakeFeed())
+        return builds[-1]
+
+    feed = _no_wait(DhanMarketFeedSource(feed_factory=factory))
+    feed.start()
+    feed.stop()
+    feed._on_close(None)  # callback racing the teardown
+    assert len(builds) == 1  # never rebuilt
+    assert not feed.running

@@ -1,1 +1,0 @@
-Defines the BrokerAdapter ABC and provides a deterministic paper-trading broker plus a full Dhan-Tradehull implementation with capability-driven extensions for broker-specific features.

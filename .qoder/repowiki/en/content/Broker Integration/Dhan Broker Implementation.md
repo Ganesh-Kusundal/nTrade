@@ -12,6 +12,7 @@
 - [order.py](file://ntrade/domain/orders/order.py)
 - [quote.py](file://ntrade/domain/market/quote.py)
 - [portfolio.py](file://ntrade/domain/portfolio.py)
+- [history.py](file://ntrade/domain/market/history.py)
 - [retry.py](file://ntrade/execution/retry.py)
 - [test_dhan_broker.py](file://tests/test_dhan_broker.py)
 - [test_dhan_auth_unit.py](file://tests/test_dhan_auth_unit.py)
@@ -19,14 +20,17 @@
 - [check_connection.py](file://check_connection.py)
 - [test_rate_limit.py](file://tests/test_rate_limit.py)
 - [test_rate_gate_integration.py](file://tests/test_rate_gate_integration.py)
+- [test_dhan_transport.py](file://tests/test_dhan_transport.py)
+- [test_history_stream.py](file://tests/test_history_stream.py)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced rate-limiting propagation with comprehensive RateLimited exception handling across all data retrieval methods including get_orderbook(), get_trade_book(), get_expiry_list(), and other broker methods
-- Added detailed docstrings explaining rate-limit behavior and error handling consistency throughout the broker implementation
-- Updated documentation to reflect the K-021 findings where rate-limit rejections now properly propagate instead of being masked as empty results
-- Strengthened error handling patterns to prevent silent failures that could lead to incorrect trading decisions
+- Enhanced DhanTransport with robust retry mechanisms for market depth retrieval (configurable attempts default 2, settle periods default 0.5s)
+- Added critical LTP failure guards rejecting Tradehull SDK failure envelopes and non-dict payloads
+- Increased timeout from 5.0 to 8.0 seconds for WebSocket operations
+- Implemented proper handling of DH-904 rate limit errors to prevent quota amplification attacks
+- Enhanced error propagation ensuring RateLimited exceptions are never masked as empty results
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -47,7 +51,9 @@ The architecture has been refactored to delegate all data calls through DhanTran
 
 The transport layer provides comprehensive retry policies, sophisticated multi-window rate limiting with quota management, timestamp resolution, and consistent error handling for all Dhan API interactions. Recent hardening improvements include enhanced timeframe handling for sub-5m resampling, atomic authentication refresh operations, and thread-safe lifecycle management to prevent race conditions.
 
-**Updated** The implementation now features enhanced rate-limiting propagation with proper RateLimited exception handling across all data retrieval methods, ensuring that rate-limit violations are never silently masked as empty results, which could lead to incorrect trading decisions.
+**Updated** The implementation now features enhanced rate-limiting propagation with proper RateLimited exception handling across all data retrieval methods, ensuring that rate-limit violations are never silently masked as empty results, which could lead to incorrect trading decisions. Additionally, the timeframe handling system has been significantly enhanced with comprehensive right-edge labeling convention support and cross-path parity validation.
+
+**Enhanced** The DhanTransport layer now includes robust retry mechanisms for market depth retrieval with configurable attempts (default 2) and settle periods (default 0.5s), critical LTP failure guards that reject Tradehull SDK failure envelopes and non-dict payloads, increased timeout from 5.0 to 8.0 seconds, and proper handling of DH-904 rate limit errors to prevent quota amplification attacks.
 
 ## Project Structure
 The Dhan integration is organized into a clear separation of concerns following the provider pattern:
@@ -79,13 +85,14 @@ subgraph "Domain Models"
 J["Order / OrderType / OrderStatus<br/>(order.py)"]
 K["Quote / Tick<br/>(quote.py)"]
 L["Position / Holding / Portfolio / Account<br/>(portfolio.py)"]
+M["HistoricalSeries<br/>(history.py)<br/>Resample + Right-Edge Labels"]
 end
 subgraph "Resilience"
-M["RetryPolicy<br/>(retry.py)<br/>Exponential Backoff"]
-N["Defensive Copies<br/>Race Condition Prevention"]
+N["RetryPolicy<br/>(retry.py)<br/>Exponential Backoff"]
+O["Defensive Copies<br/>Race Condition Prevention"]
 end
 subgraph "Observability Contract"
-O["No Event Bus<br/>Independent Lifecycle"]
+P["No Event Bus<br/>Independent Lifecycle"]
 end
 A --> B
 A --> C
@@ -93,16 +100,17 @@ A --> D
 B --> H
 C --> D
 C --> E
-C --> M
+C --> N
 A --> J
 A --> K
 A --> L
-A -.-> O
-B -.-> O
+A --> M
+A -.-> P
+B -.-> P
 E --> F
 E --> G
 H --> I
-C --> N
+C --> O
 ```
 
 **Diagram sources**
@@ -115,6 +123,7 @@ C --> N
 - [order.py:14-41](file://ntrade/domain/orders/order.py#L14-41)
 - [quote.py:9-28](file://ntrade/domain/market/quote.py#L9-28)
 - [portfolio.py:19-61](file://ntrade/domain/portfolio.py#L19-61)
+- [history.py:122-136](file://ntrade/domain/market/history.py#L122-136)
 - [retry.py:19-68](file://ntrade/execution/retry.py#L19-68)
 
 **Section sources**
@@ -124,9 +133,10 @@ C --> N
 ## Core Components
 - **DhanBroker**: Implements the BrokerAdapter interface for Dhan, orchestrating auth, transport, and mapping. Now delegates all data calls through DhanTransport while maintaining the same public API surface. Handles quote retrieval, historical data, option chains, order placement/cancellation/modification, order/trade books, positions, holdings, and balances. **Critical**: The broker has no event bus and publishes no observability events during lifecycle operations. **Enhanced**: All data retrieval methods now properly propagate RateLimited exceptions instead of masking them as empty results.
 - **DhanAuthProvider**: Manages authentication lifecycle, including proactive token refresh using PIN+TOTP when tokens near expiry. Provides automatic background refresh to prevent mid-session failures with thread-safe atomic operations. **Important**: Auth lifecycle is independent of observability - stopping auth never emits heartbeat/feed/order events.
-- **DhanTransport**: Central API call coordinator that wraps Tradehull API calls with retry policies, sophisticated multi-window rate limiting via BrokerRateGate, timestamp resolution, and consistent error handling; exposes normalized methods for LTP, quotes, depth, history, options, and order operations.
+- **DhanTransport**: Central API call coordinator that wraps Tradehull API calls with retry policies, sophisticated multi-window rate limiting via BrokerRateGate, timestamp resolution, and consistent error handling; exposes normalized methods for LTP, quotes, depth, history, options, and order operations. **Enhanced** with robust retry mechanisms for market depth retrieval and critical LTP failure guards.
 - **BrokerRateGate**: Thread-safe multi-window rate limiter that enforces Dhan's documented rate limit table across multiple quota classes (QUOTE, DATA, ORDER, NON_TRADING) with sliding windows and penalty mechanisms.
-- **DhanMapper**: Pure functions to map Dhan-specific wire formats into ntrade domain objects (quotes, depth, order/trade books, positions, holdings) with enhanced timeframe mapping logic for sub-5m resampling.
+- **DhanMapper**: Pure functions to map Dhan-specific wire formats into ntrade domain objects (quotes, depth, order/trade books, positions, holdings) with enhanced timeframe mapping logic for sub-5m resampling and RIGHT-edge labeling convention support.
+- **HistoricalSeries**: Domain model for historical data with enhanced resample functionality supporting RIGHT-edge labeling convention for cross-path parity with CandleEngine.
 - **Domain Models**: Order, Quote, Position, Holding, Portfolio, Account define the canonical abstractions used by engines and strategies.
 - **RetryPolicy**: Provides exponential backoff with jitter for resilient API usage, with intelligent rate limit detection to avoid retrying quota violations.
 
@@ -136,6 +146,7 @@ C --> N
 - [dhan_transport.py:54-69](file://ntrade/brokers/dhan_transport.py#L54-69)
 - [rate_limit.py:76-103](file://ntrade/execution/rate_limit.py#L76-103)
 - [dhan_mapper.py:35-73](file://ntrade/brokers/dhan_mapper.py#L35-73)
+- [history.py:122-136](file://ntrade/domain/market/history.py#L122-136)
 - [order.py:14-41](file://ntrade/domain/orders/order.py#L14-41)
 - [quote.py:9-28](file://ntrade/domain/market/quote.py#L9-28)
 - [portfolio.py:19-61](file://ntrade/domain/portfolio.py#L19-61)
@@ -145,7 +156,7 @@ C --> N
 The DhanBroker composes three primary subsystems with a clear delegation pattern and strict separation from observability:
 - **Authentication** via DhanAuthProvider and dhan_auth.get_tradehull, which supports shared token store, JWT expiry checks, and PIN+TOTP fallback with proactive refresh. **Auth lifecycle is independent of observability**.
 - **Transport** via DhanTransport, which encapsulates all Tradehull interactions with retry, sophisticated multi-window rate limiting via BrokerRateGate, and normalization.
-- **Mapping** via DhanMapper, which converts raw Dhan responses into domain objects with enhanced timeframe handling.
+- **Mapping** via DhanMapper, which converts raw Dhan responses into domain objects with enhanced timeframe handling and RIGHT-edge labeling convention support.
 
 ```mermaid
 sequenceDiagram
@@ -186,41 +197,140 @@ Broker-->>App : updated Order
 
 ## Detailed Component Analysis
 
-### Enhanced Timeframe Handling and Sub-5m Resampling
-**Updated** The timeframe handling system now includes comprehensive support for sub-5m resampling, addressing the critical issue where Dhan's backend only supports 1/5/15/25/60m + DAY intervals natively.
+### Enhanced Market Depth Retrieval with Robust Retry Mechanisms
+**Updated** The market depth retrieval system now includes robust retry mechanisms with configurable attempts (default 2) and settle periods (default 0.5s) to handle websocket snapshot failures gracefully.
 
-- **Native Timeframe Support**: Direct mapping for supported intervals (1m, 5m, 15m, 25m, 60m, DAY)
-- **Sub-5m Resampling Logic**: 2m/3m/4m timeframes are automatically converted to fetch 1m base data and resample using pandas
-- **Error Prevention**: Unsupported timeframes raise ValueError immediately instead of silently failing
-- **OHLCV Safety**: Resampling preserves OHLC semantics (open=first, high=max, low=min, close=last, volume/oi=sum)
-- **Market Session Alignment**: Resampling anchored at 09:15 IST market open to prevent night-session candle bleeding
+- **Configurable Retry Logic**: `get_depth()` method accepts `attempts` parameter (default 2) for retry attempts and `settle` parameter (default 0.5s) for settling between attempts
+- **Timeout-Bounded Operations**: WebSocket frame reads are bounded by timeout (increased from 5.0 to 8.0 seconds) to prevent indefinite blocking
+- **WebSocket Re-arm Strategy**: Short settle periods allow websocket re-subscription before retry attempts
+- **DH-904 Protection**: Rate limit errors are never retried to prevent quota amplification attacks
+- **Error Propagation**: RateLimited exceptions propagate immediately without being masked as None values
 
 ```mermaid
 flowchart TD
-Start(["Request Historical Data"]) --> CheckTF{"Timeframe?"}
-CheckTF --> |1m/5m/15m/25m/60m/DAY| Native["Use native interval"]
-CheckTF --> |2m/3m/4m| Resample["Map to '1' base + resample rule"]
-CheckTF --> |Unsupported| Error["Raise ValueError"]
-Native --> Fetch["Fetch from Dhan backend"]
-Resample --> Fetch1m["Fetch 1m base data"]
-Fetch1m --> ResampleDF["Apply pandas resample rule"]
-ResampleDF --> Filter["Filter by days/start/end"]
-Native --> Filter
-Filter --> Return["Return CandleSeries"]
-Error --> End(["Exception"])
-Return --> End
+Start(["Request Market Depth"]) --> Attempt{"Attempt Count?"}
+Attempt --> |First Try| WSConnect["Connect to WebSocket"]
+WSConnect --> FrameRead["Read Frames (timeout=8.0s)"]
+FrameRead --> Success{"Success?"}
+Success --> |Yes| ReturnDepth["Return MarketDepth"]
+Success --> |No| CheckRetry{"More Attempts?"}
+CheckRetry --> |Yes| Settle["Settle Period (0.5s)"]
+Settle --> WSReconnect["Reconnect WebSocket"]
+WSReconnect --> FrameRead
+CheckRetry --> |No| ReturnNone["Return None"]
+ReturnDepth --> End(["Complete"])
+ReturnNone --> End
 ```
 
 **Diagram sources**
-- [dhan_mapper.py:75-92](file://ntrade/brokers/dhan_mapper.py#L75-92)
-- [dhan_mapper.py:100-134](file://ntrade/brokers/dhan_mapper.py#L100-134)
-- [dhan_transport.py:219-238](file://ntrade/brokers/dhan_transport.py#L219-238)
+- [dhan_transport.py:183-204](file://ntrade/brokers/dhan_transport.py#L183-204)
+- [dhan_transport.py:205-244](file://ntrade/brokers/dhan_transport.py#L205-244)
 
 **Section sources**
-- [dhan_mapper.py:75-92](file://ntrade/brokers/dhan_mapper.py#L75-92)
-- [dhan_mapper.py:100-134](file://ntrade/brokers/dhan_mapper.py#L100-134)
-- [test_dhan_broker.py:114-126](file://tests/test_dhan_broker.py#L114-126)
-- [test_dhan_transport.py:126-154](file://tests/test_dhan_transport.py#L126-154)
+- [dhan_transport.py:183-204](file://ntrade/brokers/dhan_transport.py#L183-204)
+- [dhan_transport.py:205-244](file://ntrade/brokers/dhan_transport.py#L205-244)
+
+### Critical LTP Failure Guards and Payload Validation
+**Updated** The LTP retrieval system now includes critical failure guards that reject Tradehull SDK failure envelopes and non-dict payloads to prevent stale or invalid price data from corrupting downstream calculations.
+
+- **Failure Envelope Detection**: Rejects Tradehull SDK failure responses like `{'status': 'failure', 'remarks': {...}, 'data': ''}`
+- **Non-Dict Payload Guard**: Refuses non-dict payloads (e.g., stale floats from prior calls) rather than trusting unverifiable numbers
+- **Zero Price Protection**: Raises ValueError for zero LTP values to prevent silent corruption of PnL/risk calculations
+- **Symbol Validation**: Ensures response contains the expected symbol key
+- **Comprehensive Error Handling**: Wraps all failures in BrokerDataError for consistent error propagation
+
+```mermaid
+flowchart TD
+Start(["Get LTP"]) --> CallAPI["Call get_ltp_data()"]
+CallAPI --> ValidatePayload{"Valid Dict Payload?"}
+ValidatePayload --> |No| RejectNonDict["Reject Non-Dict Payload"]
+ValidatePayload --> |Yes| CheckStatus{"Status == 'failure'?"}
+CheckStatus --> |Yes| RejectFailure["Reject Failure Envelope"]
+CheckStatus --> |No| ExtractValue["Extract Symbol Value"]
+ExtractValue --> ValidValue{"Value > 0?"}
+ValidValue --> |No| RejectZero["Reject Zero Value"]
+ValidValue --> |Yes| ReturnLTP["Return LTP Value"]
+RejectNonDict --> Error["Raise ValueError"]
+RejectFailure --> Error
+RejectZero --> Error
+ReturnLTP --> End(["Complete"])
+Error --> End
+```
+
+**Diagram sources**
+- [dhan_transport.py:120-158](file://ntrade/brokers/dhan_transport.py#L120-158)
+
+**Section sources**
+- [dhan_transport.py:120-158](file://ntrade/brokers/dhan_transport.py#L120-158)
+
+### Enhanced Rate Limiting and DH-904 Protection
+**Updated** The system now implements proper handling of DH-904 rate limit errors to prevent quota amplification attacks and ensure rate limit violations are never masked as empty results.
+
+- **Immediate Rate Limit Propagation**: RateLimited exceptions propagate immediately without retry or masking
+- **Quota Amplification Prevention**: DH-904 errors are never retried to prevent amplifying quota exhaustion
+- **Class-Specific Penalties**: Each quota class receives appropriate penalty periods after rate limit violations
+- **Consistent Error Handling**: All data retrieval methods properly catch and re-raise RateLimited exceptions
+- **Protected Critical Methods**: get_orderbook(), get_trade_book(), get_expiry_list(), and other critical methods now properly propagate rate-limit exceptions
+
+```mermaid
+flowchart TD
+Start(["API Call"]) --> Invoke["_invoke(quota, fn)"]
+Invoke --> Execute["Execute Function"]
+Execute --> Success{"Success?"}
+Success --> |Yes| ReturnData["Return Data"]
+Success --> |No| CheckRateLimit{"Rate Limited?"}
+CheckRateLimit --> |Yes| CreateRL["Create RateLimited Exception"]
+CreateRL --> Penalize["Penalize Quota Class"]
+Penalize --> RaiseRL["Raise RateLimited"]
+CheckRateLimit --> |No| RaiseError["Raise Original Exception"]
+ReturnData --> End(["Complete"])
+RaiseRL --> End
+RaiseError --> End
+```
+
+**Diagram sources**
+- [dhan_transport.py:89-116](file://ntrade/brokers/dhan_transport.py#L89-116)
+- [rate_limit.py:131-139](file://ntrade/execution/rate_limit.py#L131-139)
+
+**Section sources**
+- [dhan_transport.py:89-116](file://ntrade/brokers/dhan_transport.py#L89-116)
+- [rate_limit.py:131-139](file://ntrade/execution/rate_limit.py#L131-139)
+
+### Cross-Path Parity and RIGHT-Edge Labeling Convention
+**Updated** The timeframe handling system now implements comprehensive cross-path parity validation between HistoricalSeries.resample and DhanMapper.resample_history, ensuring consistent RIGHT-edge labeling conventions across different code paths.
+
+- **RIGHT-Edge Convention**: Both implementations now use `label="right"` to label bars at the bin's end rather than start
+- **Grid Differences**: For 3m timeframes, both grids coincide exactly; for 2m/4m, intentional offsets exist due to different anchoring strategies
+- **HistoricalSeries**: Uses epoch-anchored grid with UTC timestamps for engine compatibility
+- **DhanMapper**: Uses 09:15 IST session-anchored grid for night-session candle containment
+- **Test Coverage**: Comprehensive tests validate both RIGHT-edge convention and documented grid offsets
+- **Parity Guarantee**: 3m timeframes provide exact parity; other timeframes maintain RIGHT-edge convention with documented offsets
+
+```mermaid
+stateDiagram-v2
+[*] --> RequestResample
+RequestResample --> ChoosePath{"Code Path?"}
+ChoosePath --> |HistoricalSeries| EpochGrid["Epoch-anchored grid\nUTC timestamps"]
+ChoosePath --> |DhanMapper| SessionGrid["09 : 15 IST session-anchored\nnight-session containment"]
+EpochGrid --> ApplyRule["Apply resample rule\nwith label='right'"]
+SessionGrid --> ApplyRule
+ApplyRule --> ValidateConvention{"Validate RIGHT-edge?"}
+ValidateConvention --> |Yes| ReturnResult["Return resampled data"]
+ValidateConvention --> |No| Error["Validation failure"]
+ReturnResult --> [*]
+Error --> [*]
+```
+
+**Diagram sources**
+- [history.py:122-136](file://ntrade/domain/market/history.py#L122-136)
+- [dhan_mapper.py:127-147](file://ntrade/brokers/dhan_mapper.py#L127-147)
+- [test_history_stream.py:150-205](file://tests/test_history_stream.py#L150-205)
+
+**Section sources**
+- [history.py:122-136](file://ntrade/domain/market/history.py#L122-136)
+- [dhan_mapper.py:127-147](file://ntrade/brokers/dhan_mapper.py#L127-147)
+- [test_history_stream.py:150-205](file://tests/test_history_stream.py#L150-205)
+- [test_dhan_transport.py:156-216](file://tests/test_dhan_transport.py#L156-216)
 
 ### Authentication Robustness and Atomic Refresh Operations
 **Updated** Enhanced authentication system with atomic refresh operations and thread-safe lifecycle management to prevent race conditions and token churn.
@@ -405,6 +515,8 @@ I --> L["Normal Operation"]
 - **Response Normalization**: Graceful fallbacks for non-critical endpoints and consistent error propagation
 - **WebSocket Protection**: Timeout-bounded market depth snapshots to prevent blocking
 - **Enhanced Error Handling**: Raises `BrokerDataError` for failed data operations instead of returning empty results
+- **Robust Retry Mechanisms**: Configurable attempts (default 2) and settle periods (default 0.5s) for market depth retrieval
+- **Critical LTP Guards**: Rejects Tradehull SDK failure envelopes and non-dict payloads to prevent stale data
 
 ```mermaid
 classDiagram
@@ -416,7 +528,7 @@ class DhanTransport {
 -_clock : TradingClock
 +_get_ltp(symbol) float
 +_get_quote(symbol) Quote
-+_get_depth(symbol, exchange, timeout) MarketDepth?
++_get_depth(symbol, exchange, timeout, attempts, settle) MarketDepth?
 +_get_historical(symbol, exchange, timeframe, days, start, end) CandleSeries
 +_place_order(**kw) str
 +_cancel_order(order_id) void
@@ -435,6 +547,7 @@ class DhanMapper {
 +_positions_from_df(df) list
 +_holdings_from_df(df) list
 +_normalize_depth(symbol, bid_df, ask_df, now) MarketDepth
++_resample_history(df, rule) DataFrame
 }
 DhanTransport --> DhanMapper : "uses for normalization"
 DhanTransport --> BrokerRateGate : "uses for rate limiting"
@@ -442,12 +555,12 @@ DhanTransport --> BrokerRateGate : "uses for rate limiting"
 
 **Diagram sources**
 - [dhan_transport.py:54-69](file://ntrade/brokers/dhan_transport.py#L54-69)
-- [dhan_mapper.py:74-136](file://ntrade/brokers/dhan_mapper.py#L74-136)
+- [dhan_mapper.py:74-147](file://ntrade/brokers/dhan_mapper.py#L74-147)
 
 **Section sources**
 - [dhan_transport.py:54-69](file://ntrade/brokers/dhan_transport.py#L54-69)
 - [dhan_transport.py:88-115](file://ntrade/brokers/dhan_transport.py#L88-115)
-- [dhan_mapper.py:74-136](file://ntrade/brokers/dhan_mapper.py#L74-136)
+- [dhan_mapper.py:74-147](file://ntrade/brokers/dhan_mapper.py#L74-147)
 
 ### Mapper Layer: Instrument Mapping, Quote Normalization, Order Status Translation
 - **Instrument symbol mapping**: Converts domain instruments to Dhan tradingsymbols, especially for options where the "spaced" custom format is required.
@@ -456,7 +569,8 @@ DhanTransport --> BrokerRateGate : "uses for rate limiting"
 - **Order/trade book normalization**: Maps varied field names into consistent structures.
 - **Positions/holdings normalization**: Converts DataFrames into domain objects safely.
 - **Depth normalization**: Builds MarketDepth from bid/ask DataFrames.
-- **Enhanced Timeframe Mapping**: Improved mapping logic with proper error handling for unsupported timeframes.
+- **Enhanced Timeframe Mapping**: Improved mapping logic with proper error handling for unsupported timeframes and RIGHT-edge labeling convention support.
+- **Resample History**: New `resample_history` method with comprehensive RIGHT-edge labeling and night-session candle grouping.
 
 ```mermaid
 flowchart TD
@@ -469,18 +583,17 @@ C --> |TradeBook| G["Map rows to TradeBookEntry"]
 C --> |Positions| H["Map rows to Position"]
 C --> |Holdings| I["Map rows to Holding"]
 C --> |Depth| J["Build MarketDepth from bid/ask DFs"]
+C --> |Resample| K["Apply RIGHT-edge labeling<br/>with 09:15 IST origin"]
 ```
 
 **Diagram sources**
-- [dhan_mapper.py:74-136](file://ntrade/brokers/dhan_mapper.py#L74-136)
-- [dhan_mapper.py:139-215](file://ntrade/brokers/dhan_mapper.py#L139-215)
-- [dhan_mapper.py:218-239](file://ntrade/brokers/dhan_mapper.py#L218-239)
+- [dhan_mapper.py:74-147](file://ntrade/brokers/dhan_mapper.py#L74-147)
+- [dhan_mapper.py:149-299](file://ntrade/brokers/dhan_mapper.py#L149-299)
 
 **Section sources**
 - [dhan_mapper.py:35-73](file://ntrade/brokers/dhan_mapper.py#L35-73)
-- [dhan_mapper.py:74-136](file://ntrade/brokers/dhan_mapper.py#L74-136)
-- [dhan_mapper.py:139-215](file://ntrade/brokers/dhan_mapper.py#L139-215)
-- [dhan_mapper.py:218-239](file://ntrade/brokers/dhan_mapper.py#L218-239)
+- [dhan_mapper.py:74-147](file://ntrade/brokers/dhan_mapper.py#L74-147)
+- [dhan_mapper.py:149-299](file://ntrade/brokers/dhan_mapper.py#L149-299)
 
 ### Order Placement and Lifecycle
 - **Supported order types**: LIMIT, MARKET, STOP_LIMIT, STOP_MARKET, COVER, BRACKET.
@@ -532,7 +645,7 @@ Broker-->>Client : Order(status=PENDING, order_id=...)
 - **LTP and quotes**: Retries on flaky endpoints; enriches with OHLC, volume, OI. Each quote consumes 2 QUOTE tokens (LTP + quote data).
 - **Historical data**: Supports intraday and daily endpoints; routes DAY requests appropriately based on instrument type/exchange.
 - **Option chain**: Fetches ATM and chain dataframe; resolves real expiry dates and sets chain metadata.
-- **Depth**: WebSocket snapshot bounded by timeout; returns normalized MarketDepth.
+- **Depth**: WebSocket snapshot bounded by timeout (8.0s); returns normalized MarketDepth with robust retry mechanisms.
 - **Rate Limiting**: Market data operations consume appropriate quota classes (QUOTE for LTP/quotes, DATA for historical data).
 
 ```mermaid
@@ -548,7 +661,7 @@ Path --> |Yes| Daily["Use long-term endpoint"]
 Path --> |No| Intraday["Use intraday wrapper"]
 Type --> |Option Chain| Gate3["BrokerRateGate.acquire(DATA)"]
 Gate3 --> Fetch["Fetch ATM + chain DF"]
-Type --> |Depth| WS["WebSocket snapshot (timeout)"]
+Type --> |Depth| WS["WebSocket snapshot (timeout=8.0s, attempts=2)"]
 WS --> End(["MarketDepth"])
 Enrich --> End(["Quote"])
 Daily --> End
@@ -668,6 +781,7 @@ DhanTransport --> DhanMapper
 DhanBroker --> OrderModel["Order Model"]
 DhanBroker --> QuoteModel["Quote Model"]
 DhanBroker --> PortfolioModel["Portfolio/Account Models"]
+DhanBroker --> HistoricalSeries["HistoricalSeries<br/>Resample + RIGHT-Edge"]
 DhanBroker -.-> NoObs["No Observability Dependencies"]
 BrokerRateGate --> QuotaTypes["Quota Types:<br/>QUOTE, DATA, ORDER,<br/>NON_TRADING"]
 ```
@@ -679,6 +793,7 @@ BrokerRateGate --> QuotaTypes["Quota Types:<br/>QUOTE, DATA, ORDER,<br/>NON_TRAD
 - [order.py:14-41](file://ntrade/domain/orders/order.py#L14-41)
 - [quote.py:9-28](file://ntrade/domain/market/quote.py#L9-28)
 - [portfolio.py:63-135](file://ntrade/domain/portfolio.py#L63-135)
+- [history.py:122-136](file://ntrade/domain/market/history.py#L122-136)
 
 **Section sources**
 - [dhan.py:51-75](file://ntrade/brokers/dhan.py#L51-75)
@@ -688,16 +803,19 @@ BrokerRateGate --> QuotaTypes["Quota Types:<br/>QUOTE, DATA, ORDER,<br/>NON_TRAD
 ## Performance Considerations
 - **RetryPolicy** with exponential backoff and jitter reduces contention and improves resilience under transient failures.
 - **BrokerRateGate** enforces sophisticated multi-window rate limiting across four quota classes with sliding windows and penalty mechanisms.
-- **WebSocket depth snapshots** are timeout-bounded to avoid blocking indefinitely.
+- **WebSocket depth snapshots** are timeout-bounded (8.0s) to avoid blocking indefinitely.
 - **Timeframe mapping** enforces supported intervals to prevent silent misrouting.
 - **Token proactive refresh** avoids mid-session expiry and costly re-authentication during critical operations.
 - **Independent Lifecycle**: Auth lifecycle operations have zero overhead on observability systems, preventing unnecessary event processing.
 - **Transport Efficiency**: Centralized API calls through DhanTransport reduce code duplication and improve maintainability.
-- **Thread Safety**: All rate limiting operations are thread-safe with proper locking to handle concurrent access.
+- **Thread Safety**: All rate limiting operations are thread-safe with proper locking.
 - **Class-Specific Backoff**: Penalties are applied per quota class, preventing one class's rate limit issues from affecting others.
-- **Enhanced Timeframe Handling**: Sub-5m resampling reduces backend calls while maintaining data accuracy.
+- **Enhanced Timeframe Handling**: Sub-5m resampling reduces backend calls while maintaining data accuracy with RIGHT-edge labeling convention.
 - **Atomic Operations**: Lock-based synchronization prevents race conditions in authentication flows.
 - **Rate-Limit Propagation**: Proper exception handling prevents silent failures that could impact performance through incorrect trading decisions.
+- **Cross-Path Parity**: Consistent RIGHT-edge labeling ensures predictable behavior across different resample implementations.
+- **Robust Retry Mechanisms**: Configurable attempts (default 2) and settle periods (default 0.5s) improve market depth retrieval reliability.
+- **Critical LTP Guards**: Failure envelope rejection prevents stale data corruption.
 
 ## Troubleshooting Guide
 - **Authentication failures**:
@@ -714,10 +832,14 @@ BrokerRateGate --> QuotaTypes["Quota Types:<br/>QUOTE, DATA, ORDER,<br/>NON_TRAD
 - **LTP/Quote failures**:
   - Retry logic may raise BrokerDataError; inspect network and rate limits.
   - Each quote operation consumes 2 QUOTE tokens (LTP + quote data).
+  - **Critical LTP Guards**: Failure envelopes and non-dict payloads are rejected to prevent stale data.
 - **Historical data issues**:
   - Unsupported timeframes raise ValueError; verify interval strings.
   - DAY requests for FUT-type contracts route to daily endpoint automatically.
   - Sub-5m timeframes (2m/3m/4m) are automatically resampled from 1m base data.
+  - **RIGHT-edge labeling**: Bars are labeled at bin end (not start) for consistency with CandleEngine.
+  - **Night-session candles**: Stay within their calendar day due to 09:15 IST origin anchoring.
+  - **Grid differences**: 2m/4m timeframes have intentional offsets from epoch-anchored grids.
 - **Order placement errors**:
   - F&O MARKET orders require LTP; ensure instrument has refreshed quote.
   - Bracket orders use super-order endpoint; check target/stop prices.
@@ -738,6 +860,9 @@ BrokerRateGate --> QuotaTypes["Quota Types:<br/>QUOTE, DATA, ORDER,<br/>NON_TRAD
   - **Sub-5m resampling**: 2m/3m/4m timeframes are automatically converted to 1m base + resample
   - **Unsupported timeframes**: Raise ValueError immediately instead of silent failures
   - **OHLCV preservation**: Resampling maintains correct OHLC semantics
+  - **RIGHT-edge convention**: Bars labeled at bin end (bin + seconds) for consistency
+  - **Cross-path parity**: HistoricalSeries and DhanMapper share RIGHT-edge convention
+  - **Grid offsets**: 2m/4m timeframes have documented 1-3 minute offsets from epoch grid
 - **Race condition prevention**:
   - **Authentication locks**: RLock prevents concurrent TOTP login attempts
   - **Defensive copies**: DataFrame operations use `.copy()` to prevent mutations
@@ -747,6 +872,11 @@ BrokerRateGate --> QuotaTypes["Quota Types:<br/>QUOTE, DATA, ORDER,<br/>NON_TRAD
   - **Critical methods**: get_orderbook(), get_trade_book(), get_expiry_list() now properly handle rate limits
   - **Testing**: Comprehensive test coverage ensures correct exception behavior
   - **Documentation**: Enhanced docstrings explain rate-limit behavior for each method
+- **Market depth retrieval issues**:
+  - **Retry mechanism**: Default 2 attempts with 0.5s settle periods between attempts
+  - **Timeout handling**: WebSocket frame reads bounded by 8.0s timeout
+  - **DH-904 protection**: Rate limit errors are never retried to prevent quota amplification
+  - **Error propagation**: RateLimited exceptions propagate immediately without masking
 
 **Section sources**
 - [dhan_auth.py:114-167](file://ntrade/brokers/dhan_auth.py#L114-167)
@@ -757,6 +887,9 @@ BrokerRateGate --> QuotaTypes["Quota Types:<br/>QUOTE, DATA, ORDER,<br/>NON_TRAD
 - [check_connection.py:17-38](file://check_connection.py#L17-38)
 - [test_contract_auth_observability.py:15-32](file://tests/test_contract_auth_observability.py#L15-32)
 - [test_dhan_broker.py:698-764](file://tests/test_dhan_broker.py#L698-764)
+- [dhan_mapper.py:127-147](file://ntrade/brokers/dhan_mapper.py#L127-147)
+- [history.py:122-136](file://ntrade/domain/market/history.py#L122-136)
+- [test_history_stream.py:150-205](file://tests/test_history_stream.py#L150-205)
 
 ## Conclusion
 The DhanBroker implementation provides a robust, layered integration with Dhan's trading platform through a clean transport layer abstraction. It separates authentication, transport, and mapping concerns while enforcing domain model purity. The refactored architecture delegates all data calls through DhanTransport while maintaining the same public API surface, improving maintainability and testability. 
@@ -768,6 +901,10 @@ The transport layer provides comprehensive resilience patterns including retry p
 **Enhanced capabilities**: Recent hardening improvements include comprehensive timeframe handling with sub-5m resampling logic, atomic authentication refresh operations with thread-safe lifecycle management, and robust race condition prevention mechanisms. **Most importantly**, the implementation now features enhanced rate-limiting propagation with proper RateLimited exception handling across all data retrieval methods, ensuring that rate-limit violations are never silently masked as empty results that could lead to incorrect trading decisions.
 
 **Advanced rate limiting infrastructure**: The new BrokerRateGate system replaces the simple 10/s LTP-only limiter with a sophisticated multi-window approach that precisely matches Dhan's documented rate limit table, providing better control, class-specific penalties, and thread-safe operation across all API calls.
+
+**Enhanced timeframe handling**: The timeframe system now includes comprehensive RIGHT-edge labeling convention support with cross-path parity validation between HistoricalSeries.resample and DhanMapper.resample_history. The system maintains 09:15 IST origin anchoring for night-session candle containment while adopting the RIGHT-edge labeling convention for consistency with CandleEngine. For non-3m timeframes, intentional grid offsets are documented and validated through comprehensive test coverage.
+
+**Robust market depth retrieval**: The market depth system now includes configurable retry mechanisms (default 2 attempts, 0.5s settle periods) and increased timeout (8.0s) for improved reliability. Critical LTP failure guards reject Tradehull SDK failure envelopes and non-dict payloads to prevent stale data corruption. DH-904 rate limit errors are properly handled to prevent quota amplification attacks.
 
 ## Appendices
 
@@ -789,6 +926,8 @@ The transport layer provides comprehensive resilience patterns including retry p
   - Use supported timeframes (1m, 5m, 15m, 25m, 60m, DAY) for native support
   - Sub-5m timeframes (2m, 3m, 4m) are automatically resampled from 1m base data
   - Unsupported timeframes raise ValueError immediately
+  - RIGHT-edge labeling convention ensures consistency with CandleEngine
+  - Night-session candles stay within their calendar day due to 09:15 IST origin
 - **Authentication robustness**:
   - Atomic refresh operations prevent race conditions during token renewal
   - Thread-safe lifecycle management ensures concurrent access protection
@@ -798,6 +937,15 @@ The transport layer provides comprehensive resilience patterns including retry p
   - Critical methods like get_orderbook(), get_trade_book(), get_expiry_list() handle rate limits correctly
   - Enhanced docstrings provide clear guidance on rate-limit behavior
   - Test coverage ensures proper exception propagation while preserving degradation patterns
+- **Cross-path parity validation**:
+  - HistoricalSeries.resample and DhanMapper.resample_history share RIGHT-edge convention
+  - 3m timeframes provide exact parity; other timeframes have documented offsets
+  - Comprehensive tests validate both RIGHT-edge labeling and grid differences
+- **Market depth retrieval**:
+  - Configurable retry attempts (default 2) and settle periods (default 0.5s)
+  - Increased timeout (8.0s) for WebSocket operations
+  - DH-904 protection prevents quota amplification attacks
+  - Critical LTP guards reject failure envelopes and non-dict payloads
 
 **Section sources**
 - [dhan.py:51-75](file://ntrade/brokers/dhan.py#L51-75)
@@ -810,3 +958,6 @@ The transport layer provides comprehensive resilience patterns including retry p
 - [test_rate_limit.py:1-170](file://tests/test_rate_limit.py#L1-170)
 - [test_rate_gate_integration.py:1-200](file://tests/test_rate_gate_integration.py#L1-200)
 - [test_dhan_broker.py:698-764](file://tests/test_dhan_broker.py#L698-764)
+- [dhan_mapper.py:127-147](file://ntrade/brokers/dhan_mapper.py#L127-147)
+- [history.py:122-136](file://ntrade/domain/market/history.py#L122-136)
+- [test_history_stream.py:150-205](file://tests/test_history_stream.py#L150-205)

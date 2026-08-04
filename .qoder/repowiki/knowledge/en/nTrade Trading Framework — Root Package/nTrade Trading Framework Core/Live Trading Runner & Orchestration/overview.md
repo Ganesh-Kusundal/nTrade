@@ -1,1 +1,0 @@
-Orchestrates the live trading loop by wiring a TradingKernel to a MarketFeedSource, periodically reconciling orders and positions, emitting heartbeats, watching for feed stalls, and tripping broker kill switches on risk halts.

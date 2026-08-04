@@ -303,6 +303,68 @@ def test_cooldown_blocks_totp(monkeypatch, tmp_path):
         dhan_auth.get_tradehull(env=env, env_path=str(tmp_path / "nope.env"))
 
 
+def test_failed_totp_mint_arms_cooldown(monkeypatch, tmp_path):
+    """M-5: a mint that raises must arm the cooldown — otherwise a wrong
+    PIN/TOTP can be hammered in a tight retry loop and lock the account."""
+    cooldown = tmp_path / "cooldown.json"
+    env = {
+        "DHAN_CLIENT_ID": "12345",
+        "DHAN_ACCESS_TOKEN": "",
+        "DHAN_TOKEN_PATH": str(tmp_path / "missing.json"),
+        "DHAN_COOLDOWN_PATH": str(cooldown),
+        "DHAN_PIN": "960000",
+        "DHAN_TOTP_SECRET": "AAAA",
+    }
+
+    def raising_tradehull(client_code, token_id="", mode="access_token", **kwargs):
+        if mode == "pin_totp":
+            raise RuntimeError("wrong TOTP")
+        return FakeTradehull(client_code, token_id, mode, **kwargs)
+
+    monkeypatch.setattr(dhan_auth, "Tradehull", raising_tradehull)
+    with pytest.raises(ConnectionError, match="mint raised"):
+        dhan_auth.get_tradehull(env=env, env_path=str(tmp_path / "nope.env"))
+    assert cooldown.exists()
+    saved = json.loads(cooldown.read_text())
+    assert time.time() - float(saved["last_attempt_at"]) < 5
+    # the armed cooldown now blocks an immediate retry
+    monkeypatch.setattr(dhan_auth, "Tradehull", FakeTradehull)
+    with pytest.raises(ConnectionError, match="cooldown"):
+        dhan_auth.get_tradehull(env=env, env_path=str(tmp_path / "nope.env"))
+
+
+def test_dead_totp_mint_arms_cooldown(monkeypatch, tmp_path):
+    """M-5: a mint whose data-plane alive check fails also arms the cooldown."""
+
+    class DeadPinTotp(FakeTradehull):
+        def __init__(self, client_code, token_id="", mode="access_token", **kwargs):
+            super().__init__(client_code, token_id, mode, **kwargs)
+            if mode == "pin_totp":
+                FakeTradehull.alive_tokens.discard(self.token_id)
+
+        def get_ltp_data(self, names=None):
+            return {} if self.mode == "pin_totp" else super().get_ltp_data(names)
+
+        def get_historical_data(self, tradingsymbol="", exchange="", timeframe=""):
+            return None if self.mode == "pin_totp" else super().get_historical_data(
+                tradingsymbol, exchange, timeframe)
+
+    cooldown = tmp_path / "cooldown.json"
+    env = {
+        "DHAN_CLIENT_ID": "12345",
+        "DHAN_ACCESS_TOKEN": "",
+        "DHAN_TOKEN_PATH": str(tmp_path / "missing.json"),
+        "DHAN_COOLDOWN_PATH": str(cooldown),
+        "DHAN_PIN": "960000",
+        "DHAN_TOTP_SECRET": "AAAA",
+    }
+    monkeypatch.setattr(dhan_auth, "Tradehull", DeadPinTotp)
+    with pytest.raises(ConnectionError, match="PIN\+TOTP login failed"):
+        dhan_auth.get_tradehull(env=env, env_path=str(tmp_path / "nope.env"))
+    assert cooldown.exists()
+    assert dhan_auth._cooldown_active(str(cooldown))
+
+
 def test_no_pin_totp_raises(monkeypatch, tmp_path):
     env = {
         "DHAN_CLIENT_ID": "12345",

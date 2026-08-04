@@ -22,44 +22,72 @@ atm.order.buy(75)
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  PUBLIC API (facade + factories)                            │
-│  Market, InstrumentFactory, SymbolMaster, BrokerRegistry     │
+│  TradingSession · Market · InstrumentFactory · SymbolMaster│
+│  BrokerRegistry                                            │
 ├─────────────────────────────────────────────────────────────┤
 │  TRADING KERNEL  (event-centric — zero parity)              │
-│  TradingKernel · EventBus · TradingClock (Live/Replay/Sim)   │
-│  engines/  market · candle · indicator · strategy · risk    │
-│           order (OMS) · portfolio                           │
-│  execution/  router → SimulatedExecution · BrokerExecution  │
-│  replay/  ReplayEngine · storage/ EventStore                │
-│  backtest/ BacktestSimulator · fills · slippage             │
+│  TradingKernel · ResilientKernel · StrategyRunner · LiveRunner│
+│  EventBus · TradingClock (Live/Replay/Sim) · EventStore   │
+│  engines/  market · candle · indicator · strategy · risk   │
+│           order (OMS) · portfolio · position-sync          │
+│  execution/  router → SimulatedExecution · BrokerExecution │
+│  replay/  ReplayEngine                                       │
+│  backtest/ BacktestSimulator · fills (FillPolicy)           │
+│  sources/ MarketFeedSource · DhanMarketFeedSource · Synthetic│
+│  sim/ synthesize_1m_ticks · SimTick                         │
+│  data/ ParallelHistoryFetcher · ParquetStorage · GapDetector│
+│      · ScannerLoader · universe                             │
 ├─────────────────────────────────────────────────────────────┤
 │  DOMAIN LAYER  (pure Python, no broker imports)             │
-│  instruments/  market/  analytics/  orders/  session/        │
+│  instruments/  market/  analytics/  orders/  session/       │
 │      Instrument (state + behaviour)                         │
-│      Equity · Index · ETF · Currency · Commodity · Bond      │
+│      Equity · Index · ETF · Currency · Commodity · Bond     │
 │      Crypto · Spot · Future · Option · SyntheticInstrument  │
-│      OptionChain (Composite)                                │
-│      Quote · Tick · MarketDepth · HistoricalSeries · LiveStream
-│      Greeks · BlackScholes · indicators · Order · OrderFacade
+│      OptionChain (Composite)                                 │
+│      Quote · Tick · MarketDepth · HistoricalSeries · LiveStream│
+│      CandleSeries · Greeks · BlackScholes · indicators      │
+│      Order · OrderFacade · OrderBook · TradeBook            │
 ├─────────────────────────────────────────────────────────────┤
 │  BROKER LAYER  (adapters — hidden behind domain objects)    │
 │  BrokerAdapter ABC → PaperBroker · DhanBroker (+ auth)      │
-│  Capability pattern → instrument.broker.depth20()           │
+│  DhanTransport · DhanAuthProvider · DhanMapper               │
+│  Capability pattern → instrument.broker.<cap>()             │
 ├─────────────────────────────────────────────────────────────┤
-│  INFRASTRUCTURE (transport, persistence, replay)            │
-│  shared websocket multiplexing, token store, cooldown file  │
+│  INFRASTRUCTURE (transport, persistence, rate-gate)        │
+│  BrokerRateGate · RetryPolicy · token store, cooldown file │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 Dependency rule: the domain layer imports nothing from the broker layer.
 Instruments receive a `BrokerAdapter` via **constructor injection** (dependency
 injection), and access broker-specific capabilities through a capability facade
-that only resolves at call time.
+that only resolves at call time. `BrokerAdapter` itself lives in
+`domain/ports.py` (the `brokers/base.py` and `brokers/capabilities.py` files are
+re-export shims over it).
+
+### Graph observation — the Equity wiring hub
+`Equity` is the knowledge graph's most-connected node (307 edges across 30+
+communities per the graphify graph built 2026-08-04). That density is
+**test-fixture reuse, not hidden coupling**: Equity is the default instrument
+across the test suites and every engine/execution seam, so the graph's edges
+are construction sites (`tests/test_*.py` → `Equity`), not dependency arrows.
+The same pattern holds for `PaperBroker` (172 edges), `TradingKernel` (169
+edges) and `ReplayClock` (164 edges): heavily-wired composition roots and
+fixtures. Read community density as "how often this is constructed/used in
+tests", not as architectural coupling — the dependency rule above is the
+authoritative coupling statement, and it is enforced by the import boundary
+(`domain` never imports `brokers`; `brokers/base.py` and `brokers/capabilities.py`
+are re-export shims over `domain/ports.py`). The graph also flags a 4–5-file
+import cycle in `domain/instruments/` (`base → capabilities → chain → {expiry,
+derivatives} → base`); this is a deferred hygiene issue surfaced by graphify,
+not an active runtime problem because the cycle members are `cached_property`
+lazily resolved at call time, not module-load imports.
 
 ## 2. Domain object hierarchy
 
 ```
 Instrument (ABC)                     — state + behaviour for every market entity
-├── Equity      (NSE default)        — market_cap metadata
+├── Equity      (NSE default)        — market_cap, delivery intraday cost uplift
 ├── Index       (INDEX default)      — option_chain() entry point
 ├── ETF         (NSE)
 ├── Currency    (BSE)
@@ -74,6 +102,10 @@ Instrument (ABC)                     — state + behaviour for every market enti
 OptionChain (Composite)              — contains many Option instruments
   .calls .puts .expiries .atm .itm .otm .nearest_expiry
   .max_pain() .pcr() .iv_surface() .greeks() .subscribe()
+
+Scanner / ScannerFacade / ScannerResult  — market scanner abstractions
+Strategy (base) / StrategyEngine     — event-reactive strategy hooks
+Event (base)                          — canonical frozen dataclass events
 ```
 
 ### State owned by every Instrument (no global state)
@@ -82,15 +114,25 @@ OptionChain (Composite)              — contains many Option instruments
 |-------------------|-------------------|------------------------------------|
 | `_quote`          | `Quote` (frozen)  | ltp, bid, ask, OHLC, volume, oi    |
 | `_depth`          | `MarketDepth`     | order book snapshot                |
-| `history`         | `HistoricalSeries`| df + cache + timeframe + freshness |
-| `stream`          | `LiveStream`      | subscription state, ticks, handlers|
-| `_indicators`     | `dict`            | computed indicator bundle          |
+| `_history`        | `HistoricalSeries`| df + cache + timeframe + freshness |
+| `_stream`         | `LiveStream`      | subscription state, ticks, handlers|
+| `_indicators`     | `dict`            | computed indicator bundle (`ema_<n>`, `sma_<n>`, `rsi_<n>`, `atr_<n>`, `vwap`, `stx_<n>`) |
 | `_signals`        | `dict`            | strategy/pattern signals (`set_signal`/`get_signal`) |
 | `_corporate_actions` | `list[CorporateAction]` | dividends, splits, bonuses |
 | `_tags/_annotations/_metadata` | dicts/set | user extensibility            |
 | `_session`        | `TradingSession`  | market state (open/closed/... )    |
-| `_broker`         | `BrokerAdapter`   | injected transport                 |
+| `broker_adapter`  | `BrokerAdapter`   | injected transport (`broker` kwarg in ctor)|
 | `tick_size/lot_size/freeze_qty` | optional | hydrated from broker via `hydrate()` |
+
+### Capability objects (accessed via Instrument methods, not direct attributes)
+
+| Capability         | Method           | What it does                          |
+|--------------------|------------------|---------------------------------------|
+| `MarketCapability` | `.market`        | `.refresh() .quote .depth .ltp .ohlc`  |
+| `StreamCapability` | `.stream()`      | `.subscribe() .unsubscribe() .on_tick()`|
+| `AnalyticsCapability` | `.analytics` | `.compute_indicators() .rsi() .atr()` |
+| `DerivativesCapability` | `.derivatives` | `.option_chain()` (Index)            |
+| `BrokerExtensionFacade` | `.broker`    | dynamic `@capability` lookup          |
 
 ## 3. Behaviours — "Tell, Don't Ask"
 
@@ -123,20 +165,23 @@ Capabilities declare their supported brokers (`None` = all). The
 checks the current broker supports it, and fails fast otherwise — no giant
 `if/else`, open/closed against new brokers.
 
-Broker adapters also normalize broker-specific wire formats INTO domain objects
-at the adapter boundary: Dhan's chain-frame parsing lives in `dhan_mapper.py`
-(`chain_from_dhan_df` → `OptionChain`), called from `DhanBroker.get_option_chain`,
+Broker adapters also decompose into transport, auth and mapping layers:
+`DhanBroker` composes `DhanTransport` (all REST calls through
+`_invoke(Quota, fn)` → `BrokerRateGate`), `DhanAuthProvider` (token store +
+cooldown + PIN/TOTP fallback), and `DhanMapper` (wire→domain normalization).
+Dhan's chain-frame parsing lives in `dhan_mapper.py` `DhanMapper` /
+`chain_from_dhan_df` → `OptionChain`, called from `DhanBroker.get_option_chain`,
 so the domain layer stays broker-agnostic. Bracket (BO) orders route through the
-adapter to Dhan's
-`place_super_order` API; `get_instrument_metadata()` hydrates tick/lot/freeze
-qty into instruments via `Instrument.hydrate()`.
+adapter to Dhan's `place_super_order` API; `get_instrument_metadata()` hydrates
+tick/lot/freeze qty into instruments via `Instrument.hydrate()`.
 
 ## 5. Historical & live data lifecycle
 
 ```
 history.fetch(timeframe, days, start, end, force)
   └─ cached? fresh? ──> return cache
-  └─ broker.get_historical() ──> normalize OHLCV ──> store + mark fresh
+  └─ broker.get_historical() ──> DhanTransport._invoke(Quota.DATA) ──>
+     BrokerRateGate (5/s) ──> normalize OHLCV ──> store + mark fresh
 
 stream.subscribe()
   └─ broker.subscribe(instrument)   # transport multiplexes under the hood
@@ -145,6 +190,23 @@ broker pushes ticks ──> stream.ingest_tick(tick)
   └─ updates _quote (immutable replace) ──> emits tick/quote/trade/depth events
 history.live_merge()  # converts raw ticks into OHLCV candle rows, schema-safe
 ```
+
+### Backfill / scanner data layer (`ntrade/data/`)
+`ParallelHistoryFetcher` fans multi-instrument historical fetches out across a
+`ThreadPoolExecutor` (4 workers, derived from the DATA quota of 5/s). Each worker
+calls `broker.get_historical()` which routes through `DhanTransport._invoke(Quota.DATA,
+fn)` — the shared `BrokerRateGate` serializes all calls to 5/s, so workers never
+exceed the quota. Results are normalized into a tagged DataFrame
+(`symbol, exchange, kind, timeframe` + `strike/option_type/expiry` for
+derivatives) and stored via `ParquetStorage.upsert()` (idempotent: deletes
+overlapping rows then appends; tz-naive IST timestamps; Hive partitioning
+`symbol=.../year=.../month=...`). `GapDetector.detect()` diffs a requested
+universe against stored data to find missing ranges; `fetch_missing` refills only
+the gaps. `ScannerLoader.load_universe()` wraps `ParquetStorage.read()` for
+partition-pruned 2–3-month reads across 100s of symbols. `load_universe()` maps
+Nifty constituent CSVs to `Equity` instruments via `InstrumentFactory`. Requires
+`pyarrow` + `duckdb` (both in `pyproject.toml`); `ParquetStorage.duckdb_scan()`
+registers a Hive-partitioned DuckDB view for SQL queries.
 
 ## 6. Event model & Observer
 
@@ -231,9 +293,8 @@ OHLCV    ──► BacktestSimulator ──► TickEvent ──► EventBus
   live/replay/backtest. `EmaCrossStrategy(fast=9, slow=21)` is an always-in-
   market EMA crossover that reverses instead of stacking (BUY on golden cross
   when flat/short, SELL on death cross when flat/long) and reads its EMA values
-  from the IndicatorEngine's bundle (or computes them itself). The indicator
-  bundle now also emits `ema_<n>` / `sma_<n>` keys (`ema_periods=(9, 21)`,
-  `sma_periods=()` in `compute_bundle`).
+  `sma_periods=()`), and reads its EMA values from the IndicatorEngine's bundle
+  (or computes them itself via the pure `ema`/`sma` functions).
 - **DhanMarketFeedSource** — the live Dhan websocket (`dhanhq.MarketFeed`, a
   Dhan-Tradehull dependency) wrapped as a `MarketFeedSource`. `feed_factory` is
   injectable for offline tests; the default builds a real feed lazily (credentials
@@ -267,11 +328,20 @@ OHLCV    ──► BacktestSimulator ──► TickEvent ──► EventBus
 - **LiveRunner orchestration harness** — `LiveRunner(kernel, feed)` closes the
   loop a strategy needs to run unattended: it starts the kernel and feed,
   `step()`s every `poll_interval` seconds calling `kernel.poll_orders()` /
-  `kernel.sync_positions()`, and subscribes `RiskHaltedEvent` so a tripped
-  circuit breaker immediately fires `instrument.broker.kill_switch(action="ACTIVATE")`
-  on every broker-backed instrument. Time is injectable (`_timer`/`_sleep`) so
-  the loop is unit-testable without wall-clock waits. Lifecycle is published as
-  `RunnerStartedEvent` / `RunnerStoppedEvent`.
+  `kernel.sync_positions()`, and subscribes to `RiskHaltedEvent` →
+  `RiskResumedEvent` so a tripped circuit breaker immediately fires
+  `instrument.broker.kill_switch(action="ACTIVATE")` on every broker-backed
+  instrument (and `DEACTIVATE` on resume). It also subscribes to
+  `FeedDisconnectedEvent` (→ `_halt_risk`, fail-closed), `HeartbeatEvent`,
+  `OrderFilledEvent` (logging), and `OrderTimeoutEvent` (only cancels the stale
+  order — does NOT trip the kill switch, by contract — see
+  `tests/test_contract_live_consumers.py`). The feed watchdog monitors tick
+  velocity wall-clock style and, on a frozen feed (no ticks for
+  `watchdog_timeout`), routes through `RiskEngine.halt()` (fail-closed).
+  `_cancel_resting_orders()` cancels every tracked open order on stop (opt-out
+  via `cancel_on_stop=False`, logged). Time is injectable (`_timer`/`_sleep`)
+  so the loop is unit-testable without wall-clock waits. Lifecycle is published
+  as `RunnerStartedEvent` / `RunnerStoppedEvent`.
 - **Synthetic feed (synth mode)** — `SyntheticMarketFeedSource` extrapolates a
   1-minute OHLCV frame (e.g. `DhanBroker.get_historical`) into one `TickEvent`
   per simulated second via the pure, seeded `synthesize_1m_ticks`: prices stay
@@ -288,17 +358,34 @@ OHLCV    ──► BacktestSimulator ──► TickEvent ──► EventBus
   `RiskHaltedEvent` (consumed by the LiveRunner's kill switch) and `resume()`
   publishes `RiskResumedEvent`. All new kwargs are optional, so `StrategyRunner`
   and existing kernels are untouched.
-- **OMS state events + modify/cancel** — `BrokerExecution.poll()` now publishes
-  `OrderUpdatedEvent` whenever an open order's status changes between polls
-  (PENDING → PARTIALLY_FILLED → COMPLETED / CANCELLED / REJECTED), alongside the
-  partial-safe fills. `BrokerExecution.modify(order_id, **kw)` / `.cancel(order_id)`
-  delegate to the adapter, and `TradingKernel` exposes `open_orders()`,
-  `modify_order()`, `cancel_order()` passthroughs (no-ops in sim mode).
+- **OMS state events + modify/cancel + orphan adoption + crash-restore** — `BrokerExecution.poll()` publishes `OrderUpdatedEvent` whenever an open order's status changes between polls (PENDING → PARTIALLY_FILLED → COMPLETED / CANCELLED / REJECTED), alongside the partial-safe fills. `BrokerExecution.modify(order_id, **kw)` / `.cancel(order_id)` delegate to the adapter. `TradingKernel` exposes `open_orders()`, `modify_order()`, `cancel_order()` passthroughs (no-ops in sim mode). `BrokerExecution.reconcile_open()` adopts broker-side orphan orders unknown to the tracker (C-4) so an ambiguous placement failure loses nothing; `BrokerExecution.restore_open(deltas)` rehydrates the in-memory `_open` map from `EventStore.open_order_deltas()` during `ResilientKernel.recover()` (H3) so a partially-filled order's remaining quantity survives a crash.
 - **Ops tooling** — `scripts/paper_gate_run.py` replays real historical data
   through the synthetic feed with a strategy and prints a `build_paper_report`
   checklist (fills, final equity, max drawdown) that must pass before going
   live; `scripts/benchmark_latency.py` measures kernel tick throughput and
   writes `.benchmarks/latency.json`.
+
+### Infrastructure — rate limiting, retry, resilience
+
+- **BrokerRateGate** — the single choke point every outbound broker REST call
+  passes through. Multi-window, multi-class sliding-window gate (real deque
+  timestamps, not a spacer): `Quota.QUOTE` (1/s), `Quota.DATA` (5/s, 100k/day),
+  `Quota.ORDER` (10/s, 250/min, 1000/h, 7000/day), `Quota.NON_TRADING` (20/s).
+  `DhanTransport._invoke(quota, fn)` acquires the gate before firing; on a DH-904
+  it calls `gate.penalize(quota, retry_after)` to back the class off so the next
+  acquire waits. `status()` exposes read-only telemetry (used by the pre-deploy
+  quota-headroom report). Stdlib-only; injectable `clock`/`sleep` for tests.
+- **RetryPolicy** — exponential backoff for transient LTP failures; DH-904 is
+  **never** retried (B-011) — it surfaces as a typed `RateLimited` exception that
+  propagates up so data reads fail loud instead of silently returning empty/zero
+  (K-021, B-005 contract). `is_rate_limited()` normalises Dhan's error text
+  into the typed exception at the transport boundary.
+- **PositionSyncEngine** — `kernel.sync_positions()` reconciles broker-reported
+  positions/balance into the kernel's read models, publishing the same canonical
+  `PositionUpdatedEvent` / `BalanceChangedEvent` as an internal fill. Failure-safe:
+  a failed fetch keeps the previous state (it never wipes positions or zeroes the
+  balance). To distinguish "flat" from "error", `DhanBroker.get_positions` /
+  `get_balance` raise on transport failure instead of collapsing to `[]` / `0.0`.
 
 ## 7. Object creation (Factory + Flyweight + Registry)
 
@@ -330,45 +417,63 @@ OHLCV    ──► BacktestSimulator ──► TickEvent ──► EventBus
 ```
 ntrade/
   __init__.py          # public API surface
-  facade.py            # Market
+  facade.py            # Market (legacy wrapper over TradingSession)
   factories.py         # InstrumentFactory, OptionFactory
   registry.py          # SymbolMaster (flyweight), BrokerRegistry
+  data/                # parallel historical fetch + Parquet storage + gap detection
+    __init__.py        # exports ParallelHistoryFetcher, ParquetStorage, GapDetector, ScannerLoader, load_universe
+    history_pipeline.py   # ParallelHistoryFetcher (+ fetch_missing)
+    parquet_store.py      # ParquetStorage (Hive partition + upsert + duckdb_scan)
+    gap_detector.py       # GapDetector
+    scanner_loader.py     # ScannerLoader
+    universe.py           # load_universe (Nifty CSV → Equity)
   domain/
-    session.py         # MarketState, TradingSession
-    scanner.py         # Scanner base
-    portfolio.py       # Portfolio / account read model
+    session.py         # MarketState, SessionState
+    scanner.py         # Scanner / ScannerFacade / ScannerResult
+    portfolio.py       # Portfolio / Account read model
+    ports.py           # BrokerAdapter ABC + capability registry/facade (ports)
     instruments/       # base, cash, derivatives, chain, capabilities
+        base.py         # Instrument (composition root)
+        capabilities.py # Market/Stream/Analytics/Derivatives capability objects
     market/            # quote, depth, history, stream, candles
     analytics/         # greeks, indicators, surface
     orders/            # order, book
   brokers/
-    base.py            # BrokerAdapter ABC
-    capabilities.py    # capability registry + facade
+    base.py            # re-exports BrokerAdapter from domain/ports.py
+    capabilities.py    # re-exports capability machinery from domain/ports.py
     paper.py           # PaperBroker (tests/backtest/replay)
-    dhan.py            # DhanBroker + capabilities
+    dhan.py            # DhanBroker + @capability extensions
     dhan_auth.py       # token store, cooldown, PIN+TOTP fallback
-    dhan_auth_provider.py  # credential provider / refresh
-    dhan_mapper.py     # Dhan wire→domain mapping (chain_from_dhan_df, DhanMapper)
-    dhan_transport.py  # transport wrapper over Tradehull client
+    dhan_auth_provider.py  # credential provider / auto-refresh
+    dhan_mapper.py     # Dhan wire→domain mapping (DhanMapper, chain_from_dhan_df)
+    dhan_transport.py  # DhanTransport (BrokerRateGate choke point + retry)
   events/              # canonical event model (market/order/portfolio/risk/lifecycle)
-  kernel/              # TradingKernel, ResilientKernel, StrategyRunner, EventBus, TradingClock, TradingContext, session, trading_session
-  engines/             # market, candle, indicator, strategy(+strategy_engine), risk, order, portfolio, position-sync
-    execution/           # ExecutionRouter, SimulatedExecution, BrokerExecution, costs, retry
-  storage/             # EventStore
+  kernel/              # TradingKernel, ResilientKernel, StrategyRunner, EventBus,
+                       # TradingClock, TradingContext, LiveRunner, trading_session
+  engines/             # market, candle, indicator, strategy(+strategy_engine), risk,
+                       # order (OMS), portfolio, position-sync, strategies (reuse)
+  execution/           # ExecutionRouter, SimulatedExecution, BrokerExecution, costs, retry
+  storage/             # EventStore (append-only JSONL, recovery_events)
   replay/              # ReplayEngine
-  backtest/            # BacktestSimulator, fills (BarAwareExecution)
-  sources/             # MarketFeedSource, SimulatedFeedSource, SyntheticMarketFeedSource, DhanMarketFeedSource
-  sim/                 # tick_simulator (synthesize_1m_ticks)
-  runner/              # LiveRunner, paper gate, bench, feeds
+  backtest/            # BacktestSimulator, fills (FillPolicy, BarAwareExecution)
+  sources/             # MarketFeedSource ABC, SimulatedFeedSource, DhanMarketFeedSource,
+                       # SyntheticMarketFeedSource
+  sim/                 # tick_simulator (synthesize_1m_ticks, SimTick)
   scanners/            # builtin scanners
-tests/                 # ~638 offline test functions across 63 files (kernel/backtest/replay/source/live/contract suites)
+  runner/              # LiveRunner (live orchestration harness)
+scripts/               # live_runner_run, paper_gate_run, benchmark_latency, backfill_parquet,
+                       # download_nifty_universe, live_read_check, pre_deploy_check,
+                       # ema_cross_run, benchmark_fetch
+tests/                 # ~638 offline test functions across 63 files (kernel/backtest/replay/
+                       # source/live/contract suites)
 ```
 
 ## 10. Extensibility guidelines (open/closed)
 
 - **New broker** — subclass `BrokerAdapter`, implement `get_quote`,
-  `get_historical`, `place_order`; add `@capability(name, brokers=("you",))`.
-  No domain code changes.
+  `get_historical`, `place_order`, `get_positions`/`get_balance`/`get_orderbook`;
+  add `@capability(name, brokers=("you",))`. Route every REST call through
+  `BrokerRateGate` via `_invoke(Quota, fn)`. No domain code changes.
 - **New asset class** — subclass `Instrument`, set `KIND` + `DEFAULT_EXCHANGE`;
   factory + flyweight pick it up automatically.
 - **New analytics** — pure function over OHLCV in `domain/analytics/indicators.py`,
@@ -380,6 +485,9 @@ tests/                 # ~638 offline test functions across 63 files (kernel/bac
   (`Strategy` hooks) and run identically in live (BrokerExecution), replay
   (ReplayEngine) and backtest (BacktestSimulator). New event sources just
   publish canonical events.
+- **Entry points** — preferred: `TradingSession.connect("dhan")` / `.paper()`
+  / `.replay(events)`; legacy: `Market(broker="dhan")`. Both delegate to the
+  same `TradingKernel` + `InstrumentFactory` + `BrokerRegistry` internals.
 
 ## 11. Known deliberate deviations from the mission sketch
 
@@ -395,3 +503,24 @@ tests/                 # ~638 offline test functions across 63 files (kernel/bac
 - `stock.cover()` / `stock.bracket()` are OrderType (`COVER`/`BRACKET`)
   entries, not distinct broker product types — brokers map them (Dhan routes
   BRACKET to `place_super_order`; COVER passes through `order_placement`).
+
+## 12. Knowledge graph (graphify)
+
+The codebase is mapped into a persistent knowledge graph under `graphify-out/`.
+Latest run (2026-08-04, from commit `2424757`):
+
+- **6896 nodes · 12321 edges · 393 communities** (91 % EXTRACTED, 9 % INFERRED).
+- **God nodes** (most connected): `Equity` (307 edges), `PaperBroker` (172),
+  `TradingKernel` (169), `ReplayClock` (164), `DhanTransport` (120), `Instrument`
+  (113), `TickEvent` (113), `Option` (109), `TradingSession` (103), `DhanBroker` (92).
+- **Key communities**: LiveRunner, EventStore, TradingKernel, BrokerRateGate,
+  DhanTransport, Strategy, DhanBroker, TickEvent, PaperBroker, ParquetStorage,
+  HistoricalSeries, GapDetector, ScannerLoader, DhanMarketFeedSource,
+  SyntheticMarketFeedSource, RiskEngine, ResilientKernel, BrokerExecution.
+- **Flagged**: a 4–5-file import cycle in `domain/instruments/`
+  (`base → capabilities → chain → {expiry, derivatives} → base`). This is
+  deferred hygiene — cycle members are `cached_property`-resolved at call time,
+  so it does not cause a module-load circular import, but a future refactor
+  should break it for static-analysis cleanliness.
+- Run `graphify update .` after code changes (no API cost) to keep the graph
+  fresh. See `GRAPH_REPORT.md` in `graphify-out/` for the full community map.

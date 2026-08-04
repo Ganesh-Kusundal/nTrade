@@ -182,7 +182,7 @@ def test_source_injects_feed_factory():
     src = DhanMarketFeedSource(k, symbols=[(1, 2885)], symbol_map=SYMBOL_MAP,
                                feed_factory=factory)
     src.start()
-    assert captured["subs"] == [(1, 2885, 21)]  # Full = 21
+    assert captured["subs"] == [(1, "2885", 21)]  # Full = 21; SecurityId must be str
     assert isinstance(src._feed, FakeFeed)
     assert src._feed.started is True
 
@@ -191,9 +191,20 @@ def test_feed_always_uses_full_mode_code():
     k = _kernel()
     src = DhanMarketFeedSource(k, symbols=[(1, 2885)],
                                feed_factory=lambda subs: FakeFeed(subs))
-    assert src._subscriptions() == [(1, 2885, 21)]
+    assert src._subscriptions() == [(1, "2885", 21)]
     assert not hasattr(src, "version")
     assert not hasattr(src, "mode")
+
+
+def test_subscriptions_coerce_int_security_ids_to_str():
+    """Int security IDs silently yield a connected-but-empty dhanhq feed."""
+    src = DhanMarketFeedSource(symbols=[(1, 2885), (2, 58072)],
+                               feed_factory=lambda subs: FakeFeed(subs))
+    assert src._subscriptions() == [(1, "2885", 21), (2, "58072", 21)]
+    # Already-string IDs stay strings (no double-wrap / drift).
+    src2 = DhanMarketFeedSource(symbols=[(1, "2885")],
+                                feed_factory=lambda subs: FakeFeed(subs))
+    assert src2._subscriptions() == [(1, "2885", 21)]
 
 
 def test_source_on_message_publishes_to_kernel():
@@ -226,8 +237,13 @@ def test_source_on_error_and_close_are_safe():
     k = _kernel()
     src = DhanMarketFeedSource(k, symbols=[(1, 2885)], symbol_map=SYMBOL_MAP,
                                feed_factory=lambda subs: FakeFeed(subs))
+    # M-2: error/close now trigger a reconnect (never raise) — the feed is
+    # rebuilt and running again; only a deliberate stop() leaves it down.
+    src._reconnect_limiter = type("NoWait", (), {"wait": lambda self: None})()
     src._on_error(None, RuntimeError("boom"))  # must not raise
     src._on_close(None)
+    assert src.running is True
+    src.stop()
     assert src.running is False
 
 

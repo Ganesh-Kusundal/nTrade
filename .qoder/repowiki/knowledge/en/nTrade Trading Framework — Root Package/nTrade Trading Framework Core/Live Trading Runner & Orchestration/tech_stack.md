@@ -1,1 +1,0 @@
-Pure Python with the ntrade event bus (`kernel.bus.publish/subscribe`) and typed events (`RiskHaltedEvent`, `OrderFilledEvent`, `HeartbeatEvent`, etc.). Feed selection uses lazy imports of `ntrade.sources.synthetic_feed` and `ntrade.sources.dhan_feed` to keep synth/live decoupled.

@@ -1,1 +1,0 @@
-Pure Python with pandas for indicator computation via `compute_bundle` from `ntrade.domain.analytics.indicators`; no external messaging library — uses an in-process event bus accessed via `context.bus.subscribe/publish`. Timeframe constants are defined locally per engine (e.g. `_INTERVAL_SECONDS` in CandleEngine).

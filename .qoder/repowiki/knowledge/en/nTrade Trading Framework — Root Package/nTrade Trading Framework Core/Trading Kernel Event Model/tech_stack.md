@@ -1,1 +1,0 @@
-Python frozen dataclasses (`@dataclass(frozen=True, kw_only=True)`) for immutable, hashable event records; timestamps are `datetime` objects sourced from a `TradingClock` rather than `datetime.now()` to guarantee replay/backtest/live parity.

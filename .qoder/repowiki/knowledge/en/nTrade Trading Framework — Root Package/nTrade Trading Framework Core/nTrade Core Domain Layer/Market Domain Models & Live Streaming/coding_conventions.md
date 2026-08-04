@@ -1,5 +1,0 @@
-- Immutable market values are modeled as `@dataclass(frozen=True)` with default fields and a classmethod `empty()` / `cls.empty(symbol=...)` factory.
-- DataFrame-backed series expose a typed API plus an escape hatch via `to_dataframe()` and `__getattr__` delegation to the underlying DataFrame, keeping pandas behind the broker boundary.
-- Broker interaction goes exclusively through `instrument.broker_adapter` (e.g. `get_historical`, `subscribe`, `unsubscribe`), never direct network calls.
-- Event-driven streams use an `EVENT_NAMES` tuple to validate registered events and wrap callback invocation in try/except so handler errors cannot crash the stream.
-- Staleness/freshness is checked via datetime comparisons with configurable thresholds (e.g. `is_stale`, `is_fresh(max_age_minutes)`).

@@ -1,1 +1,0 @@
-Pure Python with `threading.RLock` for lock-free flyweight caching and thread-safe broker registration; `TYPE_CHECKING` guards are used to avoid circular imports from `ntrade.brokers.base.BrokerAdapter`.

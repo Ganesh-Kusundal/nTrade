@@ -1,1 +1,0 @@
-Engines are instantiated with a `context` object that must expose `bus`, `instrument()`, `portfolio`, `account`, and `now()`. Multiple timeframe instances of `CandleEngine` and `IndicatorEngine` can coexist by passing different `timeframe` parameters. `PositionSyncEngine` requires a `broker` adapter implementing `get_positions()` and `get_balance()`.

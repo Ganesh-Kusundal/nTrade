@@ -31,7 +31,7 @@ from ntrade.kernel.context import TradingContext
 from ntrade.kernel.event_bus import EventBus
 
 if TYPE_CHECKING:
-    from ntrade.brokers.base import BrokerAdapter
+    from ntrade.domain.ports import BrokerAdapter
     from ntrade.domain.instruments.base import Instrument
 
 

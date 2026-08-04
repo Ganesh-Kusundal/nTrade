@@ -1,5 +1,0 @@
-Two-file leaf module exposing a zero-parity backtesting layer on top of the standard kernel:
-- `simulator.py` defines `BacktestSimulator`, which constructs a `TradingKernel` in `mode='backtest'` driven by a `SimulationClock`, publishes `QuoteEvent` + `TickEvent` per bar, and optionally applies `FuturesCarryCosts` for daily carry and expiry roll slippage.
-- `fills.py` provides `FillPolicy` (open/close market fills, bar-touch limit logic) and `BarAwareExecution`, a thin wrapper around `SimulatedExecution` that intercepts limit orders and rejects them when the bar does not touch the limit price.
-- The public surface is re-exported through `__init__.py` as `BacktestSimulator`, `BacktestResult`, and `FillPolicy`.
-- Dependency direction is one-way: backtest depends on `ntrade.kernel`, `ntrade.execution`, `ntrade.events`, and `ntrade.domain.instruments`; it never imports from higher-level modules, preserving the zero-parity contract with live trading.

@@ -1,1 +1,0 @@
-Pandas DataFrames for OHLCV input; dataclasses (`replace`) for immutable intent mutation; relies on the existing `ntrade.execution.simulator.SimulatedExecution` pipeline so backtest fills share the same commission/statutory/fill plumbing as live.

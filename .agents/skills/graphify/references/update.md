@@ -167,6 +167,17 @@ print('[graphify update] Manifest saved.')
 
 Then run Steps 4–8 on the merged graph as normal.
 
+**Re-apply persisted edge resolutions after Step 4.** The build (Step 4)
+regenerates `graph.json` from extraction, which wipes manual edge relabels
+(AMBIGUOUS → EXTRACTED resolutions recorded in `graphify-out/resolutions.json`).
+If that file exists, re-apply after Step 4 has written `graph.json`:
+
+```bash
+if [ -f graphify-out/resolutions.json ]; then
+    python scripts/apply_graph_resolutions.py graphify-out
+fi
+```
+
 After Step 4, show the graph diff:
 
 ```bash

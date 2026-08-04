@@ -1,1 +1,0 @@
-Markdown-based skill manifests consumed by an LLM agent; Dhan-Tradehull v3.3.2 (`pip install Dhan-Tradehull`) for trading examples, and the `graphifyy` Python package (with optional `gemini` extra) for knowledge-graph generation. Examples use Python with TA-Lib for indicator computation and Flask for dashboard UIs.

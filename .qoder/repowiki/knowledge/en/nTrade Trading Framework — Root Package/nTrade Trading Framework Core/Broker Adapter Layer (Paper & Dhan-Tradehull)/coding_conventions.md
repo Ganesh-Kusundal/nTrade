@@ -1,6 +1,0 @@
-- Each broker implementation subclasses `BrokerAdapter` and sets a `name` attribute used by the capability system to gate feature availability per broker.
-- Optional/unsupported adapter methods raise `NotImplementedError` with a message naming the broker type, rather than returning sentinel values.
-- Timestamps are resolved through `_ts(now)` with explicit-now > injected clock > wall-clock precedence, enabling replay-time parity across all broker code paths.
-- Broker-specific extensions are registered via the `@capability(name, brokers=(...))` decorator and accessed through `BrokerExtensionFacade.__getattr__`, which raises `AttributeError` when the current broker does not support the capability.
-- Network calls wrap Dhan-Tradehull calls with try/except blocks that either return empty/default domain objects or re-raise as `RuntimeError`/`BrokerDataError`, never silently collapsing critical failures to zero.
-- Data normalization helpers use `_first_str/_first_int/_first_float(row, *keys)` fallback chains to handle inconsistent column names across Dhan API responses.

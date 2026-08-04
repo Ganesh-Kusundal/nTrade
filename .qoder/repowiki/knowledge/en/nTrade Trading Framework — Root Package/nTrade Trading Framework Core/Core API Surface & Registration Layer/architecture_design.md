@@ -1,7 +1,0 @@
-Four loose modules form the package's public boundary:
-- `__init__.py` is the sole public surface — it imports and re-exports every user-facing class (instruments, events, kernel, execution, storage, backtest, feeds, runners) into a single namespace and declares `__all__`.
-- `facade.py` defines `Market`, a thin adapter over `TradingSession` that forwards instrument/account/lifecycle calls for backward compatibility; it is explicitly marked as legacy in favor of `TradingSession.connect()`.
-- `factories.py` provides `InstrumentFactory` (symbol→typed instrument via `SymbolMaster`) and `OptionFactory` (analytics/testing-only option construction).
-- `registry.py` implements two concurrent registries: `SymbolMaster` (flyweight cache keyed by `(kind, symbol, exchange)` with `RLock` protection) and `BrokerRegistry` (class-level factory map with lazy default-broker registration via `_ensure_default_brokers`).
-
-Dependency direction is one-way outward: this layer depends on `domain.*`, `kernel.*`, `execution.*`, `sources.*`, `backtest.*`, `replay.*`, `storage.*`, and `brokers.*`, but nothing inside those subpackages imports back into these four files. The module has no internal sub-packages — it is purely a façade/registration shell.

@@ -12,10 +12,16 @@ dependencies = [
     "numpy>=1.24",
     "python-dotenv>=1.0",
     "Dhan-Tradehull>=3.3.2",
+    "pyarrow>=14.0",   # ntrade.data: Parquet storage layer
+    "duckdb>=0.9.0",   # ntrade.data: ad-hoc SQL over the parquet store
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.2",   # M-4: a hung websocket/retry can never wedge CI
+    "pytest-cov>=5.0",       # M-4: coverage floor on ntrade/
+]
 ui = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
@@ -28,3 +34,11 @@ include = ["ntrade*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 120  # pytest-timeout: any test hanging >2min is failed, not wedged
+
+[tool.coverage.run]
+source = ["ntrade"]
+
+[tool.coverage.report]
+fail_under = 90  # measured 92% at adoption — regressions below this fail CI
+show_missing = true

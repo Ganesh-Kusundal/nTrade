@@ -13,16 +13,16 @@
 - [test_rate_gate_integration.py](file://tests/test_rate_gate_integration.py)
 - [test_dhan_auth_unit.py](file://tests/test_dhan_auth_unit.py)
 - [test_dhan_feed.py](file://tests/test_dhan_feed.py)
+- [test_pre_deploy_check.py](file://tests/test_pre_deploy_check.py)
 - [ARCHITECTURE.md](file://ARCHITECTURE.md)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive BrokerRateGate implementation with multi-window sliding time limits
-- Integrated telemetry status() method for quota headroom monitoring
-- Implemented login probe rate limiting for Dhan market feed source
-- Enhanced authentication flow with gated token validation
-- Added live-read check script with quota status reporting
+- Enhanced BrokerRateGate.status() method with new BLOCKED_MIN_WINDOW_SPAN_S constant (60.0s) to distinguish between transient burst window saturation and sustained capacity exhaustion
+- Updated status telemetry logic to eliminate false-positive blocked status reporting during login probes and routine operations
+- Added comprehensive test coverage for long-horizon window blocking behavior
+- Improved quota headroom monitoring accuracy by differentiating between short-term bursts and genuine capacity exhaustion
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -38,7 +38,7 @@
 11. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the comprehensive rate limiting infrastructure that protects outbound broker API calls from exceeding Dhan's documented quotas. The system features a multi-window sliding window gate, quota classification, backoff on DH-904 errors, retry policies, and seamless integration with the Dhan market feed source for login probe rate limiting. The goal is to make the design accessible to both developers and non-experts while providing precise references to the implementation.
+This document explains the comprehensive rate limiting infrastructure that protects outbound broker API calls from exceeding Dhan's documented quotas. The system features a multi-window sliding window gate (BrokerRateGate with Quota classes), a typed RateLimited exception, RetryPolicy with exponential backoff, and seamless integration with the Dhan market feed source for login probe rate limiting. The goal is to make the design accessible to both developers and non-experts while providing precise references to the implementation. TradingSession is the preferred entry point that wires the BrokerRateGate into DhanTransport (the single choke point via `DhanTransport._invoke(Quota, fn)`) and propagates it through DhanAuth and DhanMarketFeedSource.
 
 ## Project Structure
 The rate limiting system lives primarily under ntrade/execution and integrates with the broker layer (ntrade/brokers), authentication (ntrade/brokers/dhan_auth.py), and market feed sources (ntrade/sources). Tests validate behavior across unit and integration scenarios.
@@ -51,8 +51,8 @@ RP["RetryPolicy<br/>Exponential Backoff + Jitter"]
 RLT["RateLimiter<br/>Token Bucket"]
 end
 subgraph "Broker Layer"
-DT["DhanTransport<br/>_invoke choke point"]
-DB["DhanBroker<br/>connect() wires gate"]
+DT["DhanTransport<br/>_invoke(Quota, fn) choke point"]
+DB["DhanBroker<br/>connect() wires gate via TradingSession"]
 DA["DhanAuth<br/>gated login probes"]
 DF["DhanMarketFeedSource<br/>gated context creation"]
 end
@@ -64,6 +64,7 @@ TRL["test_rate_limit.py"]
 TRI["test_rate_gate_integration.py"]
 TDA["test_dhan_auth_unit.py"]
 TDF["test_dhan_feed.py"]
+TPC["test_pre_deploy_check.py"]
 end
 RL --> DT
 RP --> DT
@@ -76,10 +77,11 @@ TRL --> RL
 TRI --> DT
 TDA --> DA
 TDF --> DF
+TPC --> RL
 ```
 
 **Diagram sources**
-- [rate_limit.py:1-174](file://ntrade/execution/rate_limit.py#L1-L174)
+- [rate_limit.py:1-194](file://ntrade/execution/rate_limit.py#L1-L194)
 - [retry.py:1-128](file://ntrade/execution/retry.py#L1-L128)
 - [dhan_transport.py:1-564](file://ntrade/brokers/dhan_transport.py#L1-L564)
 - [dhan.py:51-77](file://ntrade/brokers/dhan.py#L51-L77)
@@ -88,10 +90,10 @@ TDF --> DF
 - [live_read_check.py:19-47](file://scripts/live_read_check.py#L19-L47)
 
 **Section sources**
-- [ARCHITECTURE.md:20-51](file://ARCHITECTURE.md#L20-L51)
+- [ARCHITECTURE.md:20-60](file://ARCHITECTURE.md#L20-L60)
 
 ## Core Components
-- **BrokerRateGate**: Thread-safe, multi-window, per-quota sliding windows with cooldown penalization after DH-904.
+- **BrokerRateGate**: Thread-safe, multi-window, per-quota sliding windows with cooldown penalization after DH-904. The single choke point every outbound broker REST call passes through.
 - **Quota**: Enumerates Dhan's API buckets (QUOTE, DATA, ORDER, NON_TRADING) with default windows.
 - **RateLimited**: Typed exception for rate-limit violations; includes optional retry_after.
 - **is_rate_limited**: Heuristic to detect rate-limit signals from exceptions.
@@ -105,18 +107,24 @@ Key responsibilities:
 - Provide deterministic testing via injectable clock/sleep.
 - Support telemetry through status() method for monitoring quota headroom.
 
+**Entry point**: TradingSession (preferred) wires the BrokerRateGate into DhanTransport during `connect("dhan")`, propagating it through DhanAuth and DhanMarketFeedSource.
+
 **Section sources**
-- [rate_limit.py:31-174](file://ntrade/execution/rate_limit.py#L31-L174)
+- [rate_limit.py:31-194](file://ntrade/execution/rate_limit.py#L31-L194)
 - [retry.py:31-128](file://ntrade/execution/retry.py#L31-L128)
 
 ## Architecture Overview
-The rate limiting architecture is layered and comprehensive:
-- DhanBroker constructs a single BrokerRateGate per session during connect().
-- DhanTransport wraps every Tradehull call through _invoke(quota, fn), which acquires the appropriate quota window before calling the underlying method.
-- On rate-limit errors, _invoke normalizes them to RateLimited and applies penalize() to the relevant quota class.
-- RetryPolicy executes flaky functions with exponential backoff but skips retries for rate-limit failures.
+The rate limiting architecture is layered and comprehensive. **TradingSession is the preferred entry point** — `connect("dhan")` creates a single `BrokerRateGate` and wires it into `DhanTransport` (the single choke point via `DhanTransport._invoke(Quota, fn)`), `DhanAuth` (login probe rate limiting), and `DhanMarketFeedSource` (context creation). All outbound broker REST calls pass through this gate.
+
+- DhanBroker.connect() creates a shared BrokerRateGate and wires it into DhanTransport.
+- DhanTransport._invoke is the single choke point:
+  - Acquires the correct quota window.
+  - Normalizes exceptions to RateLimited when detected.
+  - Applies penalize() to the quota class on rate-limit errors.
+- All broker methods route through _invoke with the appropriate Quota.
 - Authentication flow (_login_ok) respects rate limits for login probes.
 - Market feed source integrates rate limiting for context creation.
+- LiveRunner wires the kill switch on RiskHaltedEvent and releases on RiskResumedEvent.
 
 ```mermaid
 sequenceDiagram
@@ -184,10 +192,10 @@ Report --> Return
 ```
 
 **Diagram sources**
-- [rate_limit.py:105-174](file://ntrade/execution/rate_limit.py#L105-L174)
+- [rate_limit.py:105-194](file://ntrade/execution/rate_limit.py#L105-L194)
 
 **Section sources**
-- [rate_limit.py:76-174](file://ntrade/execution/rate_limit.py#L76-L174)
+- [rate_limit.py:76-194](file://ntrade/execution/rate_limit.py#L76-L194)
 
 ### Quota Classes and Default Windows
 - QUOTE: 1/s
@@ -205,21 +213,21 @@ These defaults align with Dhan's documented rate-limit table and can be overridd
 - is_rate_limited detects both typed exceptions and common textual signals (DH-904, 429, etc.).
 
 **Section sources**
-- [rate_limit.py:50-74](file://ntrade/execution/rate_limit.py#L50-L74)
+- [rate_limit.py:50-74](file://ntrade/execution/rate_limit.py#L50-74)
 
 ### RetryPolicy: Exponential Backoff Without Retrying Rate Limits
 - Executes a function with configurable max_retries, base_delay, multiplier, max_delay, and jitter.
 - Never retries rate-limit failures by default; uses is_rate_limited to short-circuit.
 
 **Section sources**
-- [retry.py:31-98](file://ntrade/execution/retry.py#L31-L98)
+- [retry.py:31-98](file://ntrade/execution/retry.py#L31-98)
 
 ### RateLimiter: Token-Bucket Throttler
 - Simple thread-safe limiter enforcing a fixed interval between calls.
 - Useful for uniform pacing where a sliding window is not required.
 
 **Section sources**
-- [retry.py:100-128](file://ntrade/execution/retry.py#L100-L128)
+- [retry.py:100-128](file://ntrade/execution/retry.py#L100-128)
 
 ### Integration Points in DhanTransport and DhanBroker
 - DhanBroker.connect() creates a shared BrokerRateGate and wires it into DhanTransport.
@@ -283,7 +291,7 @@ DhanTransport --> RetryPolicy : "retries flaky reads"
 
 **Section sources**
 - [dhan.py:66-77](file://ntrade/brokers/dhan.py#L66-77)
-- [dhan_transport.py:88-116](file://ntrade/brokers/dhan_transport.py#L88-116)
+- [dhan_transport.py:88-116](file://ntrade/brokers/dhan_transport.py#L88-L116)
 
 ### End-to-End Flow: Quote Fetch
 ```mermaid
@@ -305,6 +313,7 @@ Transport->>Gate : penalize(QUOTE, seconds)
 Transport-->>User : raise RateLimited
 else Success
 Transport-->>Transport : normalize quote
+Transport->>Transport : get_quote(symbol)
 Transport->>Gate : acquire(QUOTE)
 Transport->>TSL : get_quote_data(names=[symbol])
 Transport-->>User : Quote object
@@ -359,8 +368,10 @@ The BrokerRateGate.status() method provides comprehensive telemetry for monitori
 - Returns a snapshot of all quota classes with their current state
 - Shows window usage (used/limit) for each configured time span
 - Reports cooldown remaining after rate-limit penalties
-- Indicates if a quota class is currently blocked
+- Indicates if a quota class is currently blocked using intelligent threshold detection
 - Non-blocking operation that doesn't mutate gate state
+
+**Updated** The blocked status calculation now uses BLOCKED_MIN_WINDOW_SPAN_S (60.0s) to distinguish between transient burst window saturation and sustained capacity exhaustion. Short-term windows (1s/5s) are considered normal operation even when full, while long-horizon windows (≥60s) at capacity indicate genuine exhaustion requiring attention.
 
 ```mermaid
 flowchart TD
@@ -368,14 +379,15 @@ StatusCall["gate.status()"] --> Lock["Acquire lock"]
 Lock --> Iterate["Iterate through all quota classes"]
 Iterate --> CountTokens["Count tokens in each window"]
 CountTokens --> CalcCooldown["Calculate cooldown remaining"]
-CalcCooldown --> CheckBlocked["Check if blocked (cooldown or window full)"]
-CheckBlocked --> BuildReport["Build report with windows, cooldown, blocked status"]
+CalcCooldown --> CheckBlocked["Check if blocked (cooldown or long-horizon window full)"]
+CheckBlocked --> ApplyThreshold["Apply BLOCKED_MIN_WINDOW_SPAN_S threshold"]
+ApplyThreshold --> BuildReport["Build report with windows, cooldown, blocked status"]
 BuildReport --> ReleaseLock["Release lock"]
 ReleaseLock --> Return["Return snapshot"]
 ```
 
 **Diagram sources**
-- [rate_limit.py:133-157](file://ntrade/execution/rate_limit.py#L133-157)
+- [rate_limit.py:142-177](file://ntrade/execution/rate_limit.py#L142-177)
 
 ### Live Read Check Integration
 The live_read_check.py script integrates with the rate limiting infrastructure to provide operational visibility:
@@ -384,10 +396,11 @@ The live_read_check.py script integrates with the rate limiting infrastructure t
 - Uses quota_status_row() to render human-readable quota information
 - Integrates with go-live decision making (DEGRADED status prevents deployment)
 - Shows tightest window usage per quota class for burst shaping insights
+- Includes 1.05s settlement period to avoid false positives from login probes
 
 **Section sources**
-- [rate_limit.py:133-157](file://ntrade/execution/rate_limit.py#L133-157)
-- [live_read_check.py:19-47](file://scripts/live_read_check.py#L19-47)
+- [rate_limit.py:142-177](file://ntrade/execution/rate_limit.py#L142-177)
+- [live_read_check.py:27-55](file://scripts/live_read_check.py#L27-55)
 
 ## Login Probe Rate Limiting
 
@@ -465,6 +478,7 @@ TestRL["test_rate_limit.py"] --> BrokerRateGate
 TestRI["test_rate_gate_integration.py"] --> DhanTransport
 TestDA["test_dhan_auth_unit.py"] --> DhanAuth
 TestDF["test_dhan_feed.py"] --> DhanMarketFeedSource
+TestPC["test_pre_deploy_check.py"] --> BrokerRateGate
 ```
 
 **Diagram sources**
@@ -477,6 +491,7 @@ TestDF["test_dhan_feed.py"] --> DhanMarketFeedSource
 - [test_rate_gate_integration.py:24-26](file://tests/test_rate_gate_integration.py#L24-26)
 - [test_dhan_auth_unit.py:325-381](file://tests/test_dhan_auth_unit.py#L325-381)
 - [test_dhan_feed.py:33-35](file://tests/test_dhan_feed.py#L33-35)
+- [test_pre_deploy_check.py:158-165](file://tests/test_pre_deploy_check.py#L158-165)
 
 **Section sources**
 - [dhan.py:51-77](file://ntrade/brokers/dhan.py#L51-77)
@@ -491,6 +506,7 @@ TestDF["test_dhan_feed.py"] --> DhanMarketFeedSource
 - Token bucket limiter: Optional simple throttle for uniform pacing when sliding windows are unnecessary.
 - Telemetry overhead: status() method is read-only and non-blocking, suitable for frequent monitoring.
 - Login probe efficiency: Rate-limited login probes prevent authentication bursts during startup.
+- **Enhanced blocking detection**: BLOCKED_MIN_WINDOW_SPAN_S threshold eliminates false positives from short-term window saturation while maintaining sensitivity to genuine capacity exhaustion.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -501,11 +517,14 @@ Common issues and resolutions:
 - Login probe failures: Verify that gate is properly propagated through authentication chain; check quota windows for QUOTE and DATA classes.
 - Feed connection issues: Ensure gate is passed to DhanMarketFeedSource constructor; verify login probes respect rate limits.
 - Monitoring gaps: Use quota_status_row() to diagnose quota headroom; check DEGRADED status in live-read checks.
+- **False-positive blocked status**: If status() reports blocked for short-term windows, this is expected behavior - only long-horizon windows (≥60s) at capacity should trigger blocked status.
 
 **Section sources**
 - [dhan_transport.py:88-116](file://ntrade/brokers/dhan_transport.py#L88-116)
 - [test_rate_gate_integration.py:188-200](file://tests/test_rate_gate_integration.py#L188-200)
-- [live_read_check.py:19-47](file://scripts/live_read_check.py#L19-47)
+- [live_read_check.py:27-55](file://scripts/live_read_check.py#L27-55)
 
 ## Conclusion
 The comprehensive rate limiting infrastructure provides robust, multi-window enforcement aligned with Dhan's quotas, integrates cleanly into the broker transport, authentication, and market feed layers, and offers resilient retry semantics. Its design emphasizes correctness (typed exceptions, class-scoped backoff), performance (lock scope, sliding windows), testability (injectable clock/sleep), and observability (telemetry status method). With comprehensive tests validating both unit and integration behaviors, including login probe rate limiting and feed source integration, the system ensures safe, predictable throttling across live trading workloads.
+
+**Updated** The recent enhancement to the BLOCKED_MIN_WINDOW_SPAN_S constant (60.0s) significantly improves the accuracy of blocked status reporting by distinguishing between transient burst window saturation and sustained capacity exhaustion. This eliminates false-positive blocked status during login probes and routine operations while maintaining sensitivity to genuine quota exhaustion scenarios.

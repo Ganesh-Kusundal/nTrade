@@ -1,1 +1,0 @@
-Python ABCs for the source interface; pandas DataFrames for OHLCV input; threading for background production in `SyntheticMarketFeedSource`; optional `dhanhq` websocket client injected lazily via a `feed_factory` hook for testability; `RateLimiter` from `ntrade.execution.retry` for reconnect backoff.

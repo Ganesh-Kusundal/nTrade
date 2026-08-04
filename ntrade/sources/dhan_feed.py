@@ -128,6 +128,9 @@ class DhanMarketFeedSource(MarketFeedSource):
         self._sleep = time.sleep
         self._reconnect_limiter = RateLimiter(calls_per_second=0.5)
         self._reconnect_called = False
+        # M-2: stop() sets this so the websocket's close/error callbacks know
+        # the shutdown was deliberate and must not trigger a reconnect.
+        self._intentional_stop = False
         # D-020: serializes start()/stop()/_reconnect() so a LiveRunner stop
         # racing the dhanhq error/close callbacks cannot double-close or
         # rebuild the single-use websocket concurrently. RLock: _reconnect
@@ -136,7 +139,9 @@ class DhanMarketFeedSource(MarketFeedSource):
 
     # ------------------------------------------------------------------ wiring
     def _subscriptions(self) -> list:
-        return [(exch, sec, 21) for exch, sec in self.symbols]
+        # dhanhq v2 JSON requires SecurityId as a string — int IDs connect
+        # but deliver zero ticks with no error (silent empty feed).
+        return [(exch, str(sec), 21) for exch, sec in self.symbols]
 
     def _build_feed(self):
         if self._feed is not None:
@@ -178,6 +183,7 @@ class DhanMarketFeedSource(MarketFeedSource):
     def start(self) -> None:
         """Start the websocket in a background thread (non-blocking)."""
         with self._lifecycle_lock:
+            self._intentional_stop = False
             self._reconnect_limiter.wait()
             feed = self._build_feed()
             if self._thread is not None and self._thread.is_alive():
@@ -198,6 +204,7 @@ class DhanMarketFeedSource(MarketFeedSource):
 
     def stop(self) -> None:
         with self._lifecycle_lock:
+            self._intentional_stop = True
             if self._feed is not None:
                 try:
                     self._feed.close_connection()
@@ -223,15 +230,19 @@ class DhanMarketFeedSource(MarketFeedSource):
         if self.kernel is not None:
             self.bus.publish(FeedDisconnectedEvent(
                 reason=str(error), ts=self.kernel.clock.now()))
-        self._reconnect()
+        if not self._intentional_stop:
+            self._reconnect()
 
     # Reconnect re-uses start()/stop(), so code-21 + version v2 are always
     # reapplied at re-arm (see tests/test_contract_feed_reconnect_subscription.py)
     def _reconnect(self) -> None:
         with self._lifecycle_lock:
+            if self._intentional_stop:
+                return  # deliberate shutdown — never rebuild the socket
             self._reconnect_limiter.wait()
             try:
                 self.stop()          # tear down the dead socket
+                self._intentional_stop = False  # stop() armed it; start() below is wanted
                 self.start()         # re-attach + re-subscribe (fresh MarketFeed)
                 self._reconnect_called = True
                 # Re-arm every instrument stream so consumers see them as live again.
@@ -250,6 +261,10 @@ class DhanMarketFeedSource(MarketFeedSource):
             self.bus.publish(FeedDisconnectedEvent(
                 reason="websocket closed", ts=self.kernel.clock.now(),
             ))
+        # M-2: an unexpected close (exchange/broker-side drop) must reconnect;
+        # only a deliberate stop() leaves the feed down.
+        if not self._intentional_stop:
+            self._reconnect()
 
     @property
     def running(self) -> bool:

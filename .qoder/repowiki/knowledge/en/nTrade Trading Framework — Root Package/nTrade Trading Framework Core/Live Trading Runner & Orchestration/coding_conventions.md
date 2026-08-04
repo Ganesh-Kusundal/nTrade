@@ -1,4 +1,0 @@
-- Public APIs are re-exported through `__init__.py` with an explicit `__all__` list rather than relying on implicit package imports.
-- Heavy or optional dependencies (feed sources, domain models like `Equity`) are imported lazily inside functions to avoid circular imports and unnecessary startup cost.
-- Stateful orchestrators expose a `start()` / `run()` / `stop()` lifecycle and guard against misuse by raising `RuntimeError` if methods are called out of order.
-- Cross-cutting concerns (risk halts, fills, heartbeats, feed disconnects, order timeouts) are handled by subscribing to specific event types on `kernel.bus` instead of direct method calls.

@@ -215,11 +215,10 @@ class EventStore:
         # Append order is causal order (the record handler runs after the
         # effects a tick triggers), so the in-memory index IS the seq. ts-only
         # ties would invert causality; use the recorded order as the tiebreak.
-        events = [e for e in self._events if isinstance(e, types)]
-        return sorted(
-            events,
-            key=lambda e: (e.ts, self._events.index(e)),
-        )
+        # One enumerate pass + O(n log n) sort — the old list.index() key made
+        # this O(n²) and recovery unusable beyond a few thousand events (H-4).
+        indexed = [(i, e) for i, e in enumerate(self._events) if isinstance(e, types)]
+        return [e for i, e in sorted(indexed, key=lambda p: (p[1].ts, p[0]))]
 
     def replay(self):
         """Iterate recorded events in chronological order."""

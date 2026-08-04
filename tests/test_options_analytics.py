@@ -68,6 +68,33 @@ def test_option_black_scholes_and_iv():
     assert abs(iv - 0.15) < 1e-2
 
 
+def test_years_to_expiry_accepts_injected_now():
+    """M-3: replay callers inject session time — the analytics become
+    deterministic instead of wall-clock dependent."""
+    from datetime import datetime
+    opt = Option("NIFTY 24500 CE", strike=24500, expiry=date(2026, 8, 4),
+                 option_type="CE", underlying_symbol="NIFTY")
+    # 30 days to expiry from the injected date
+    assert opt._years_to_expiry(now=date(2026, 7, 5)) == pytest.approx(30 / 365.0)
+    # accepts a replay datetime too
+    assert opt._years_to_expiry(now=datetime(2026, 7, 5, 10, 30)) == pytest.approx(30 / 365.0)
+    # past expiry clamps to the 1-day floor (same as the wall-clock path)
+    assert opt._years_to_expiry(now=date(2026, 9, 1)) == pytest.approx(1 / 365.0)
+
+
+def test_black_scholes_and_iv_deterministic_with_injected_now():
+    """M-3: with a fixed now, BS/IV match the explicit-years computation —
+    replay analytics no longer drift with the wall clock."""
+    opt = Option("NIFTY 24500 CE", strike=24500, expiry=date(2026, 8, 4),
+                 option_type="CE", underlying_symbol="NIFTY")
+    now = date(2026, 7, 5)  # 30 days out
+    price = opt.black_scholes(spot=24600, sigma=0.15, now=now)
+    assert price == pytest.approx(
+        BlackScholes.price(24600, 24500, 30 / 365.0, 0.065, 0.15, "CE"))
+    iv = opt.implied_volatility(price, spot=24600, now=now)
+    assert abs(iv - 0.15) < 1e-2
+
+
 def test_option_set_greeks():
     opt = Option("NIFTY 24500 CE", strike=24500, expiry=date.today(), option_type="CE",
                  underlying_symbol="NIFTY")

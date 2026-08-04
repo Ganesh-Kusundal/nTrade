@@ -72,6 +72,8 @@ A --> K
 A --> L
 A --> M
 O --> N
+P["BrokerAdapter / BrokerExtensionFacade<br/>(ports.py)"]
+A --> P
 ```
 
 **Diagram sources**
@@ -90,7 +92,7 @@ O --> N
 - [__init__.py:1-24](file://ntrade/domain/instruments/__init__.py#L1-L24)
 
 ## Core Components
-- Instrument: Abstract root holding symbol, exchange, metadata, quote, depth, history, stream, indicators, signals, tags, annotations, session state, and broker wiring. Provides capabilities via cached properties and lifecycle methods like refresh/hydrate.
+- Instrument: Abstract root holding symbol, exchange, metadata, quote, depth, history, stream, indicators, signals, tags, annotations, session state, and broker wiring. Provides capabilities via cached properties and lifecycle methods like refresh/hydrate. Broker access is through the `broker_adapter` property (lazy factory resolution on first access); broker-specific features go through the `broker` property returning a `BrokerExtensionFacade`.
 - Cash Instruments: Equity, Index, ETF, Currency, Commodity, Bond, Crypto, Spot — lightweight subclasses that set KIND and default exchanges; Equity adds market_cap from metadata.
 - Derivatives: Future (basis, cost_of_carry, rollover, continuous series, roll yield), Option (greeks, intrinsic/extrinsic value, moneyness, Black-Scholes pricing, implied volatility, payoff/P&L), SyntheticInstrument (composite legs).
 - Option Chain: Composite over Option instruments with ATM/ITM/OTM selection, strike indexing, expiries, pairs, PCR, max pain, IV surface, Greeks table, and subscription.
@@ -109,9 +111,10 @@ O --> N
 - [quote.py:9-91](file://ntrade/domain/market/quote.py#L9-L91)
 - [session.py:10-46](file://ntrade/domain/session.py#L10-L46)
 - [portfolio.py:19-173](file://ntrade/domain/portfolio.py#L19-L173)
+- [ports.py](file://ntrade/domain/ports.py)
 
 ## Architecture Overview
-The Instrument acts as a composition root. Instead of exposing many methods directly, it delegates to six capability objects. Broker transport is hidden behind a BrokerAdapter injected at construction or lazily created via a factory. Corporate actions, signals, and session state are part of the instrument’s internal read model.
+The Instrument acts as a composition root. Instead of exposing many methods directly, it delegates to six capability objects. Broker transport is hidden behind a `BrokerAdapter` injected at construction (via the `broker` kwarg) or lazily created via a factory — accessed through the `broker_adapter` property (backed by the internal `_broker` field), which resolves a lazy factory on first access. The `broker` property returns a `BrokerExtensionFacade` for broker-specific capabilities (e.g., `nifty.broker.depth20()`), resolved via `instrument.broker_adapter.name`. Corporate actions, signals, and session state are part of the instrument’s internal read model.
 
 ```mermaid
 classDiagram
@@ -123,6 +126,8 @@ class Instrument {
 +float tick_size
 +int lot_size
 +int freeze_qty
++broker_adapter BrokerAdapter|None
++broker BrokerExtensionFacade
 +market() MarketCapability
 +trade() TradeCapability
 +stream() StreamCapability
@@ -215,19 +220,19 @@ OptionChain --> Option : "contains"
 ## Detailed Component Analysis
 
 ### Base Instrument
-- Responsibilities: Owns identity (symbol, exchange, name, currency), trading parameters (tick/lot/freeze), internal state (quote, depth, history, stream, indicators, signals, annotations, tags), session state, and broker wiring.
-- Lifecycle: refresh pulls latest quote/depth via broker adapter; hydrate fetches metadata once; set_market_status updates session state.
+- Responsibilities: Owns identity (symbol, exchange, name, currency), trading parameters (tick/lot/freeze), internal state (quote, depth, history, stream, indicators, signals, annotations, tags), session state, and broker wiring. Broker access is through the `broker_adapter` property (backed by `_broker`, with lazy factory resolution); the `broker` property returns a `BrokerExtensionFacade` for broker-specific capabilities.
+- Lifecycle: refresh pulls latest quote/depth via `broker_adapter`; hydrate fetches metadata once; set_market_status updates session state.
 - Corporate Actions: record_corporate_action appends typed action records; clear_corporate_actions resets them.
 - Serialization: snapshot returns a stable dict representation; serialize delegates to snapshot.
 - Immutability patterns: Quote is immutable; instrument uses replace-like updates on quote internally; clone creates independent copies.
 
 ```mermaid
 flowchart TD
-Start(["Instrument.refresh"]) --> CheckBroker{"Broker available?"}
+Start(["Instrument.refresh"]) --> CheckBroker{"broker_adapter available?"}
 CheckBroker --> |No| ReturnSelf["Return self"]
 CheckBroker --> |Yes| HydrateCheck{"Metadata hydrated?"}
-HydrateCheck --> |No| Hydrate["Hydrate metadata"]
-HydrateCheck --> |Yes| FetchQuote["Get quote from broker"]
+HydrateCheck --> |No| Hydrate["Hydrate metadata via broker_adapter"]
+HydrateCheck --> |Yes| FetchQuote["Get quote via broker_adapter"]
 FetchQuote --> DepthFetch["Get depth if supported"]
 DepthFetch --> UpdateTime["Update last_refresh_at"]
 UpdateTime --> End(["Done"])
@@ -238,6 +243,7 @@ UpdateTime --> End(["Done"])
 
 **Section sources**
 - [base.py:50-305](file://ntrade/domain/instruments/base.py#L50-L305)
+- [ports.py](file://ntrade/domain/ports.py)
 
 ### Cash Instruments
 - Equity: Adds market_cap from metadata.
@@ -389,6 +395,7 @@ Instrument --> ExtensionCapability
 
 **Section sources**
 - [capabilities.py:37-383](file://ntrade/domain/instruments/capabilities.py#L37-L383)
+- [ports.py](file://ntrade/domain/ports.py)
 
 ### Corporate Actions and Lifecycle
 - CorporateAction: Typed record for dividend/split/bonus/merger with amount, ratio, ex_date, record_date, description.
@@ -529,10 +536,11 @@ Account --> BrokerAdapter
 [No sources needed since this section provides general guidance]
 
 ## Troubleshooting Guide
-- No broker adapter: OptionChain.fetch raises RuntimeError if underlying has no broker adapter.
+- No broker adapter: OptionChain.fetch raises RuntimeError if underlying has no `broker_adapter`; `instrument.broker` capabilities return empty `available()` when `broker_adapter` is None.
 - Invalid option type: Option constructor raises ValueError for unsupported option_type.
 - Stale quotes: Quote.is_stale helps detect outdated data; ensure refresh is called before relying on stale-free assumptions.
 - Missing chain data: Ensure broker supports get_option_chain and returns expected structure.
+- Broker access: use `instrument.broker_adapter` (not `_broker` directly) to get the adapter with lazy factory resolution; use `instrument.broker` for broker-specific capabilities.
 
 **Section sources**
 - [chain.py:56-63](file://ntrade/domain/instruments/chain.py#L56-L63)
@@ -540,7 +548,7 @@ Account --> BrokerAdapter
 - [quote.py:59-63](file://ntrade/domain/market/quote.py#L59-L63)
 
 ## Conclusion
-nTrade’s domain model centers on a robust Instrument base with capability-driven behavior, rich derivatives support, and clear separation between state and read-only views. The design emphasizes immutability, validation, and extensibility, enabling consistent instrument creation, property access, type checking, and portfolio management across brokers and strategies.
+nTrade's domain model centers on a robust Instrument base with capability-driven behavior, rich derivatives support, and clear separation between state and read-only views. Broker transport is hidden behind the `broker_adapter` property (lazy factory resolution on first access) while broker-specific capabilities are exposed through the `broker` property returning a `BrokerExtensionFacade`. The design emphasizes immutability, validation, and extensibility, enabling consistent instrument creation, property access, type checking, and portfolio management across brokers and strategies.
 
 [No sources needed since this section summarizes without analyzing specific files]
 

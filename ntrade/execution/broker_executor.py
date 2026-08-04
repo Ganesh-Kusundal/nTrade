@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from ntrade.domain.orders.order import OrderStatus, OrderType, TradeType
+from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
 from ntrade.events.order import (
     OrderAcceptedEvent,
     OrderFilledEvent,
@@ -32,8 +32,11 @@ from ntrade.execution.costs import (
     STATUTORY_DEFAULT,
     resolve_statutory,
 )
+from ntrade.execution.rate_limit import RateLimited
 
 logger = logging.getLogger("ntrade.execution")
+
+_TERMINAL_STATUSES = ("COMPLETED", "REJECTED", "CANCELLED")
 
 
 def _fill_price(order) -> float:
@@ -77,12 +80,23 @@ class BrokerExecution:
                 strategy=intent.strategy, ts=intent.ts,
             )
         try:
+            # trade_type omitted: OrderFacade.place applies the K-024 default
+            # (CNC delivery for equity/ETF, MIS for derivatives) — forcing MIS
+            # here turned every kernel-routed equity order intraday.
             order = instrument.order.place(
                 intent.side, intent.quantity,
                 order_type=OrderType(intent.order_type.upper()),
-                trade_type=TradeType.MIS, price=intent.price,
+                price=intent.price,
             )
         except Exception as exc:  # broker rejection surfaces as an exception
+            # Ambiguous failure: the exchange may have accepted the order
+            # before the transport died. The next reconcile_open() adopts any
+            # orphaned broker-side order, so nothing is silently lost.
+            logger.warning(
+                "order placement failed for %s %s x%d: %s — if the exchange "
+                "accepted it, reconcile_open() will adopt the orphan",
+                intent.side, intent.symbol, intent.quantity, exc,
+            )
             return OrderRejectedEvent(
                 symbol=intent.symbol, exchange=intent.exchange, side=intent.side,
                 quantity=intent.quantity, reason=str(exc),
@@ -130,6 +144,11 @@ class BrokerExecution:
             try:
                 self.broker.get_order_status(order)
                 record["stale"] = 0  # reset on success
+            except RateLimited:
+                # Quota backoff is NOT staleness (H-5): leave the record
+                # untouched and retry on the next poll — penalizing DH-904
+                # with eviction dropped tracked orders under rate pressure.
+                continue
             except Exception:
                 record["stale"] = record.get("stale", 0) + 1
                 if record["stale"] >= self._stale_limit:
@@ -183,6 +202,69 @@ class BrokerExecution:
     def open_orders(self) -> list[str]:
         """Order ids still open (accepted, awaiting broker lifecycle)."""
         return list(self._open)
+
+    # ------------------------------------------------ orphan-order adoption
+    def reconcile_open(self) -> list[str]:
+        """Adopt broker-side open orders this tracker does not know (C-4).
+
+        Dhan's API accepts no client-order-id, so an ambiguous place-order
+        failure (network drop after exchange acceptance) leaves an orphaned
+        order at the broker with no local record. Diffing the broker order
+        book against ``_open`` surfaces such orphans; adopting them lets
+        ``poll()`` track their lifecycle and emit their fills. A
+        ``RateLimited`` propagates (K-021) — reconciliation retries on the
+        next poll cycle. Returns the adopted order ids.
+        """
+        book = self.broker.get_orderbook()
+        adopted: list[str] = []
+        for entry in book:
+            order_id = str(entry.order_id or "")
+            if not order_id or order_id in self._open:
+                continue
+            if entry.status in _TERMINAL_STATUSES:
+                continue
+            instrument = self.ctx.instrument(entry.symbol)
+            if instrument is None or instrument.broker_adapter is None:
+                logger.critical(
+                    "orphan broker order %s (%s %s x%d) for untracked symbol "
+                    "%s — manual intervention required",
+                    order_id, entry.side, entry.symbol, entry.quantity,
+                    entry.symbol,
+                )
+                continue
+            try:
+                side = OrderSide(entry.side.upper())
+                status = OrderStatus(entry.status) if entry.status else OrderStatus.PENDING
+            except ValueError:
+                logger.critical(
+                    "orphan broker order %s has unmappable side/status "
+                    "(%s/%s) — manual intervention required",
+                    order_id, entry.side, entry.status,
+                )
+                continue
+            intent = OrderIntentEvent(
+                symbol=entry.symbol, exchange=entry.exchange or instrument.exchange,
+                side=entry.side, quantity=entry.quantity,
+                price=entry.price, strategy="",
+                ts=self.ctx.now(),
+            )
+            order = Order(
+                instrument=instrument, side=side, quantity=entry.quantity,
+                order_id=order_id, status=status, filled_qty=0,
+                created_at=self.ctx.now(),
+            )
+            self._open[order_id] = {
+                "intent": intent, "order": order, "filled": 0,
+                "status": status, "placed_at": self.ctx.now(),
+            }
+            adopted.append(order_id)
+            logger.critical(
+                "adopted orphan broker order %s (%s %s x%d @ %.2f, %s) — "
+                "placement likely failed after exchange acceptance",
+                order_id, entry.side, entry.symbol, entry.quantity,
+                entry.price, entry.status or "PENDING",
+            )
+        return adopted
 
     # ------------------------------------------------------- crash recovery
     def restore_open(self, deltas: dict) -> int:

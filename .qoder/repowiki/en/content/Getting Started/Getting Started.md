@@ -43,19 +43,21 @@ The content is beginner-friendly but includes enough technical depth for experie
 At a high level:
 - Installation and dependencies are declared in pyproject.toml
 - The public API surface re-exports core types and utilities from ntrade/__init__.py
-- TradingSession is the unified entry point for connecting to brokers, creating instruments, and running strategies
+- TradingSession is the preferred entry point for connecting to brokers, creating instruments, and running strategies
 - PaperBroker provides deterministic offline trading; DhanBroker connects to live markets via Dhan-Tradehull
 - Authentication and token management for Dhan are handled by dhan_auth
 - Example scripts demonstrate historical replay and live runner flows
 
 ```mermaid
 graph TB
-A["User Script"] --> B["TradingSession.connect('dhan') or .paper()"]
+A["User Script"] --> B["TradingSession.connect('dhan') / .paper() / .replay(events)"]
 B --> C["BrokerAdapter (PaperBroker | DhanBroker)"]
-C --> D["Market Data (Quote/Depth/History)"]
-C --> E["Orders (Place/Modify/Cancel)"]
-B --> F["Kernel + Engines (Market/Candle/Indicator/Risk/Order)"]
+C --> D["Market Data (Quote/Depth/History/ParquetStore)"]
+C --> E["Orders (Place/Modify/Cancel/Reconcile)"]
+B --> F["Kernel + Engines (Market/Candle/Indicator/Risk/Order/OMS)"]
 F --> G["Execution Router (SimulatedExecution | BrokerExecution)"]
+F --> H["ResilientKernel (EventStore crash recovery)"]
+H --> I["LiveRunner (watchdog + fail-closed kill switch)"]
 ```
 
 **Diagram sources**
@@ -67,7 +69,7 @@ F --> G["Execution Router (SimulatedExecution | BrokerExecution)"]
 - [pyproject.toml:1-25](file://pyproject.toml#L1-L25)
 - [ntrade/__init__.py:1-105](file://ntrade/__init__.py#L1-L105)
 - [ntrade/kernel/trading_session.py:1-306](file://ntrade/kernel/trading_session.py#L1-L306)
-- [ARCHITECTURE.md:1-389](file://ARCHITECTURE.md#L1-L389)
+- [ARCHITECTURE.md:1-527](file://ARCHITECTURE.md#L1-L527)
 
 ## Core Components
 - TradingSession: Unified entry point to connect to brokers, create instruments, manage kernel, and run strategies
@@ -88,7 +90,7 @@ Key capabilities exposed through domain objects:
 - [ntrade/brokers/dhan_auth.py:114-166](file://ntrade/brokers/dhan_auth.py#L114-L166)
 
 ## Architecture Overview
-nTrade follows a layered architecture with a clean separation between domain objects, broker adapters, and infrastructure. The event-centric kernel processes canonical events from multiple sources (live, replay, backtest) and drives engines (market, candle, indicator, risk, order). Execution targets can be simulated or routed to a real broker.
+nTrade follows a layered architecture with a clean separation between domain objects, broker adapters, and infrastructure. **TradingSession is the preferred entry point** (`connect("dhan")`, `.paper()`, `.replay(events)`) — it composes a BrokerAdapter, a TradingKernel, and a LiveRunner. The event-centric kernel (with optional ResilientKernel crash recovery over the EventStore) processes canonical events from multiple sources (live, replay, backtest) and drives engines (market, candle, indicator, risk, order/OMS, portfolio). Execution targets can be simulated (SimulatedExecution) or routed to a real broker (BrokerExecution). LiveRunner provides the orchestration harness with a feed watchdog and fail-closed kill switch.
 
 ```mermaid
 graph TB
@@ -134,7 +136,7 @@ DB --> I
 ```
 
 **Diagram sources**
-- [ARCHITECTURE.md:20-51](file://ARCHITECTURE.md#L20-L51)
+- [ARCHITECTURE.md:20-60](file://ARCHITECTURE.md#L20-L60)
 - [ntrade/kernel/trading_session.py:1-306](file://ntrade/kernel/trading_session.py#L1-L306)
 - [ntrade/brokers/paper.py:23-60](file://ntrade/brokers/paper.py#L23-L60)
 - [ntrade/brokers/dhan.py:54-74](file://ntrade/brokers/dhan.py#L54-L74)
@@ -167,7 +169,7 @@ Verification:
 
 ### First Trading Session: Paper Trading
 Steps:
-- Create a paper session using TradingSession.paper()
+- Create a paper session using TradingSession.paper() (preferred entry point)
 - Create instruments (equity, index, option)
 - Access quotes and history
 - Place orders and inspect orderbook/tradebook
@@ -190,7 +192,7 @@ Example flow references:
 
 ### First Trading Session: Live Trading (Dhan)
 Steps:
-- Create a live session using TradingSession.connect("dhan")
+- Create a live session using TradingSession.connect("dhan") (preferred entry point)
 - Ensure environment variables are set and token is valid
 - Create instruments and fetch quotes/history
 - Subscribe to market data streams and place orders
@@ -259,10 +261,11 @@ Dhan-specific behaviors:
 - [ntrade/brokers/dhan.py:380-414](file://ntrade/brokers/dhan.py#L380-L414)
 
 ### Running a Strategy Through the Kernel
-- Use TradingKernel with a chosen clock (LiveClock/ReplayClock/SimulationClock)
+- Use TradingKernel with a chosen clock (LiveClock/ReplayClock/SimulationClock); for crash safety use ResilientKernel over the EventStore.
 - Register instruments and strategies
 - Feed data via SimulatedFeedSource (historical) or DhanMarketFeedSource (live)
 - Observe canonical events (TickEvent, QuoteUpdatedEvent, CandleClosedEvent, IndicatorUpdatedEvent, SignalGeneratedEvent, OrderFilledEvent)
+- LiveRunner handles orchestration with a feed watchdog and fail-closed kill switch
 
 Example script demonstrates EMA crossover strategy on historical data.
 
@@ -270,8 +273,10 @@ Example script demonstrates EMA crossover strategy on historical data.
 - [scripts/ema_cross_run.py:1-87](file://scripts/ema_cross_run.py#L1-L87)
 
 ### Live Runner Orchestration
+- LiveRunner orchestration harness with watchdog and fail-closed kill switch
 - LiveRunner starts kernel and feed, polls orders and syncs positions
 - Supports synth mode (offline rehearsal using historical data extrapolated to ticks) and live mode (real-time websocket)
+- Feed watchdog monitors tick velocity and trips RiskEngine.halt() (fail-closed) on frozen feeds
 - Publishes lifecycle events and summary statistics
 
 **Section sources**

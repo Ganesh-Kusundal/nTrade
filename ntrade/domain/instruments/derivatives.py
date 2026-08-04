@@ -197,16 +197,23 @@ class Option(Instrument):
             return "ITM" if s > self.strike else ("ATM" if abs(s - self.strike) / s < 0.005 else "OTM")
         return "ITM" if s < self.strike else ("ATM" if abs(s - self.strike) / s < 0.005 else "OTM")
 
-    def black_scholes(self, spot: float, risk_free: float = 0.065, sigma: float | None = None) -> float:
-        """Theoretical price using Black-Scholes."""
+    def black_scholes(self, spot: float, risk_free: float = 0.065, sigma: float | None = None,
+                      *, now: "date | datetime | None" = None) -> float:
+        """Theoretical price using Black-Scholes.
+
+        ``now`` (M-3): replay sessions inject the session date so pricing is
+        deterministic; ``None`` keeps the wall clock for live/standalone use.
+        """
         from ntrade.domain.analytics.greeks import BlackScholes
         sigma = sigma if sigma is not None else (self.iv or 0.15)
-        t = self._years_to_expiry()
+        t = self._years_to_expiry(now)
         return BlackScholes.price(spot, self.strike, t, risk_free, sigma, self.option_type)
 
-    def implied_volatility(self, market_price: float, spot: float, risk_free: float = 0.065) -> float:
+    def implied_volatility(self, market_price: float, spot: float, risk_free: float = 0.065,
+                           *, now: "date | datetime | None" = None) -> float:
         from ntrade.domain.analytics.greeks import BlackScholes
-        return BlackScholes.implied_volatility(market_price, spot, self.strike, self._years_to_expiry(), risk_free, self.option_type)
+        return BlackScholes.implied_volatility(market_price, spot, self.strike,
+                                               self._years_to_expiry(now), risk_free, self.option_type)
 
     def payoff(self, spot: float, premium: float | None = None) -> float:
         p = premium if premium is not None else self._quote.ltp
@@ -217,8 +224,13 @@ class Option(Instrument):
         buy = buy_price if buy_price is not None else self._quote.ltp
         return round((self._quote.ltp - buy) * (self.lot_size or 1), 2)
 
-    def _years_to_expiry(self) -> float:
-        now = datetime.now().date()
+    def _years_to_expiry(self, now: "date | datetime | None" = None) -> float:
+        # M-3: ``now`` is injectable so replay analytics follow session time;
+        # None preserves the wall-clock default for live/standalone callers.
+        if now is None:
+            now = datetime.now()
+        if isinstance(now, datetime):
+            now = now.date()
         delta = (self.expiry - now).days
         return max(delta / 365.0, 1 / 365.0)
 

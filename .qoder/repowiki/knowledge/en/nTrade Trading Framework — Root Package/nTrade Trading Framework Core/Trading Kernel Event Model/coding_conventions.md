@@ -1,5 +1,0 @@
-- Every event is a frozen, keyword-only dataclass that subclasses `Event`, inheriting `ts` and `event_id` fields.
-- Optional numeric fields default to zero (`0` or `0.0`) and optional string fields default to empty strings, keeping events serializable and safe to compare.
-- Each event carries `symbol` and `exchange` identifiers so downstream consumers can route by instrument without extra metadata.
-- Events are grouped by domain into separate files (`market.py`, `order.py`, `portfolio.py`, `risk.py`, `lifecycle.py`) and re-exported through the package `__init__.py` `__all__` list.
-- Timestamps are always injected from an external `TradingClock` rather than calling `datetime.now()`, ensuring deterministic replay across backtest, replay, and live modes.

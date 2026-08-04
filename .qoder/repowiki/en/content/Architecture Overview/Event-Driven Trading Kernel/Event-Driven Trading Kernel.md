@@ -32,7 +32,7 @@
 9. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains nTrade’s event-driven trading kernel architecture with a focus on the EventBus publish-subscribe system, the TradingClock abstraction for time control across live, replay, and backtest modes, and the TradingContext that maintains session state and configuration. It also documents the event type hierarchy (base Event through market, order, portfolio, lifecycle, and risk events), shows concrete publishing and subscription patterns, and outlines error handling strategies. Finally, it describes how the kernel coordinates subsystems while maintaining zero parity across execution modes and addresses performance considerations such as async processing, memory management, and ordering guarantees.
+This document explains nTrade's event-driven trading kernel architecture with a focus on the EventBus publish-subscribe system, the TradingClock abstraction for time control across live, replay, and backtest modes, and the TradingContext that maintains session state and configuration. It also documents the event type hierarchy (base Event through market, order, portfolio, lifecycle, and risk events), the OMS state machine with partial-safe fills and orphan adoption, the LiveRunner orchestration harness and its event subscriptions (fail-closed feed watchdog, cancel-only order timeouts, kill-switch on risk halt), the infrastructure resilience layer (BrokerRateGate, RetryPolicy, PositionSyncEngine), and how the kernel coordinates subsystems while maintaining zero parity across execution modes. Finally, it addresses performance considerations such as async processing, memory management, ordering guarantees, and rate-gate telemetry.
 
 ## Project Structure
 The kernel is organized around a small set of core modules:
@@ -40,8 +40,10 @@ The kernel is organized around a small set of core modules:
 - EventBus: synchronous, thread-safe pub/sub dispatcher
 - TradingClock: abstract clock with live/replay/simulation implementations
 - TradingContext: shared mutable state protected by a reentrant lock
-- Engines: MarketEngine, OrderEngine, StrategyEngine, RiskEngine, PortfolioEngine, CandleEngine, IndicatorEngine
-- Orchestration: TradingKernel wires engines and execution targets; TradingSession provides a unified API; StrategyRunner manages multiple strategies and per-strategy risk
+- Engines: MarketEngine, CandleEngine, IndicatorEngine, StrategyEngine, RiskEngine, PortfolioEngine, PositionSyncEngine, OrderEngine (OMS)
+- Execution: ExecutionRouter → BrokerExecution / SimulatedExecution; EventStore for append-only event recording and crash recovery
+- Orchestration: TradingKernel wires engines and execution targets; TradingSession provides a unified API; StrategyRunner manages multiple strategies and per-strategy risk; LiveRunner drives the live loop (poll_orders, sync_positions, kill-switch, feed watchdog)
+- Resilience: BrokerRateGate / RetryPolicy for rate limiting and resilience infrastructure
 
 ```mermaid
 graph TB
@@ -60,17 +62,25 @@ risk["Risk Events"]
 end
 subgraph "Engines"
 me["MarketEngine"]
-oe["OrderEngine"]
+oe["OrderEngine (OMS)"]
 se["StrategyEngine"]
 re["RiskEngine"]
 pe["PortfolioEngine"]
 ce["CandleEngine"]
 ie["IndicatorEngine"]
+ps["PositionSyncEngine"]
 end
 subgraph "Orchestration"
 tk["TradingKernel"]
 ts["TradingSession"]
 sr["StrategyRunner"]
+lr["LiveRunner"]
+end
+subgraph "Execution"
+br["BrokerExecution"]
+sim["SimulatedExecution"]
+rt["ExecutionRouter"]
+st["EventStore"]
 end
 base --> mkt
 base --> ord
@@ -78,7 +88,7 @@ base --> port
 base --> life
 base --> risk
 bus < --> me
-bus < --> oe
+bus <--> oe
 bus < --> se
 bus < --> re
 bus < --> pe
@@ -94,8 +104,14 @@ tk --> re
 tk --> pe
 tk --> ce
 tk --> ie
+tk --> ps
+tk --> st
+tk --> rt
+rt --> br
+rt --> sim
 ts --> tk
 sr --> tk
+lr --> tk
 ```
 
 **Diagram sources**
@@ -111,6 +127,9 @@ sr --> tk
 - [session.py](file://ntrade/kernel/session.py)
 - [trading_session.py](file://ntrade/kernel/trading_session.py)
 - [runner.py](file://ntrade/kernel/runner.py)
+- [live_runner.py](file://ntrade/runner/live_runner.py)
+- [broker_executor.py](file://ntrade/execution/broker_executor.py)
+- [event_store.py](file://ntrade/storage/event_store.py)
 - [market_engine.py](file://ntrade/engines/market_engine.py)
 - [order_engine.py](file://ntrade/engines/order_engine.py)
 
@@ -120,11 +139,14 @@ sr --> tk
 - [runner.py](file://ntrade/kernel/runner.py)
 
 ## Core Components
-- EventBus: Synchronous, thread-safe publish-subscribe bus with MRO-based dispatch, bounded history, and exception isolation for handlers.
-- TradingClock: Abstract clock interface with LiveClock (wall time), ReplayClock (deterministic time from events), and SimulationClock (speed scaling).
-- TradingContext: Shared session state including bus, clock, instruments, portfolio, account, and a reentrant lock for safe concurrent access.
-- Event Hierarchy: Base Event with timestamped, immutable dataclasses for market, order, portfolio, lifecycle, and risk domains.
-- Orchestration: TradingKernel wires engines and execution targets; TradingSession provides a unified entry point; StrategyRunner manages multi-strategy lifecycle and scoped risk.
+- **EventBus**: Synchronous, thread-safe publish-subscribe bus with MRO-based dispatch, bounded history, and exception isolation for handlers.
+- **TradingClock**: Abstract clock interface with LiveClock (wall time), ReplayClock (deterministic time from events), and SimulationClock (speed scaling).
+- **TradingContext**: Shared session state including bus, clock, instruments, portfolio, account, and a reentrant lock for safe concurrent access.
+- **Event Hierarchy**: Base Event with timestamped, immutable dataclasses for market, order, portfolio, lifecycle, and risk domains.
+- **Orchestration**: TradingKernel wires engines and execution targets; TradingSession provides a unified entry point; StrategyRunner manages multi-strategy lifecycle and scoped risk; LiveRunner drives the live trading loop (poll/sync, kill-switch, feed watchdog, heartbeat).
+- **OMS (Order Management)**: OrderEngine materialises `OrderIntentEvent` into `OrderAcceptedEvent`/`OrderFilledEvent`/`OrderRejectedEvent`/`OrderUpdatedEvent`/`OrderTimeoutEvent`; BrokerExecution routes intents to the broker adapter, polls open orders, adopts orphans via `reconcile_open()`, and restores via `restore_open()` on crash recovery.
+- **PositionSyncEngine**: Reconciles broker-reported positions/balance into the kernel; failure-safe (keeps previous state on error); `get_positions()`/`get_balance()` raise on transport failure to distinguish "flat" from "error".
+- **Resilience**: BrokerRateGate (single choke point for all outbound REST calls with 4 quota classes), RetryPolicy (never retries DH-904/RateLimited), EventStore (append-only audit + recovery).
 
 **Section sources**
 - [event_bus.py](file://ntrade/kernel/event_bus.py)
@@ -139,6 +161,12 @@ sr --> tk
 - [session.py](file://ntrade/kernel/session.py)
 - [trading_session.py](file://ntrade/kernel/trading_session.py)
 - [runner.py](file://ntrade/kernel/runner.py)
+- [live_runner.py](file://ntrade/runner/live_runner.py)
+- [broker_executor.py](file://ntrade/execution/broker_executor.py)
+- [position_sync.py](file://ntrade/engines/position_sync.py)
+- [event_store.py](file://ntrade/storage/event_store.py)
+- [rate_limit.py](file://ntrade/execution/rate_limit.py)
+- [retry.py](file://ntrade/execution/retry.py)
 
 ## Architecture Overview
 The kernel uses an event-driven pipeline where raw market data flows into normalized instrument state, then to strategy signals, risk checks, order materialization, and execution. The same pipeline runs identically in live, replay, and backtest modes because all timestamps come from the TradingClock and the bus serializes dispatch.
@@ -150,9 +178,10 @@ participant Bus as "EventBus"
 participant ME as "MarketEngine"
 participant SE as "StrategyEngine"
 participant RE as "RiskEngine"
-participant OE as "OrderEngine"
+participant OE as "OrderEngine (OMS)"
 participant Router as "ExecutionRouter"
 participant Exec as "BrokerExecution / SimulatedExecution"
+participant Store as "EventStore"
 Source->>Bus : Publish TickEvent/QuoteEvent/DepthEvent
 Bus-->>ME : Dispatch to on_tick/on_quote/on_depth
 ME->>ME : Update Instrument state
@@ -166,7 +195,8 @@ Bus-->>OE : Materialize intent
 OE->>Bus : Publish OrderIntentEvent
 OE->>Router : submit(intent)
 Router-->>Exec : Forward to target
-Exec-->>Bus : Publish OrderAccepted/Rejected/Filled/Updated
+Exec-->>Bus : Publish OrderAccepted/Rejected/Filled/Updated/Timeout
+Bus->>Store : Record (audit + recovery)
 else Rejected
 RE->>Bus : Publish SignalRejectedEvent
 end
@@ -175,6 +205,8 @@ end
 **Diagram sources**
 - [market_engine.py](file://ntrade/engines/market_engine.py)
 - [order_engine.py](file://ntrade/engines/order_engine.py)
+- [broker_executor.py](file://ntrade/execution/broker_executor.py)
+- [event_store.py](file://ntrade/storage/event_store.py)
 - [session.py](file://ntrade/kernel/session.py)
 - [event_bus.py](file://ntrade/kernel/event_bus.py)
 
@@ -519,18 +551,24 @@ Event <|-- RiskResumedEvent
 - [lifecycle.py](file://ntrade/events/lifecycle.py)
 - [risk.py](file://ntrade/events/risk.py)
 
-### Orchestration: TradingKernel, TradingSession, StrategyRunner
-- TradingKernel:
-  - Wires engine stack (MarketEngine, CandleEngine, IndicatorEngine, StrategyEngine, RiskEngine, PortfolioEngine).
+### Orchestration: TradingKernel, TradingSession, StrategyRunner, LiveRunner
+- **TradingKernel**:
+  - Wires engine stack (MarketEngine, CandleEngine, IndicatorEngine, StrategyEngine, RiskEngine, PortfolioEngine, PositionSyncEngine).
   - Configures execution target (BrokerExecution or SimulatedExecution) via ExecutionRouter.
-  - Provides start/stop, broker execution helpers, and run_replay for deterministic execution.
-- TradingSession:
+  - Provides start/stop, `poll_orders()` (refresh open orders, publish fills/rejections), `sync_positions()` (reconcile broker positions), `open_orders()`, `modify_order()`, `cancel_order()` passthroughs (no-ops in sim mode), and `run_replay` for deterministic execution.
+  - `broker_adapter` (not `_broker`) is the property instruments expose for broker transport access.
+- **TradingSession**:
   - Unified entry point combining broker connection, instrument creation, kernel, and strategy runner.
   - Supports connect(), paper(), replay() constructors for different modes.
-- StrategyRunner:
+- **StrategyRunner**:
   - Manages multiple strategies with per-strategy RiskEngine scoping.
   - Hot attach/detach strategies and toggle enabled state.
   - Pauses global risk engine during takeover and restores on release.
+- **LiveRunner**:
+  - Drives the live trading loop: `step()` calls `kernel.poll_orders()` and `kernel.sync_positions()` on interval, runs the feed watchdog (fail-closed: frozen feed → `RiskEngine.halt()` → `RiskHaltedEvent`), and emits periodic `HeartbeatEvent`.
+  - Subscribes to `FeedDisconnectedEvent` (→ `_halt_risk`, fail-closed), `OrderTimeoutEvent` (only cancels the stale order — does NOT trip the kill-switch, by contract), `HeartbeatEvent`, `RiskHaltedEvent`/`RiskResumedEvent` (drives `instrument.broker.kill_switch(action="ACTIVATE"/"DEACTIVATE")`).
+  - `_cancel_resting_orders()` cancels every tracked open order on stop (opt-out via `cancel_on_stop=False`); `reconcile_open()` is called every poll cycle to adopt orphan orders (C-4).
+  - Time is injectable (`_timer`/`_sleep`) so the loop is unit-testable without wall-clock waits. Publishes `RunnerStartedEvent`/`RunnerStoppedEvent`.
 
 ```mermaid
 sequenceDiagram
@@ -572,12 +610,41 @@ end
 - [session.py](file://ntrade/kernel/session.py)
 - [trading_session.py](file://ntrade/kernel/trading_session.py)
 - [runner.py](file://ntrade/kernel/runner.py)
+- [live_runner.py](file://ntrade/runner/live_runner.py)
+- [broker_executor.py](file://ntrade/execution/broker_executor.py)
+
+### OMS: Order State Machine and LiveRunner Event Contracts
+
+**Order lifecycle (BrokerExecution)**:
+- `submit(intent)` places the order, publishes `OrderAcceptedEvent` immediately, and tracks the open order. Synchronous brokers (PaperBroker) emit fills straight from `submit()`; async brokers (DhanBroker) track the order in `_open` and emit fills via `poll()`.
+- `poll()` refreshes open orders from the broker and publishes `OrderUpdatedEvent` whenever an order's status changes between polls (PENDING → PARTIALLY_FILLED → COMPLETED / CANCELLED / REJECTED). Fills are **partial-safe and idempotent**: `poll()` emits only the newly-filled delta (a PARTIAL → COMPLETE transition emits the remaining delta, never re-emitting already-filled shares). A partially-filled order that is later rejected/cancelled keeps its filled shares as a fill and rejects only the remainder.
+- **BRK- fallback ids**: orders with a missing broker id get a local `BRK-000001` fallback so `poll()` can always correlate. The sequence is bumped past any recovered `BRK-` ids during crash recovery to prevent collisions.
+- **`reconcile_open()`**: Adopts broker-side orphan orders unknown to the tracker (C-4) — diffs the broker order book against `_open` and tracks any new non-terminal orders. Called every `LiveRunner.step()` cycle; `RateLimited` propagates (retries next cycle); other exceptions are logged but never kill the loop.
+- **`restore_open(deltas)`**: Rehydrates the in-memory `_open` map from `EventStore.open_order_deltas()` during `ResilientKernel.recover()` (H3), so a partially-filled order's remaining quantity survives a crash.
+
+**PositionSyncEngine** (`kernel.sync_positions()`):
+- Reconciles broker-reported positions/balance into the kernel's read models, publishing `PositionUpdatedEvent` / `BalanceChangedEvent` (same canonical events as an internal fill).
+- **Failure-safe**: a failed fetch keeps the previous state (never wipes positions or zeroes the balance). `get_positions()` / `get_balance()` raise on transport failure so "flat" is distinguishable from "error".
+
+**LiveRunner event contracts** (validated by `tests/test_contract_live_consumers.py`):
+- `FeedDisconnectedEvent` → `_halt_risk` (fail-closed through `RiskEngine.halt()`).
+- `OrderTimeoutEvent` → cancel the stale order **only** — does NOT trip the kill switch.
+- `RiskHaltedEvent` → `instrument.broker.kill_switch(action="ACTIVATE")` on every broker-backed instrument.
+- `RiskResumedEvent` → `kill_switch(action="DEACTIVATE")`.
+- `HeartbeatEvent` → logged (proves the kernel is alive).
+- Feed watchdog: wall-clock tick-velocity check; frozen feed (no new ticks for `watchdog_timeout`, default 30s) → `RiskEngine.halt()` (fail-closed).
+- `_cancel_resting_orders()` on stop: cancels every tracked open order (opt-out via `cancel_on_stop=False`, logged).
+
+**Resilience infrastructure**:
+- `BrokerRateGate`: single choke point, 4 quota classes, `penalize()` on DH-904, `status()` telemetry for pre-deploy quota-headroom report.
+- `RetryPolicy`: exponential backoff for transient failures; DH-904 never retried (surfaces as `RateLimited`).
 
 ### Concrete Publishing and Subscription Patterns
-- Example: Subscribing to base Event to record all events for replay/audit.
+- Example: Subscribing to base Event to record all events for replay/audit (EventStore).
 - Example: Subscribing to specific market events (TickEvent, QuoteEvent, DepthEvent) to update instrument state.
 - Example: Subscribing to risk events (SignalGeneratedEvent) to enforce per-strategy limits.
 - Example: Subscribing to lifecycle events (HeartbeatEvent) for health monitoring.
+- Example: LiveRunner subscribes to `FeedDisconnectedEvent` (→ fail-closed halt), `OrderTimeoutEvent` (→ cancel only, no kill-switch), `HeartbeatEvent` (→ logging), `RiskHaltedEvent`/`RiskResumedEvent` (→ kill-switch ACTIVATE/DEACTIVATE). These contracts are validated by `tests/test_contract_live_consumers.py`.
 
 Patterns are validated by tests demonstrating exact and base-type subscriptions, unsubscribe behavior, and exception isolation.
 
@@ -590,29 +657,43 @@ Patterns are validated by tests demonstrating exact and base-type subscriptions,
   - Caught and logged; dispatch continues for remaining handlers.
 - Risk Circuit Breakers:
   - RiskHaltedEvent/RiskResumedEvent signal stop/resume of trading.
+  - LiveRunner reacts to RiskHaltedEvent by activating the broker kill switch; RiskResumedEvent deactivates it.
 - Feed Disconnections:
-  - FeedDisconnectedEvent indicates loss of market feed connectivity.
-- Order Rejections:
+  - FeedDisconnectedEvent indicates loss of market feed connectivity; LiveRunner routes it through `RiskEngine.halt()` (fail-closed).
+- Order Lifecycle:
   - OrderRejectedEvent communicates failures from execution targets.
+  - OrderUpdatedEvent publishes whenever an open order's status changes between polls.
+  - OrderTimeoutEvent fires for PENDING orders exceeding the timeout (5 min default); LiveRunner cancels the stale order only — it does NOT trip the kill switch by contract.
+- Rate Limiting:
+  - DH-904 / Rate_Limit failures surface as the typed `RateLimited` exception (never retried by RetryPolicy) so data reads fail loud instead of silently returning empty/zero.
 
 **Section sources**
 - [event_bus.py](file://ntrade/kernel/event_bus.py)
 - [lifecycle.py](file://ntrade/events/lifecycle.py)
 - [order.py](file://ntrade/events/order.py)
 - [risk.py](file://ntrade/events/risk.py)
+- [live_runner.py](file://ntrade/runner/live_runner.py)
+- [broker_executor.py](file://ntrade/execution/broker_executor.py)
+- [position_sync.py](file://ntrade/engines/position_sync.py)
+- [event_store.py](file://ntrade/storage/event_store.py)
+- [rate_limit.py](file://ntrade/execution/rate_limit.py)
+- [retry.py](file://ntrade/execution/retry.py)
+- [test_contract_live_consumers.py](file://tests/test_contract_live_consumers.py)
 
 ## Dependency Analysis
-The kernel exhibits low coupling between components via the EventBus. Engines depend only on event types and the context, not on each other directly. Execution targets are interchangeable through the router.
+The kernel exhibits low coupling between components via the EventBus. Engines depend only on event types and the context, not on each other directly. Execution targets are interchangeable through the router. The LiveRunner wires the kernel, feed, and broker kill-switch; BrokerExecution routes to the BrokerAdapter; PositionSyncEngine pulls from the broker; EventStore records all events for audit and deterministic replay.
 
 ```mermaid
 graph LR
 bus["EventBus"] --> me["MarketEngine"]
-bus --> oe["OrderEngine"]
+bus --> oe["OrderEngine (OMS)"]
 bus --> se["StrategyEngine"]
 bus --> re["RiskEngine"]
 bus --> pe["PortfolioEngine"]
 bus --> ce["CandleEngine"]
 bus --> ie["IndicatorEngine"]
+bus --> ps["PositionSyncEngine"]
+bus --> store["EventStore"]
 tk["TradingKernel"] --> bus
 tk --> me
 tk --> oe
@@ -621,8 +702,15 @@ tk --> re
 tk --> pe
 tk --> ce
 tk --> ie
+tk --> ps
+tk --> router["ExecutionRouter"]
+router --> br["BrokerExecution"]
+router --> sim["SimulatedExecution"]
+br --> broker["BrokerAdapter"]
 ts["TradingSession"] --> tk
 sr["StrategyRunner"] --> tk
+lr["LiveRunner"] --> tk
+lr --> feed["MarketFeedSource"]
 ```
 
 **Diagram sources**
@@ -637,10 +725,19 @@ sr["StrategyRunner"] --> tk
 - [session.py](file://ntrade/kernel/session.py)
 - [trading_session.py](file://ntrade/kernel/trading_session.py)
 - [runner.py](file://ntrade/kernel/runner.py)
+- [live_runner.py](file://ntrade/runner/live_runner.py)
+- [broker_executor.py](file://ntrade/execution/broker_executor.py)
+- [event_bus.py](file://ntrade/kernel/event_bus.py)
+- [market_engine.py](file://ntrade/engines/market_engine.py)
+- [order_engine.py](file://ntrade/engines/order_engine.py)
 
 ## Performance Considerations
 - Async Event Processing:
   - EventBus is synchronous and serialized per publish call; this avoids race conditions but can become a bottleneck under high throughput. Consider batching or offloading heavy handlers to background workers if needed.
+- LiveRunner Loop:
+  - `step()` is designed for injectable timing (`_timer`/`_sleep`) so it is testable without wall-clock waits; `poll_interval` and `sync_interval` default to 5s and 60s respectively.
+  - The feed watchdog runs every step using a monotonic clock; a frozen feed trips once after `watchdog_timeout` (default 30s) and routes through `RiskEngine.halt()` (fail-closed).
+  - `_reconcile_orphans()` runs every poll cycle but is a no-op for sim/paper targets (no `reconcile_open`).
 - Memory Management:
   - EventBus maintains a bounded deque history; tune max_history to balance replay needs vs memory footprint.
   - Events are frozen dataclasses, minimizing mutation overhead and enabling hashing for deduplication or caching.
@@ -650,6 +747,7 @@ sr["StrategyRunner"] --> tk
 - Zero Parity Across Modes:
   - Deterministic clocks (ReplayClock/SimulationClock) ensure identical decisions given the same event stream.
   - Broker adapters should respect the injected clock to maintain timestamp consistency.
+  - Broker rate limiting (BrokerRateGate) is injectable (clock/sleep) for deterministic tests; paper/sim targets run unthrottled.
 
 [No sources needed since this section provides general guidance]
 
@@ -664,14 +762,24 @@ sr["StrategyRunner"] --> tk
   - Use instruments_deep_snapshot for internally consistent reads under the context lock.
 - Symptoms: Missing fills or rejections
   - Inspect OrderRejectedEvent and OrderUpdatedEvent payloads for reasons and status changes.
+  - Check that partial fills are idempotent: a PARTIAL → COMPLETE transition emits the filled delta only, never re-emitting already-filled shares.
 - Symptoms: Risk circuit breaker tripping
   - Review RiskHaltedEvent reason and equity levels; adjust risk limits accordingly.
+  - Note: OrderTimeoutEvent only cancels the stale order — it does NOT trip the kill switch (see tests/test_contract_live_consumers.py).
+- Symptoms: Kill switch not activating
+  - Verify RiskHaltedEvent is published (LiveRunner reacts to it); check `instrument.broker.kill_switch(action="ACTIVATE")` is supported by the broker.
+  - Note: FeedDisconnectedEvent routes through RiskEngine.halt() (fail-closed) — if no risk engine, a latched direct publish is the fallback.
+- Symptoms: Positions not reconciling
+  - `get_positions()` / `get_balance()` now raise on transport failure (not `[]` / `0.0`); PositionSyncEngine keeps the previous state on error (failure-safe).
 
 **Section sources**
 - [event_bus.py](file://ntrade/kernel/event_bus.py)
 - [context.py](file://ntrade/kernel/context.py)
 - [order.py](file://ntrade/events/order.py)
 - [risk.py](file://ntrade/events/risk.py)
+- [live_runner.py](file://ntrade/runner/live_runner.py)
+- [broker_executor.py](file://ntrade/execution/broker_executor.py)
+- [position_sync.py](file://ntrade/engines/position_sync.py)
 
 ## Conclusion
-nTrade’s event-driven kernel achieves robust, decoupled communication through a disciplined EventBus, deterministic time via TradingClock, and thread-safe state management with TradingContext. The event hierarchy cleanly separates concerns across market, order, portfolio, lifecycle, and risk domains. The orchestration layer ensures zero parity across live, replay, and backtest modes by standardizing timestamps and event flows. With careful attention to performance—bounded history, serialization, and locking—the kernel remains reliable and scalable for production trading systems.
+nTrade's event-driven kernel achieves robust, decoupled communication through a disciplined EventBus, deterministic time via TradingClock, and thread-safe state management with TradingContext. The event hierarchy cleanly separates concerns across market, order, portfolio, lifecycle, and risk domains. The OMS (OrderEngine + BrokerExecution) provides partial-safe fills, `OrderUpdatedEvent` on status changes, orphan adoption via `reconcile_open()`, and crash-recovery via `restore_open()`. The LiveRunner orchestration harness closes the operational loop with a fail-closed feed watchdog, cancel-only order timeouts (no kill-switch), and a kill-switch triggered by `RiskHaltedEvent`. The `BrokerRateGate` is the single choke point for all outbound broker REST calls with four quota classes and DH-904 surfaced as `RateLimited` (never retried). The orchestration layer ensures zero parity across live, replay, and backtest modes by standardizing timestamps and event flows. With careful attention to performance — bounded history, serialization, locking, and injectable rate-gate timing — the kernel remains reliable and scalable for production trading systems.

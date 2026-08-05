@@ -77,8 +77,10 @@ class EventBus:
                         except Exception:
                             self._handler_errors += 1
                             _logger.error(
-                                "handler %s raised on %s (error #%d)",
-                                handler, type(event).__name__, self._handler_errors,
+                                "handler %s raised on %s correlation_id=%s (error #%d)",
+                                handler, type(event).__name__,
+                                getattr(event, 'correlation_id', None),
+                                self._handler_errors,
                                 exc_info=True,
                             )
                             if (

@@ -15,6 +15,8 @@ synchronously (e.g. PaperBroker) emits the fill straight from ``submit()``.
 from __future__ import annotations
 
 import logging
+import threading
+from typing import Any  # noqa: F401 — kept for type-checking idempotency_guard param
 
 from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
 from ntrade.events.order import (
@@ -33,6 +35,15 @@ from ntrade.execution.costs import (
     resolve_statutory,
 )
 from ntrade.execution.rate_limit import RateLimited
+
+# Local implementations of v3 patterns — no external dependency.
+from ntrade.execution._guard import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CorrelationId,
+    MemoryIdempotencyGuard,
+)
+from ntrade.domain.constants import CIRCUIT_COOLDOWN_S, CIRCUIT_FAILURE_THRESHOLD
 
 logger = logging.getLogger("ntrade.execution")
 
@@ -58,7 +69,10 @@ class BrokerExecution:
 
     def __init__(self, context, broker, *,
                  commission: CommissionModel | None = None,
-                 statutory=STATUTORY_DEFAULT):
+                 statutory=STATUTORY_DEFAULT,
+                 idempotency_guard: "Any | None" = None,
+                 circuit_breaker: "CircuitBreaker | None" = None,
+                 stale_limit: int = 10):
         self.ctx = context
         self.broker = broker
         self.commission = commission or FlatCommission(0.0)
@@ -67,11 +81,34 @@ class BrokerExecution:
         self._seq = 0
         # order_id -> {"intent": ..., "order": ..., "filled": int}
         self._open: dict[str, dict] = {}
-        self._stale_limit = 10  # max consecutive status-refresh failures before eviction
+        self._stale_limit = stale_limit  # max consecutive failures before eviction
+        # Idempotency guard prevents duplicate submissions on network failure
+        # after exchange acceptance (critical for real-money safety).
+        self._idem = idempotency_guard or MemoryIdempotencyGuard()
+        # Circuit breaker prevents hammering a down broker and stops
+        # _stale_limit from evicting tracked orders during systemic outages.
+        # Threshold is set well above _stale_limit so per-order stale eviction
+        # (which is order-granular) fires before the global circuit trips —
+        # the circuit is for systematic broker outages, not individual
+        # transport errors on a single order.
+        self._breaker_lock = threading.RLock()
+        self._breaker = circuit_breaker or CircuitBreaker(
+            CircuitBreakerConfig(
+                failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+                cooldown_seconds=CIRCUIT_COOLDOWN_S,
+            ),
+            send=self._noop_poll,
+        )
 
     # ------------------------------------------------------------- submission
     def submit(self, intent: OrderIntentEvent) -> OrderRejectedEvent | None:
-        """Place the order; publish accepted immediately, fill if synchronous."""
+        """Place the order; publish accepted immediately, fill if synchronous.
+
+        Idempotency: every intent carries a correlation_id (assigned by EventBus
+        if absent). We check-and-reserve it BEFORE crossing the venue boundary
+        so a network drop after exchange acceptance cannot produce a duplicate
+        real-money submission on retry.
+        """
         instrument = self.ctx.instrument(intent.symbol)
         if instrument is None or instrument.broker_adapter is None:
             return OrderRejectedEvent(
@@ -79,22 +116,27 @@ class BrokerExecution:
                 quantity=intent.quantity, reason="no broker-backed instrument",
                 strategy=intent.strategy, ts=intent.ts,
             )
+        # Idempotency: dedup by correlation_id. If already completed, return
+        # the recorded receipt (no broker call). If reserved by a prior in-flight
+        # attempt, that's a logic bug — raise rather than risk a duplicate.
+        corr = intent.correlation_id or intent.event_id
+        corr_id = CorrelationId(value=corr)
+        prior = self._idem.check_and_reserve(corr_id)
+        if prior is not None:
+            logger.debug("idempotency_dedup order_id=%s corr=%s", prior, corr)
+            return None  # already accepted; the original OrderAcceptedEvent was published
         try:
-            # trade_type omitted: OrderFacade.place applies the K-024 default
-            # (CNC delivery for equity/ETF, MIS for derivatives) — forcing MIS
-            # here turned every kernel-routed equity order intraday.
             order = instrument.order.place(
                 intent.side, intent.quantity,
                 order_type=OrderType(intent.order_type.upper()),
                 price=intent.price,
             )
-        except Exception as exc:  # broker rejection surfaces as an exception
-            # Ambiguous failure: the exchange may have accepted the order
-            # before the transport died. The next reconcile_open() adopts any
-            # orphaned broker-side order, so nothing is silently lost.
+        except Exception as exc:
+            # Deterministic failure: exchange rejected before accepting.
+            # Safe to release the idempotency key so a corrected retry can proceed.
+            self._idem.release(corr_id)
             logger.warning(
-                "order placement failed for %s %s x%d: %s — if the exchange "
-                "accepted it, reconcile_open() will adopt the orphan",
+                "order placement failed for %s %s x%d: %s",
                 intent.side, intent.symbol, intent.quantity, exc,
             )
             return OrderRejectedEvent(
@@ -102,13 +144,12 @@ class BrokerExecution:
                 quantity=intent.quantity, reason=str(exc),
                 strategy=intent.strategy, ts=intent.ts,
             )
+        # Order was accepted by the venue — record the idempotency result.
         order_id = str(order.order_id) if order.order_id else ""
         if not order_id or order_id == "None":
-            # Some brokers turn a missing id into the string "None"; allocate a
-            # fresh BRK- id that never collides with an existing open order, so
-            # two orders can never merge under one key (M2).
             order_id = self._next_brk_id()
         order.order_id = order_id  # the tracked order must carry its key for poll()
+        self._idem.record_result(corr_id, order_id)
         self.ctx.bus.publish(OrderAcceptedEvent(
             order_id=order_id, symbol=intent.symbol, exchange=intent.exchange,
             side=intent.side, quantity=intent.quantity, strategy=intent.strategy, ts=intent.ts,
@@ -116,19 +157,30 @@ class BrokerExecution:
         if order.is_filled:  # synchronous broker (PaperBroker / instant fill)
             self._emit_fill(order_id, intent, order)
         else:
-            self._open[order_id] = {"intent": intent, "order": order, "filled": 0,
-                                    "status": order.status, "placed_at": self.ctx.now()}
+            with self._breaker_lock:
+                self._open[order_id] = {"intent": intent, "order": order, "filled": 0,
+                                        "status": order.status, "placed_at": self.ctx.now()}
         return None
 
     def _next_brk_id(self) -> str:
         """A unique ``BRK-`` fallback id (never collides with open orders)."""
-        while True:
-            self._seq += 1
-            candidate = f"BRK-{self._seq:06d}"
-            if candidate not in self._open:
-                return candidate
+        with self._breaker_lock:
+            while True:
+                self._seq += 1
+                candidate = f"BRK-{self._seq:06d}"
+                if candidate not in self._open:
+                    return candidate
 
     # --------------------------------------------------------- lifecycle poll
+    def _noop_poll(self, *args, **kwargs) -> tuple[int, object]:
+        """Sentinel send callable for the circuit breaker.
+
+        The breaker's ``request()`` is not used directly; ``poll()`` calls the
+        broker and manages breaker state via ``_on_success()``/``_on_failure()``
+        so it can also handle RateLimited distinctly.
+        """
+        return 200, None
+
     def poll(self) -> list:
         """Refresh open orders and publish fills/rejections as the broker reports.
 
@@ -136,27 +188,65 @@ class BrokerExecution:
         Idempotent: an order already terminal emits nothing on later polls; a
         partial fill is surfaced as its filled quantity and never re-emitted.
         OrderUpdatedEvent is published whenever an order's status changes.
+
+        Circuit breaker: when the broker circuit is open, polling is skipped
+        (no broker call), but stale failures still accumulate toward
+        _stale_limit so genuinely lost orders are eventually evicted.
         """
+        # Snapshot the order ids under lock so concurrent submit() can't
+        # mutate _open during iteration.
         emitted = []
-        for order_id in list(self._open):
-            record = self._open[order_id]
-            order = record["order"]
+        with self._breaker_lock:
+            order_ids = list(self._open)
+        for order_id in order_ids:
+            with self._breaker_lock:
+                record = self._open.get(order_id)
+                if record is None:
+                    continue
+                order = record["order"]
+                # Check circuit state before calling the broker.
+                circuit_open = self._breaker.state.value == "OPEN"
+            if circuit_open:
+                # Broker is in a systemic outage — the circuit breaker prevents
+                # calls to the broker. Still count stale failures so genuinely
+                # lost orders are eventually evicted (the circuit may recover
+                # but this order may not exist at the venue).
+                with self._breaker_lock:
+                    record["stale"] = record.get("stale", 0) + 1
+                    if record["stale"] >= self._stale_limit:
+                        logger.warning(
+                            "order %s stale after %d polls — evicting",
+                            order_id, self._stale_limit,
+                        )
+                        del self._open[order_id]
+                continue
             try:
+                # Direct broker call — NOT through circuit_breaker.request()
+                # because get_order_status mutates the Order in place (not
+                # (status, body) return). Breaker state is managed manually.
                 self.broker.get_order_status(order)
-                record["stale"] = 0  # reset on success
+                self._breaker._on_success()
+                with self._breaker_lock:
+                    record["stale"] = 0  # reset on success
             except RateLimited:
                 # Quota backoff is NOT staleness (H-5): leave the record
                 # untouched and retry on the next poll — penalizing DH-904
                 # with eviction dropped tracked orders under rate pressure.
                 continue
             except Exception:
-                record["stale"] = record.get("stale", 0) + 1
-                if record["stale"] >= self._stale_limit:
-                    logger.warning(
-                        "order %s stale after %d polls — evicting",
-                        order_id, self._stale_limit,
-                    )
-                    del self._open[order_id]
+                # Transport error (not rate limit, not circuit open):
+                # count as circuit failure + stale. When failures accumulate
+                # past the threshold, the circuit breaker trips and subsequent
+                # polls take the circuit-open path above.
+                self._breaker._on_failure()
+                with self._breaker_lock:
+                    record["stale"] = record.get("stale", 0) + 1
+                    if record["stale"] >= self._stale_limit:
+                        logger.warning(
+                            "order %s stale after %d polls — evicting",
+                            order_id, self._stale_limit,
+                        )
+                        del self._open[order_id]
                 continue
             # Timeout detection: PENDING orders older than threshold
             placed_at = record.get("placed_at")
@@ -171,7 +261,8 @@ class BrokerExecution:
                         strategy=record["intent"].strategy, ts=self.ctx.now(),
                     ))
             if order.status != record["status"]:
-                record["status"] = order.status
+                with self._breaker_lock:
+                    record["status"] = order.status
                 self.ctx.bus.publish(OrderUpdatedEvent(
                     order_id=order_id, symbol=record["intent"].symbol,
                     exchange=record["intent"].exchange, side=record["intent"].side,
@@ -182,7 +273,8 @@ class BrokerExecution:
             self._emit_fill(order_id, record["intent"], order, emitted)
             status = order.status
             if status == OrderStatus.COMPLETED:
-                del self._open[order_id]
+                with self._breaker_lock:
+                    self._open.pop(order_id, None)
             elif status in (OrderStatus.REJECTED, OrderStatus.CANCELLED):
                 # a partially-filled order that is then cancelled/rejected has
                 # already had its filled shares emitted; reject only the rest
@@ -196,12 +288,32 @@ class BrokerExecution:
                         strategy=record["intent"].strategy, ts=self.ctx.now(),
                     ))
                     self.ctx.bus.publish(emitted[-1])
-                del self._open[order_id]
+                with self._breaker_lock:
+                    self._open.pop(order_id, None)
         return emitted
 
     def open_orders(self) -> list[str]:
         """Order ids still open (accepted, awaiting broker lifecycle)."""
-        return list(self._open)
+        with self._breaker_lock:
+            return list(self._open)
+
+    def trip_kill_switch(self, reason: str = "") -> None:
+        """Emergency halt: cancel all open orders and trip the circuit breaker.
+
+        This is the runtime kill switch for rogue strategies or broker outages.
+        All tracked open orders are cancelled through the broker; the circuit
+        breaker is forced OPEN so no new submissions can proceed.
+        """
+        logger.warning("kill_switch_activated reason=%s", reason)
+        with self._breaker_lock:
+            open_ids = list(self._open)
+        for order_id in open_ids:
+            try:
+                self.cancel(order_id)
+            except Exception as exc:
+                logger.error("kill_switch_cancel_failed order=%s error=%s", order_id, exc)
+        # Force the circuit breaker open to block all new polls/submits.
+        self._breaker.trip_kill()
 
     # ------------------------------------------------ orphan-order adoption
     def reconcile_open(self) -> list[str]:
@@ -217,9 +329,11 @@ class BrokerExecution:
         """
         book = self.broker.get_orderbook()
         adopted: list[str] = []
+        with self._breaker_lock:
+            existing_ids = set(self._open)
         for entry in book:
             order_id = str(entry.order_id or "")
-            if not order_id or order_id in self._open:
+            if not order_id or order_id in existing_ids:
                 continue
             if entry.status in _TERMINAL_STATUSES:
                 continue
@@ -253,10 +367,11 @@ class BrokerExecution:
                 order_id=order_id, status=status, filled_qty=0,
                 created_at=self.ctx.now(),
             )
-            self._open[order_id] = {
-                "intent": intent, "order": order, "filled": 0,
-                "status": status, "placed_at": self.ctx.now(),
-            }
+            with self._breaker_lock:
+                self._open[order_id] = {
+                    "intent": intent, "order": order, "filled": 0,
+                    "status": status, "placed_at": self.ctx.now(),
+                }
             adopted.append(order_id)
             logger.critical(
                 "adopted orphan broker order %s (%s %s x%d @ %.2f, %s) — "
@@ -281,35 +396,36 @@ class BrokerExecution:
         from ntrade.domain.orders.order import Order, OrderSide, OrderStatus
 
         restored = 0
-        for order_id, delta in deltas.items():
-            if order_id in self._open:
-                continue
-            instrument = self.ctx.instrument(delta["symbol"])
-            if instrument is None:
-                continue
-            intent = OrderIntentEvent(
-                symbol=delta["symbol"], exchange=delta["exchange"],
-                side=delta["side"], quantity=delta["quantity"],
-                strategy=delta["strategy"], ts=delta["placed_at"],
-            )
-            order = Order(
-                instrument=instrument,
-                side=OrderSide(delta["side"].upper()),
-                quantity=delta["quantity"],
-                order_id=order_id,
-                status=OrderStatus(delta["status"]),
-                filled_qty=delta["filled"],
-                created_at=delta["placed_at"],
-            )
-            self._open[order_id] = {
-                "intent": intent, "order": order, "filled": delta["filled"],
-                "status": order.status, "placed_at": delta["placed_at"],
-            }
-            # bump seq past recovered BRK- ids so new orders cannot collide
-            for token in str(order_id).split("-")[-1:]:
-                if token.isdigit() and int(token) > self._seq:
-                    self._seq = int(token)
-            restored += 1
+        with self._breaker_lock:
+            for order_id, delta in deltas.items():
+                if order_id in self._open:
+                    continue
+                instrument = self.ctx.instrument(delta["symbol"])
+                if instrument is None:
+                    continue
+                intent = OrderIntentEvent(
+                    symbol=delta["symbol"], exchange=delta["exchange"],
+                    side=delta["side"], quantity=delta["quantity"],
+                    strategy=delta["strategy"], ts=delta["placed_at"],
+                )
+                order = Order(
+                    instrument=instrument,
+                    side=OrderSide(delta["side"].upper()),
+                    quantity=delta["quantity"],
+                    order_id=order_id,
+                    status=OrderStatus(delta["status"]),
+                    filled_qty=delta["filled"],
+                    created_at=delta["placed_at"],
+                )
+                self._open[order_id] = {
+                    "intent": intent, "order": order, "filled": delta["filled"],
+                    "status": order.status, "placed_at": delta["placed_at"],
+                }
+                # bump seq past recovered BRK- ids so new orders cannot collide
+                for token in str(order_id).split("-")[-1:]:
+                    if token.isdigit() and int(token) > self._seq:
+                        self._seq = int(token)
+                restored += 1
         return restored
 
     # -------------------------------------------------------- OMS operations
@@ -317,19 +433,23 @@ class BrokerExecution:
                quantity: int | None = None, order_type=None,
                trigger_price: float | None = None):
         """Modify an open order through the broker."""
-        record = self._open.get(order_id)
-        if record is None:
-            return None
-        return self.broker.modify_order(record["order"], price=price,
+        with self._breaker_lock:
+            record = self._open.get(order_id)
+            if record is None:
+                return None
+            order = record["order"]
+        return self.broker.modify_order(order, price=price,
                                         quantity=quantity, order_type=order_type,
                                         trigger_price=trigger_price)
 
     def cancel(self, order_id: str):
         """Cancel an open order through the broker."""
-        record = self._open.get(order_id)
-        if record is None:
-            return None
-        return self.broker.cancel_order(record["order"])
+        with self._breaker_lock:
+            record = self._open.get(order_id)
+            if record is None:
+                return None
+            order = record["order"]
+        return self.broker.cancel_order(order)
 
     # ------------------------------------------------------------------ fills
     def _emit_fill(self, order_id: str, intent: OrderIntentEvent,

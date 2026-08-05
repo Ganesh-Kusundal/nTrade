@@ -16,6 +16,10 @@ from ntrade.events.lifecycle import (HeartbeatEvent, FeedDisconnectedEvent,
                                      RunnerStartedEvent, RunnerStoppedEvent)
 from ntrade.events.risk import RiskHaltedEvent, RiskResumedEvent
 from ntrade.execution.rate_limit import RateLimited
+from ntrade.domain.constants import (
+    FEED_WATCHDOG_TIMEOUT_S, HEARTBEAT_INTERVAL_S, POLL_INTERVAL_S,
+    SYNC_INTERVAL_S, WARMUP_TIMEOUT_S,
+)
 
 logger = logging.getLogger("ntrade.runner")
 
@@ -23,10 +27,10 @@ logger = logging.getLogger("ntrade.runner")
 class LiveRunner:
     name = "live-runner"
 
-    def __init__(self, kernel, feed, *, poll_interval: float = 5.0,
-                 sync_interval: float = 60.0, duration: float | None = None,
-                 warmup_timeout: float = 15.0, warmup_min_ticks: int = 1,
-                 watchdog_timeout: float = 30.0, cancel_on_stop: bool = True):
+    def __init__(self, kernel, feed, *, poll_interval: float = POLL_INTERVAL_S,
+                 sync_interval: float = SYNC_INTERVAL_S, duration: float | None = None,
+                 warmup_timeout: float = WARMUP_TIMEOUT_S, warmup_min_ticks: int = 1,
+                 watchdog_timeout: float = FEED_WATCHDOG_TIMEOUT_S, cancel_on_stop: bool = True):
         self.kernel = kernel
         self.feed = feed
         self.poll_interval = float(poll_interval)
@@ -49,7 +53,7 @@ class LiveRunner:
         self._watchdog_max_missed = 3
         self._last_tick_ts: float | None = None
         self._halt_published = False
-        self._heartbeat_interval = 30.0  # seconds between heartbeats
+        self._heartbeat_interval = HEARTBEAT_INTERVAL_S  # seconds between heartbeats
         self._last_heartbeat = 0.0
         self._timer = time.monotonic
         self._sleep = time.sleep
@@ -305,6 +309,20 @@ class LiveRunner:
                         "kill-switch ACTIVATE failed for %s — "
                         "broker may still accept orders",
                         instrument.symbol,
+                    )
+        # Unified kill: also trip BrokerExecution (cancels open orders + opens
+        # the circuit breaker) so the two kill mechanisms are not disconnected.
+        broker_exec = getattr(self.kernel, "broker_execution", None)
+        if broker_exec is not None:
+            target = broker_exec() if callable(broker_exec) else broker_exec
+            if target is not None:
+                try:
+                    target.trip_kill_switch(reason=event.reason)
+                except Exception:
+                    self.kill_switch_failed = True
+                    self.logger.critical(
+                        "kill-switch trip_kill_switch failed on "
+                        "BrokerExecution — broker may still accept orders",
                     )
 
     def _on_risk_resumed(self, event: RiskResumedEvent) -> None:

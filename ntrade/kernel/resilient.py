@@ -83,9 +83,26 @@ class ResilientKernel(TradingKernel):
         Replaying fill events does not run the simulator, so its sequence
         counter is untouched and the first live order would collide with a
         recovered ``SIM-…`` id. Bump any simulated target past the max id.
+        Also rebuilds the idempotency guard from recovered OrderAcceptedEvents
+        so duplicate retries (same correlation_id) are detected after crash.
         """
         if not self.recovery_store:
             return
+
+        # Rebuild idempotency guard from recovered OrderAcceptedEvents so
+        # duplicate retries (same correlation_id) are detected after crash.
+        # This runs unconditionally — accepted-but-unfilled orders still need
+        # their correlation_ids in the guard to prevent duplicate submissions.
+        from ntrade.events.order import OrderAcceptedEvent
+        from ntrade.execution._guard import CorrelationId
+        for event in self.recovery_store.events(OrderAcceptedEvent):
+            if not event.correlation_id:
+                continue
+            cid = CorrelationId(value=event.correlation_id)
+            for target in self.router._targets.values():
+                if hasattr(target, '_idem'):
+                    target._idem.record_result(cid, event.order_id)
+
         from ntrade.events.order import OrderFilledEvent
         from ntrade.execution.simulator import SimulatedExecution
 

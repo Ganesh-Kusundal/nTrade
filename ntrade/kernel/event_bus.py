@@ -22,11 +22,17 @@ _logger = logging.getLogger("ntrade.bus")
 
 
 class EventBus:
-    def __init__(self, *, max_history: int = 10_000) -> None:
+    def __init__(self, *, max_history: int = 10_000, max_handler_errors: int | None = None) -> None:
         self._subscribers: dict[type, list[Callable[[Event], None]]] = defaultdict(list)
         self._history: deque[Event] = deque(maxlen=max_history)
         self._lock = RLock()
         self._stack: list[Event] = []       # causal dispatch stack
+        self._handler_errors = 0
+        self._max_handler_errors = max_handler_errors
+
+    @property
+    def handler_error_count(self) -> int:
+        return self._handler_errors
 
     def subscribe(
         self, event_type: type, handler: Callable[[Event], None]
@@ -69,11 +75,22 @@ class EventBus:
                         try:
                             handler(event)
                         except Exception:
+                            self._handler_errors += 1
                             _logger.error(
-                                "handler %s raised on %s",
-                                handler, type(event).__name__,
+                                "handler %s raised on %s (error #%d)",
+                                handler, type(event).__name__, self._handler_errors,
                                 exc_info=True,
                             )
+                            if (
+                                self._max_handler_errors is not None
+                                and self._handler_errors >= self._max_handler_errors
+                            ):
+                                from ntrade.events.risk import RiskHaltedEvent
+                                self.publish(RiskHaltedEvent(
+                                    ts=event.ts,
+                                    reason=f"handler error limit reached ({self._handler_errors} errors)",
+                                ))
+                                self._max_handler_errors = None  # ponytail: halt once, don't re-halt
                             continue
             finally:
                 self._stack.pop()

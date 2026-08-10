@@ -222,7 +222,18 @@ class BrokerExecution:
                             order_id, self._stale_limit,
                         )
                         del self._open[order_id]
-                continue
+                        continue
+                # After the cooldown elapses, allow a single HALF_OPEN probe
+                # so a recovered broker is detected — otherwise an OPEN
+                # circuit parks order tracking forever. A successful probe
+                # closes the circuit on the success path below.
+                if self._breaker._maybe_reset():
+                    logger.info(
+                        "circuit HALF_OPEN after cooldown — probing broker for order %s",
+                        order_id,
+                    )
+                else:
+                    continue  # cooldown not elapsed — keep skipping the broker
             try:
                 # Direct broker call — NOT through circuit_breaker.request()
                 # because get_order_status mutates the Order in place (not

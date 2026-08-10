@@ -252,14 +252,16 @@ def test_paper_broker_uses_live_ltp_when_reference_zero():
     assert order.avg_price == pytest.approx(777.0)
 
 
-def test_paper_broker_falls_back_to_seeded_quote():
+def test_paper_broker_rejects_market_with_no_price():
+    """A paper MARKET order with no reference_price and no live quote must be
+    rejected — never filled at the minted get_quote seed (phantom fill)."""
     broker = PaperBroker()
     eq = Equity(_NIFTY)
     eq._broker = broker
     order = Order(instrument=eq, side=OrderSide.BUY, quantity=10,
                   order_type=OrderType.MARKET)
-    broker.place_order(order)
-    assert order.avg_price == pytest.approx(100.0)  # seeded quote default
+    with pytest.raises(ValueError, match="no market price"):
+        broker.place_order(order)
 
 
 # ------------------------------------------------ end-to-end regression

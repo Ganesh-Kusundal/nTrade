@@ -94,6 +94,11 @@ def _uptrend(sess, n=30, start=100.0, step=0.5, volume=100):
         _candle(sess, i, close=start + i * step, volume=volume)
 
 
+def _downtrend(sess, n=30, start=130.0, step=0.5, volume=100):
+    for i in range(n):
+        _candle(sess, i, close=start - i * step, volume=volume)
+
+
 def _absorption(sess, i, at, volume=1500):
     _candle(sess, i, close=at, open_=at - 0.02, high=at + 0.05,
             low=at - 0.05, volume=volume)
@@ -112,17 +117,33 @@ def _rejects(sess):
 
 
 def _make_synthetic_frame():
-    """36 bars: 30 uptrend + absorption + follow-through + rally, as 1m OHLCV."""
+    """36 bars: 30 downtrend + absorption at VAL + consolidate + breakout, as
+    1m OHLCV.
+
+    This is the strategy's current signal contract: a BUY absorption must sit
+    at the value edge (VAL), price consolidates near POC, then breaks above
+    VWAP/POC. (An uptrend with a mid-value absorption never signals — the
+    balance gate keeps it flat.)
+    """
     import pandas as pd
-    closes = [100 + i * 0.5 for i in range(30)]
+    closes = [130 - i * 0.5 for i in range(30)]
     return pd.DataFrame({
         "timestamp": pd.date_range("2026-08-03 09:15", periods=36, freq="1min"),
-        "open": closes + [115.0, 115.4, 115.8, 115.8, 116.0, 116.0],
-        "high": [c + 0.5 for c in closes] + [115.05, 115.6, 115.9, 116.2, 116.5, 116.8],
-        "low": [c - 0.5 for c in closes] + [114.95, 114.9, 115.3, 115.4, 115.5, 115.6],
-        "close": closes + [115.0, 115.4, 115.8, 116.0, 116.3, 116.6],
+        "open": closes + [115.0, 116.0, 118.0, 120.0, 121.0, 121.0],
+        "high": [c + 0.5 for c in closes] + [115.05, 116.5, 118.5, 120.5, 121.5, 121.5],
+        "low": [c - 0.5 for c in closes] + [114.95, 115.5, 117.5, 119.5, 120.5, 120.5],
+        "close": closes + [115.0, 116.0, 118.0, 120.0, 121.0, 121.0],
         "volume": [100] * 30 + [1500, 100, 100, 100, 100, 100],
     })
+
+
+def _valentini_setup(sess):
+    """Drive the 3 bars that complete the Triple-A setup and signal the entry:
+    VAL absorption (bar 30), POC consolidation (31), breakout above VWAP (32)."""
+    _downtrend(sess)
+    _absorption(sess, 30, at=115.0)
+    _candle(sess, 31, close=116.0)
+    _candle(sess, 32, close=120.0)           # entry signal (above VWAP)
 
 
 # ---------------------------------------------------------------- end to end
@@ -147,10 +168,7 @@ def test_paper_session_uses_future_instrument_not_equity():
 def test_paper_session_end_to_end_fills_via_paper_broker():
     sess, name = _paper_session()
     try:
-        _uptrend(sess)
-        _absorption(sess, 30, at=115.0)
-        _candle(sess, 31, close=115.4)
-        _candle(sess, 32, close=115.8)           # entry signal
+        _valentini_setup(sess)
         fills = _fills(sess)
         assert len(fills) == 1
         assert fills[0].side == "BUY"
@@ -175,25 +193,22 @@ def test_paper_session_end_to_end_fills_via_paper_broker():
 
 
 def test_risk_caps_reject_oversized_signal():
-    # max_quantity 10 < the strategy's computed qty (1041) -> rejected.
+    # max_quantity 10 < the strategy's computed qty -> rejected.
     sess, name = _paper_session()
     try:
         # Reconfigure the scoped engine post-registration.
         engine = sess.runner.risk(name)
         engine.max_quantity = 10
-        _uptrend(sess)
-        _absorption(sess, 30, at=115.0)
-        _candle(sess, 31, close=115.4)
-        _candle(sess, 32, close=115.8)
+        _valentini_setup(sess)
         assert _fills(sess) == []
         assert len(_rejects(sess)) == 1
         assert engine.rejected == 1
         # Rejected entry must not arm a phantom position; the strategy stays
         # re-armable for a later valid setup (stale-_pending regression).
         engine.max_quantity = None
-        _absorption(sess, 33, at=116.5, volume=2000)
-        _candle(sess, 34, close=116.9)
-        _candle(sess, 35, close=117.3)
+        _absorption(sess, 33, at=117.0, volume=2000)
+        _candle(sess, 34, close=118.5)
+        _candle(sess, 35, close=120.0)
         assert any(f.side == "BUY" for f in _fills(sess))
     finally:
         sess.stop()
@@ -209,10 +224,7 @@ def test_risk_halt_trips_execution_and_rejects_signals():
         sess.runner.risk(name).halt("daily loss cap exceeded")
         assert runner.halted
         # A full setup now emits a signal that the halted risk rejects.
-        _uptrend(sess)
-        _absorption(sess, 30, at=115.0)
-        _candle(sess, 31, close=115.4)
-        _candle(sess, 32, close=115.8)
+        _valentini_setup(sess)
         assert _fills(sess) == []
         assert any("halted" in getattr(e, "reason", "") for e in _rejects(sess))
         # BrokerExecution kill switch: circuit breaker forced OPEN.

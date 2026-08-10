@@ -177,6 +177,16 @@ class BacktestSimulator:
                     bids=wbids, asks=wasks, ts=ts,
                 ))
                 self.depth_events_published += 1
+            # Close the candle for this bar NOW (before the next bar's
+            # QuoteEvent overwrites the instrument's _quote.ltp). In live and
+            # replay, the CandleClosed fires when the first tick of the NEXT
+            # bar arrives — the market still shows the current bar's last
+            # price at that moment. Backtest must mirror this: flush the
+            # candle so the strategy's MARKET fill reads ltp = bar close
+            # (the tick set it), not the next bar's close. Without this,
+            # backtest fills at the NEXT bar's close while replay fills at
+            # the current bar's close — a zero-parity violation.
+            self.kernel.candle_engine.flush(self.symbol)
             # Futures holding-period costs accrue after the bar's state is in
             # place (positions updated by the fills this bar published).
             self._apply_futures_costs(ts)
@@ -209,7 +219,7 @@ class BacktestSimulator:
             inst = self.kernel.ctx.instrument(pos.symbol)
             if inst is None or not isinstance(inst, Future):
                 continue
-            notional = (pos.ltp or pos.avg_price) * abs(pos.quantity)
+            notional = (pos.avg_price or pos.ltp) * abs(pos.quantity)
             # 1. expiry rollover slippage — once per contract, when held past expiry
             if inst.expiry is not None and today > inst.expiry and pos.symbol not in self._rolled:
                 self._rolled.add(pos.symbol)

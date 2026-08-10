@@ -72,13 +72,15 @@ class BrokerExecution:
                  statutory=STATUTORY_DEFAULT,
                  idempotency_guard: "Any | None" = None,
                  circuit_breaker: "CircuitBreaker | None" = None,
-                 stale_limit: int = 10):
+                 stale_limit: int = 10,
+                 order_timeout_seconds: float = 300.0):
         self.ctx = context
         self.broker = broker
         self.commission = commission or FlatCommission(0.0)
         # None → zero-cost opt-out; STATUTORY_DEFAULT → IndianStatutoryCosts().
         self.statutory: IndianStatutoryCosts | None = resolve_statutory(statutory)
         self._seq = 0
+        self._order_timeout_seconds = float(order_timeout_seconds)  # configurable vs hardcoded 300
         # order_id -> {"intent": ..., "order": ..., "filled": int}
         self._open: dict[str, dict] = {}
         self._stale_limit = stale_limit  # max consecutive failures before eviction
@@ -252,7 +254,7 @@ class BrokerExecution:
             placed_at = record.get("placed_at")
             if placed_at is not None and order.status == OrderStatus.PENDING:
                 age = (self.ctx.now() - placed_at).total_seconds()
-                if age > 300:  # 5-minute timeout
+                if age > self._order_timeout_seconds:  # configurable vs hardcoded 300
                     logger.warning("order %s timed out after %.0fs", order_id, age)
                     self.ctx.bus.publish(OrderTimeoutEvent(
                         order_id=order_id, symbol=record["intent"].symbol,

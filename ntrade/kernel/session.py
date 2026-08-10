@@ -29,6 +29,7 @@ from ntrade.execution.simulator import SimulatedExecution
 from ntrade.kernel.clock import LiveClock, ReplayClock, TradingClock
 from ntrade.kernel.context import TradingContext
 from ntrade.kernel.event_bus import EventBus
+from ntrade.domain.constants import DEFAULT_TIMEFRAME
 
 if TYPE_CHECKING:
     from ntrade.domain.ports import BrokerAdapter
@@ -45,7 +46,7 @@ class TradingKernel:
         mode: str = "live",
         bus: EventBus | None = None,
         clock: TradingClock | None = None,
-        timeframe: str = "1m",
+        timeframe: str = DEFAULT_TIMEFRAME,
         instruments: dict[str, "Instrument"] | None = None,
         broker: "BrokerAdapter | None" = None,
         execution=None,
@@ -53,6 +54,7 @@ class TradingKernel:
         initial_cash: float = 100_000.0,
         store=None,
         statutory=STATUTORY_DEFAULT,
+        order_timeout_seconds: float = 300.0,
     ):
         self.mode = mode
         self.session_id = session_id
@@ -92,7 +94,8 @@ class TradingKernel:
             if broker is not None:
                 # Live target charges the same statutory schedule as the sim
                 # target (H6); pass statutory=None to opt into zero-cost live.
-                execution.add("default", BrokerExecution(self.ctx, broker, statutory=statutory))
+                execution.add("default", BrokerExecution(self.ctx, broker, statutory=statutory,
+                                                              order_timeout_seconds=order_timeout_seconds))
             else:
                 # Simulated target: statutory Indian charges by default (H6) so
                 # paper/backtest PnL converges on live; pass statutory=None to

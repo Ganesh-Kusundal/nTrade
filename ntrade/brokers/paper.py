@@ -6,9 +6,8 @@ identical across paper and live trading (consistent APIs principle).
 
 from __future__ import annotations
 
-import math
 import random
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pandas as pd
 
@@ -17,7 +16,7 @@ from ntrade.domain.market.candles import CandleSeries
 from ntrade.domain.market.depth import DepthLevel, MarketDepth
 from ntrade.domain.market.quote import Quote, Tick
 from ntrade.domain.orders.book import OrderBook, OrderBookEntry, TradeBook, TradeBookEntry
-from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
+from ntrade.domain.orders.order import Order, OrderStatus, OrderType
 
 
 class PaperBroker(BrokerAdapter):
@@ -106,10 +105,22 @@ class PaperBroker(BrokerAdapter):
 
     # ------------------------------------------------------------- orders
     def place_order(self, order: Order) -> Order:
-        if order.order_type.value == "MARKET":
-            fill_price = self.get_quote(order.instrument).ltp
+        # Prefer the instrument's live quote (kept current by the kernel from
+        # ticks/replays) so paper fills track the market; fall back to the
+        # seeded quote dict for static tests where no live quote exists. A
+        # bar-close reference price (> 0) wins over the live LTP — zero-parity
+        # with backtest/replay, which fill at the bar close that generated the
+        # signal rather than the (possibly contaminated) next-bar LTP.
+        live = getattr(order.instrument, "_quote", None)
+        live_ltp = getattr(live, "ltp", 0.0) or 0.0
+        if order.order_type.value != "MARKET" and order.price:
+            fill_price = order.price
+        elif order.reference_price > 0.0:
+            fill_price = order.reference_price  # bar-close reference (zero-parity)
+        elif live_ltp > 0.0:
+            fill_price = live_ltp
         else:
-            fill_price = order.price or self.get_quote(order.instrument).ltp
+            fill_price = self.get_quote(order.instrument).ltp
         order.order_id = f"PAPER-{len(self._orders) + 1}"
         order.status = OrderStatus.COMPLETED
         order.filled_qty = order.quantity

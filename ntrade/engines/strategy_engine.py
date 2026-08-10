@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 
+from ntrade.domain.constants import Exchange
 from ntrade.events.market import (
     CandleClosedEvent, IndicatorUpdatedEvent, QuoteUpdatedEvent, TickEvent,
+    WatchlistReady,
 )
 from ntrade.events.order import OrderFilledEvent
 from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
@@ -34,14 +36,23 @@ class Strategy:
     def on_quote_updated(self, event): ...
     def on_candle_closed(self, event): ...
     def on_indicator_updated(self, event): ...
+    def on_watchlist(self, event): ...  # screener run complete
     def on_position_updated(self, event): ...
     def on_order_filled(self, event): ...
     def on_balance_changed(self, event): ...
 
     # --------------------------------------------------------------- helpers
-    def emit_signal(self, *, symbol, exchange: str = "NSE", side: str,
-                    quantity: int, price: float = 0.0, **metadata) -> SignalGeneratedEvent:
-        """Emit a trade signal; RiskEngine screens it before it becomes an order."""
+    def emit_signal(self, *, symbol, exchange: str = Exchange.CASH, side: str,
+                    quantity: int, price: float = 0.0, reference_price: float = 0.0,
+                    **metadata) -> SignalGeneratedEvent:
+        """Emit a trade signal; RiskEngine screens it before it becomes an order.
+
+        ``reference_price`` is the bar-close price that triggered a signal
+        (carried through to fills for zero-parity across backtest/replay/
+        paper); 0.0 means "use the live LTP".
+        """
+        if reference_price:
+            metadata["reference_price"] = reference_price
         signal = SignalGeneratedEvent(
             symbol=symbol, exchange=exchange, side=side, quantity=quantity,
             price=price, strategy=self.name, metadata=metadata, ts=self.ctx.now(),
@@ -56,6 +67,7 @@ class StrategyEngine:
         QuoteUpdatedEvent: "on_quote_updated",
         CandleClosedEvent: "on_candle_closed",
         IndicatorUpdatedEvent: "on_indicator_updated",
+        WatchlistReady: "on_watchlist",
         PositionUpdatedEvent: "on_position_updated",
         OrderFilledEvent: "on_order_filled",
         BalanceChangedEvent: "on_balance_changed",
@@ -79,14 +91,6 @@ class StrategyEngine:
         for existing in list(self.strategies):
             if existing is strategy or getattr(existing, "name", "") == strategy:
                 self.strategies.remove(existing)
-                return True
-        return False
-
-    def set_enabled(self, strategy, enabled: bool) -> bool:
-        """Toggle a strategy on/off without detaching it."""
-        for existing in self.strategies:
-            if existing is strategy or getattr(existing, "name", "") == strategy:
-                existing.enabled = bool(enabled)
                 return True
         return False
 

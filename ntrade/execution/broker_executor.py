@@ -132,6 +132,7 @@ class BrokerExecution:
                 intent.side, intent.quantity,
                 order_type=OrderType(intent.order_type.upper()),
                 price=intent.price,
+                reference_price=intent.reference_price,
             )
         except Exception as exc:
             # Deterministic failure: exchange rejected before accepting.

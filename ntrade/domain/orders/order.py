@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ntrade.domain.instruments.base import Instrument
@@ -48,6 +48,7 @@ class Order:
     order_type: OrderType = OrderType.LIMIT
     trade_type: TradeType = TradeType.MIS
     price: float = 0.0
+    reference_price: float = 0.0  # bar close carried from intent; 0.0 = live LTP
     trigger_price: float = 0.0
     target_price: float = 0.0   # bracket/BO target leg
     stop_loss_price: float = 0.0  # bracket/BO stop leg

@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from ntrade.domain.analytics.indicators import vwap, vwap_bands
-from ntrade.domain.analytics.order_flow import detect_absorptions
+from ntrade.domain.analytics.order_flow import detect_absorptions, cvd_from_ohlcv
 from ntrade.domain.analytics.range_bars import calc_auto_range, build_range_bars
 from ntrade.domain.analytics.volume_profile import build_volume_profile
 from ntrade.engines.strategy_engine import Strategy
@@ -78,40 +79,46 @@ class EmaCrossStrategy(Strategy):
 
 
 class ValentiniScalper(Strategy):
-    """Triple-A scalper: Absorption -> Accumulation -> Aggression (approximated).
+    """Triple-A scalper (build-guide contract, on Dhan's OHLCV/depth data).
 
-    Implements Fabio Valentini's model on the data Dhan actually provides:
+    Guide Triple-A: Absorption -> Accumulation -> Aggression. Every step below
+    is executed (earlier versions computed the volume profile and then ignored
+    it). On the data Dhan provides:
 
-      * **Location** — volume profile (POC/VAH/VAL) built over range bars.
-      * **Absorption** — "big volume, no price" bars via
-        ``detect_absorptions`` (fully computable from OHLCV+volume).
-      * **Accumulation** — price consolidates back near the absorption level
-        for 2+ bars after the absorption.
-      * **Aggression** — price above VWAP (BUY absorption) or below VWAP
-        (SELL absorption) triggers the entry.
+      * **Absorption** — "big volume, no price" bars via ``detect_absorptions``
+        (fully computable from OHLCV+volume). Arms only at the value edge:
+        BUY near session VAL, SELL near session VAH.
+      * **Accumulation** — price consolidates back near the session POC for
+        2+ bars (guide: "within 2 range steps of POC").
+      * **Aggression** — price above VWAP (BUY) / below VWAP (SELL) AND the
+        trailing CVD proxy agrees (close-vs-open delta), NOT mid-value inside
+        the value area (balance = stay flat). Optional L2 depth filter still
+        applies when ``depth_imbalance_min`` is set.
 
-    SL/TP are computed on entry; the stop is trailed to breakeven after the
-    trade reaches 0.5R; the session gate keeps the scalper out of overnight
-    risk. CVD (true order flow) is NOT used here — Dhan has no trade tape;
-    absorption + VWAP + profile are the honest signal layer.
-
-    Runs identically in backtest / replay / live (zero-parity kernel).
+    SL = VAL − step (long) / VAH + step (short). TP prefers the prior session
+    POC when its R:R clears ``min_rr``, else the guide's R-multiple fallback.
+    Stop trails to breakeven at 0.5R; the session gate keeps the scalper flat
+    overnight. True order flow (tape, footprint) is unavailable on Dhan — the
+    CVD here is an OHLCV proxy, not tape; it is labelled as such.
     """
 
     name = "valentini"
 
-    def __init__(self, *, symbol: str | None = None, timeframe: str = "1m",
-                 range_size: float | None = None, atr_period: int = 14,
-                 tick_size: float | None = None, warmup: int = 15,
-                 abs_volume_mult: float = 1.5, abs_range_threshold: float = 0.5,
-                 abs_lookback: int = 5, tp_multiplier: float = 2.0,
-                 min_rr: float = 1.5, risk_per_trade_pct: float = 0.5,
-                 lot_size: int = 1, session_start: str = "09:15",
-                 session_end: str = "15:25", max_window: int = 600,
+    def __init__(self, *, symbol: str | None = None, exchange: str = "NSE",
+                 timeframe: str = "1m", range_size: float | None = None,
+                 atr_period: int = 14, tick_size: float | None = None,
+                 warmup: int = 15, abs_volume_mult: float = 1.5,
+                 abs_range_threshold: float = 0.5, abs_lookback: int = 5,
+                 tp_multiplier: float = 2.0, min_rr: float = 1.5,
+                 risk_per_trade_pct: float = 0.5, lot_size: int = 1,
+                 session_start: str | None = None,
+                 session_end: str | None = None, max_window: int = 600,
                  fade_extended: bool = True,
-                 depth_imbalance_min: float | None = None):
+                 depth_imbalance_min: float | None = None,
+                 require_cvd: bool = True, cvd_confirm_bars: int = 3):
         super().__init__()
         self.symbol = symbol
+        self.exchange = exchange
         self.timeframe = timeframe
         self.range_size = range_size
         self.atr_period = atr_period
@@ -124,18 +131,41 @@ class ValentiniScalper(Strategy):
         self.min_rr = min_rr
         self.risk_per_trade_pct = risk_per_trade_pct
         self.lot_size = max(1, int(lot_size))
+        # Derive session hours from the exchange when the caller didn't pass
+        # explicit times — NSE/NFO = 09:15-15:25, MCX = 09:00-23:25 (IST).
+        # Without this, MCX contracts would only trade during NSE hours and
+        # miss the entire 15:25-23:25 evening session.
+        if session_start is None or session_end is None:
+            from ntrade.domain.market_hours import session_open, session_close
+            open_t = session_open(exchange)
+            close_t = session_close(exchange)
+            # Strategy uses 15:25 (5m before close) as its hard exit — never
+            # hold into the final 5 minutes.
+            from datetime import time as _time
+            if close_t.minute >= 5:
+                default_end = _time(close_t.hour, close_t.minute - 5)
+                session_end = session_end or default_end.strftime("%H:%M")
+            session_start = session_start or open_t.strftime("%H:%M")
         self.session_start = datetime.strptime(session_start, "%H:%M").time()
         self.session_end = datetime.strptime(session_end, "%H:%M").time()
         self.max_window = max_window
         self.fade_extended = fade_extended
         self.depth_imbalance_min = depth_imbalance_min
+        self.require_cvd = require_cvd
+        self.cvd_confirm_bars = max(1, int(cvd_confirm_bars))
+
+        # ponytail: session-keyed profile + prior POC. Profile is the guide's
+        # "location" — built from TODAY's rows (not tail(30)) so POC/VAH/VAL
+        # reflect the session; prior_poc becomes the aggression target.
+        self._session_key: str | None = None
+        self._profile = None          # current-session VolumeProfile
+        self._prior_poc: float | None = None
 
         # Internal state
         self._rows: list[dict] = []
         self._phase: str = "waiting"
         self._range_size: float | None = None
         self._range_bars = pd.DataFrame()
-        self._profile = None
         self._vwap: float | None = None
         self._absorptions = []
         self._last_absorption = None
@@ -158,11 +188,10 @@ class ValentiniScalper(Strategy):
         # (= 15:30 IST, after the gate) would be evaluated as 10:00 (in session)
         # — a silent out-of-hours entry on live data.
         try:
-            from zoneinfo import ZoneInfo
             if ts.tzinfo is not None:
                 ts = ts.astimezone(ZoneInfo("Asia/Kolkata"))
         except Exception:
-            pass  # pytz/zoneinfo unavailable — fall back to original ts
+            pass  # zoneinfo unavailable — fall back to original ts
         t = ts.time()
         return self.session_start <= t <= self.session_end
 
@@ -178,6 +207,44 @@ class ValentiniScalper(Strategy):
         if pd.isna(upper) or pd.isna(lower) or not upper > lower:
             return False
         return close > upper if side == "BUY" else close < lower
+
+    def _session_key_of(self, ts) -> str:
+        """IST date key for the session grouping (mirror of the UI istDateKey)."""
+        if ts is None:
+            return ""
+        try:
+            if ts.tzinfo is not None:
+                ts = ts.astimezone(ZoneInfo("Asia/Kolkata"))
+        except Exception:
+            pass
+        return ts.strftime("%Y-%m-%d")
+
+    def _value_edge_ok(self, side: str, price: float, step: float) -> bool:
+        """Absorption must sit at the value edge (guide: VAL for longs, VAH
+        for shorts) — not mid-value. No profile yet => allow (warm-up)."""
+        p = self._profile
+        if p is None:
+            return True
+        if side == "BUY":
+            return abs(price - p.val) <= 2 * step
+        return abs(price - p.vah) <= 2 * step
+
+    def _in_balance(self, close: float) -> bool:
+        """Mid-value inside the value area = balance: skip aggression."""
+        p = self._profile
+        if p is None or p.vah <= p.val:
+            return False
+        if not (p.val <= close <= p.vah):
+            return False
+        return abs(close - p.poc) / (p.vah - p.val) < 0.25
+
+    def _cvd_agrees(self, side: str) -> bool:
+        """Trailing CVD proxy must confirm the VWAP direction (OHLCV, not tape)."""
+        if not self.require_cvd:
+            return True
+        if pd.isna(self._cvd):
+            return False
+        return self._cvd >= 0 if side == "BUY" else self._cvd <= 0
 
     def on_candle_closed(self, event) -> None:
         if self.symbol is not None and event.symbol != self.symbol:
@@ -198,6 +265,16 @@ class ValentiniScalper(Strategy):
         # the location; VWAP gives the direction filter).
         self._range_size = self.range_size or calc_auto_range(
             frame, atr_period=self.atr_period, tick_size=self.tick_size)
+        # Session key (IST date) drives the location profile. On a new day we
+        # stash the prior-session POC as the aggression target and drop the
+        # stale profile so today's value area is rebuilt from scratch.
+        key = self._session_key_of(event.ts)
+        if key != self._session_key:
+            if self._profile is not None:
+                self._prior_poc = self._profile.poc or self._prior_poc
+            self._session_key = key
+            self._profile = None
+        step = self._range_size or 1.0
         self._range_bars = build_range_bars(
             frame, range_size=self._range_size,
             atr_period=self.atr_period, tick_size=self.tick_size)
@@ -207,14 +284,21 @@ class ValentiniScalper(Strategy):
             self._vwap_upper, self._vwap_lower = upper, lower
         except Exception:
             self._vwap_upper = self._vwap_lower = self._vwap
-        bars_tail = self._range_bars.tail(30)
-        if not bars_tail.empty:
+        # Guide "location": POC/VAH/VAL over TODAY's rows, not a 30-bar tail.
+        if not frame.empty:
             self._profile = build_volume_profile(
-                bars_tail, step=self._range_size or None)
+                frame, step=self._range_size or None)
         self._absorptions = detect_absorptions(
             frame, avg_volume_mult=self.abs_volume_mult,
             range_threshold=self.abs_range_threshold,
             range_size=self._range_size)
+        # CVD proxy (OHLCV): signed volume delta over the confirm window. The
+        # aggression leg requires it to agree with the VWAP direction.
+        self._cvd = float("nan")
+        if self.require_cvd and not frame.empty:
+            cvd = cvd_from_ohlcv(frame)
+            if len(cvd) >= self.cvd_confirm_bars:
+                self._cvd = float(cvd.tail(self.cvd_confirm_bars).diff().sum())
 
         # Expire a pending entry the broker never filled (live: rejected/
         # lost order) so the strategy can re-arm instead of locking out
@@ -246,21 +330,25 @@ class ValentiniScalper(Strategy):
         step = self._range_size or 1.0
 
         if self._phase == "waiting":
-            if recent:
-                self._last_absorption = recent[-1]
-                self._absorption_window_idx = recent[-1].bar_index
+            # Only arm an absorption that sits at the value edge (VAL/VAH),
+            # not one floating mid-range — guide "location" rule.
+            armed = [a for a in recent if self._value_edge_ok(a.side, a.price, step)]
+            if armed:
+                self._last_absorption = armed[-1]
+                self._absorption_window_idx = armed[-1].bar_index
                 self._phase = "absorbing"
             return
 
         if self._phase == "absorbing":
             elapsed = max(window_len - 1 - self._absorption_window_idx, 0)
-            abs_price = self._last_absorption.price
-            if (elapsed >= 2 and abs(close - abs_price) <= 2 * step):
+            # Accumulation is "price near the session POC" (guide §4.1), not
+            # near the absorption price.
+            poc = self._profile.poc if self._profile else close
+            if (elapsed >= 2 and abs(close - poc) <= 2 * step):
                 self._phase = "accumulating"
             elif elapsed > self.abs_lookback * 3:
-                # Setup died: price ran away from the absorption level and
-                # never came back into range — expire it so a fresh absorption
-                # can re-arm the machine (was: hangs in absorbing forever).
+                # Setup died: price ran away from value and never came back
+                # into range — expire so a fresh absorption can re-arm.
                 self._phase = "waiting"
                 return
             # fall through: a bar can complete accumulation AND trigger the
@@ -269,19 +357,27 @@ class ValentiniScalper(Strategy):
         if self._phase == "accumulating":
             elapsed = max(window_len - 1 - self._absorption_window_idx, 0)
             if elapsed > self.abs_lookback * 3:
-                # symmetric with the absorbing expiry: a setup that drifted out
-                # of the 2*step window before triggering has gone stale
+                # symmetric expiry: a setup that drifted out of the 2*step
+                # window before triggering has gone stale
                 self._phase = "waiting"
                 return
             side = self._last_absorption.side
+            # Aggression: VWAP bias + CVD proxy agreement + not mid-value
+            # balance. Extended/ depth gates are layered on top.
+            if self._in_balance(close):
+                return  # balance — stay flat, no signal
             if side == "BUY" and close > self._vwap:
                 if self.fade_extended and self._extended(close, side):
                     return  # extended beyond the band — wait for the pullback
+                if not self._cvd_agrees(side):
+                    return  # OHLCV CVD proxy disagrees — wait
                 if self._depth_blocked(side, event.symbol):
                     return  # no live buy-side depth pressure — wait
                 self._phase = "signal"
             elif side == "SELL" and close < self._vwap:
                 if self.fade_extended and self._extended(close, side):
+                    return
+                if not self._cvd_agrees(side):
                     return
                 if self._depth_blocked(side, event.symbol):
                     return
@@ -323,24 +419,37 @@ class ValentiniScalper(Strategy):
         instead of being stranded by a LIMIT that the rally leaves behind
         (bar-aware backtest fills only fill when traded through).
 
-        Note: because ``sl`` is pinned one range below the absorption level
-        and ``tp = entry + (entry - sl) * tp_multiplier``, the realised
-        R-multiple ``(tp - entry) / (entry - sl)`` is always exactly
-        ``tp_multiplier`` for a valid setup — ``min_rr`` only filters the
-        degenerate ``entry <= sl`` case.
+        Stop: VAL − step (long) / VAH + step (short) — guide §4.1. Target:
+        prefer the prior session's POC (Fabio's "target the POC") when its
+        R:R clears ``min_rr``; otherwise fall back to the guide's
+        ``tp_multiplier`` R-multiple. ``min_rr`` filters degenerate setups.
         """
         if self._active is not None or self._pending is not None:
             return
         entry = float(event.close)
         step = self._range_size or 1.0
+        p = self._profile
+        val = p.val if p else None
+        vah = p.vah if p else None
+        # SL pinned at the value edge (one step outside) — never inside value.
         if side == "BUY":
-            sl = self._last_absorption.price - step   # below the aggression
-            tp = entry + (entry - sl) * self.tp_multiplier
-            rr = (tp - entry) / (entry - sl) if entry > sl else 0.0
+            sl = (val - step) if val is not None else (self._last_absorption.price - step)
+            tp_fallback = entry + (entry - sl) * self.tp_multiplier
+            rr_fallback = (tp_fallback - entry) / (entry - sl) if entry > sl else 0.0
+            tp, rr = tp_fallback, rr_fallback
+            if self._prior_poc is not None and self._prior_poc > entry:
+                rr_poc = (self._prior_poc - entry) / (entry - sl) if entry > sl else 0.0
+                if rr_poc >= self.min_rr:
+                    tp, rr = self._prior_poc, rr_poc  # target prior POC
         else:
-            sl = self._last_absorption.price + step
-            tp = entry - (sl - entry) * self.tp_multiplier
-            rr = (entry - tp) / (sl - entry) if sl > entry else 0.0
+            sl = (vah + step) if vah is not None else (self._last_absorption.price + step)
+            tp_fallback = entry - (sl - entry) * self.tp_multiplier
+            rr_fallback = (entry - tp_fallback) / (sl - entry) if sl > entry else 0.0
+            tp, rr = tp_fallback, rr_fallback
+            if self._prior_poc is not None and self._prior_poc < entry:
+                rr_poc = (entry - self._prior_poc) / (sl - entry) if sl > entry else 0.0
+                if rr_poc >= self.min_rr:
+                    tp, rr = self._prior_poc, rr_poc
         if rr < self.min_rr:
             logger.info("valentini skip: RR %.2f < min %.2f", rr, self.min_rr)
             return
@@ -358,8 +467,12 @@ class ValentiniScalper(Strategy):
         self.emit_signal(
             symbol=event.symbol, exchange=event.exchange, side=side,
             quantity=qty, price=0.0,  # MARKET
+            reference_price=float(event.close),  # bar close from CandleClosedEvent
             sl=sl, tp=tp, rr=round(rr, 2), phase="signal",
             absorption=self._last_absorption.side,
+            sl_source="val_vah" if p else "absorption",
+            target="prior_poc" if tp == self._prior_poc else "r_multiple",
+            prior_poc=self._prior_poc, session_poc=p.poc if p else None,
         )
         # Synchronous modes (backtest/replay): by the time emit_signal returns
         # a rejected entry has produced no fill, so _active is still unarmed —
@@ -426,6 +539,7 @@ class ValentiniScalper(Strategy):
         self.emit_signal(
             symbol=event.symbol, exchange=event.exchange, side=side,
             quantity=act["qty"], price=0.0,  # MARKET
+            reference_price=float(event.close),  # bar close from CandleClosedEvent
             exit_reason=reason, intent_price=price,
         )
         self._active = None

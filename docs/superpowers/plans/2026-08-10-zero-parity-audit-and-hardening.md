@@ -39,11 +39,16 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Create a test that asserts the paper session uses a `Future` instrument with `NFO` exchange and `MIS` trade type:
+Create a test that asserts the paper session uses a `Future` instrument with `NFO` exchange and `MIS` trade type (not `CNC`), and that `Equity` instruments default to `CNC` (documenting why this matters):
 
 ```python
 def test_paper_session_uses_future_instrument_not_equity():
-    """Paper mode must use Future/NFO (matching live harness), not Equity/NSE."""
+    """Paper mode must use Future/NFO (matching live harness), not Equity/NSE.
+
+    Equity defaults to CNC (delivery) trade type; Future defaults to MIS
+    (intraday). The live harness registers a Future on NFO, so tests must
+    too — otherwise paper fills use the wrong product type (parity bug).
+    """
     from ntrade.domain.instruments.derivatives import Future
     sess, name = _paper_session()
     try:
@@ -59,42 +64,42 @@ def test_paper_session_uses_future_instrument_not_equity():
 ```bash
 python -m pytest tests/test_valentini_live_wiring.py::test_paper_session_uses_future_instrument_not_equity -v
 ```
-Expected: FAIL — currently `_SYMBOL = "NIFTY FUT"` is registered via `sess.stock()` producing an `Equity`
+Expected: FAIL — currently `_SYMBOL = "NIFTY FUT"` is registered via `sess.stock()` producing an `Equity` on `NSE`
 
 - [ ] **Step 3: Change fixture to use Future**
 
-Update `_paper_session()` to register a `Future`:
+Update `_paper_session()` to register a `Future` and update `_candle()` to publish on `NFO`:
 
 ```python
+from datetime import date
+_EXPIRY = date(2026, 8, 27)
+
 def _paper_session(**strat_kw):
-    from datetime import date
     risk = strat_kw.pop("risk", {
         "max_quantity": 100_000, "max_daily_loss": 50_000.0,
     })
     sess = TradingSession.paper(initial_cash=1_000_000.0)
-    # Match live harness: Future on NFO, not Equity on NSE.
     nifty = sess.index("NIFTY")
-    fut = sess.future(nifty, expiry=date(2026, 8, 27))
+    fut = sess.future(nifty, expiry=_EXPIRY)
     sess.register(fut)
+    _SYMBOL = fut.symbol
     name = sess.register_strategy(ValentiniScalper(
-        symbol=fut.symbol, range_size=4.0, warmup=15, tp_multiplier=2.0,
+        symbol=_SYMBOL, range_size=4.0, warmup=15, tp_multiplier=2.0,
         min_rr=1.5, **strat_kw), risk=risk)
-    return sess, name
+    return sess, name, _SYMBOL
 ```
 
-Also update `_SYMBOL` to match the generated future symbol (`"NIFTY 27AUG2026"`).
+Update `_SYMBOL` to be derived from the future (`fut.symbol` = `"NIFTY 27AUG2026"`), and update `_candle()` to use `exchange="NFO"`.
 
-- [ ] **Step 4: Handle PaperBroker Future metadata**
+**Note:** `PaperBroker` inherits `get_instrument_metadata` from `BrokerAdapter` which returns `{}`. `Instrument.hydrate()` handles empty metadata gracefully (no-op). `Future` has default `tick_size` and `lot_size` from the base `Instrument` constructor, so no change needed to `PaperBroker`.
 
-Ensure `PaperBroker` provides valid metadata (tick_size, lot_size) for `Future` instruments. Check if `DhanBroker.get_instrument_metadata` is called during `hydrate()` and if `PaperBroker` needs a fallback. The `Instrument.hydrate()` method calls `broker.get_instrument_metadata()` — if `PaperBroker` doesn't implement this, it should return a default metadata dict with sensible NIFTY future values (tick_size=0.05, lot_size=75).
-
-- [ ] **Step 5: Run all tests to verify they pass**
+- [ ] **Step 4: Run all tests to verify they pass**
 
 ```bash
 python -m pytest tests/test_valentini_live_wiring.py -v
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add tests/test_valentini_live_wiring.py
@@ -319,22 +324,32 @@ git commit -m "fix: timezone-normalize session gate to IST"
 
 ```python
 def test_order_timeout_is_configurable():
-    """Order timeout should default to 300s but be configurable per-session."""
+    """Order timeout should default to 300s but be configurable per-session.
+
+    Scalpers need sub-30s timeouts; the 5-minute default is too long for
+    aggressive scalping where stale orders accumulate capital.
+    """
     from ntrade.execution.broker_executor import BrokerExecution
     from ntrade.kernel.context import TradingContext
     from ntrade.kernel.event_bus import EventBus
-    from ntrade.kernel.clock import LiveClock, TradingClock
+    from ntrade.kernel.clock import LiveClock
 
-    class MockBroker:
-        def get_order_status(self, order): pass
+    class _StubBroker:
+        def get_order_status(self, order):
+            order.status = OrderStatus.COMPLETED
+            return order
+        def get_instrument_metadata(self, instrument):
+            return {}
 
-    ctx = TradingContext(EventBus(), LiveClock(), mode="live", instruments={}, session_id="t")
+    ctx = TradingContext(EventBus(), LiveClock(), mode="live",
+                         instruments={}, session_id="test")
     # Default timeout
-    exec_default = BrokerExecution(ctx, MockBroker())
+    exec_default = BrokerExecution(ctx, _StubBroker())
     assert exec_default._order_timeout_seconds == 300.0
 
     # Custom timeout
-    exec_custom = BrokerExecution(ctx, MockBroker(), order_timeout_seconds=30)
+    exec_custom = BrokerExecution(ctx, _StubBroker(),
+                                  order_timeout_seconds=30)
     assert exec_custom._order_timeout_seconds == 30.0
 ```
 
@@ -343,11 +358,13 @@ def test_order_timeout_is_configurable():
 ```bash
 python -m pytest tests/test_broker_executor.py::test_order_timeout_is_configurable -v
 ```
+Expected: FAIL — `BrokerExecution.__init__` has no `order_timeout_seconds` parameter
 
 - [ ] **Step 3: Add parameter to BrokerExecution**
 
+In `BrokerExecution.__init__` (line 70), add `order_timeout_seconds` parameter and store it:
+
 ```python
-# In __init__:
 def __init__(self, context, broker, *,
              commission: CommissionModel | None = None,
              statutory=STATUTORY_DEFAULT,
@@ -357,10 +374,27 @@ def __init__(self, context, broker, *,
              order_timeout_seconds: float = 300.0):
     ...
     self._order_timeout_seconds = float(order_timeout_seconds)
-
-# In poll(), replace hardcoded 300:
-if age > self._order_timeout_seconds:
 ```
+
+In `poll()` (line 257), replace the hardcoded `300`:
+
+```python
+if age > self._order_timeout_seconds:  # configurable timeout
+```
+
+Also thread it through `TradingKernel.__init__` and `TradingSession`:
+
+In `ntrade/kernel/session.py`:
+```python
+# Add to TradingKernel.__init__ signature:
+order_timeout_seconds: float = 300.0,
+...
+# In the BrokerExecution construction:
+execution.add("default", BrokerExecution(self.ctx, broker, statutory=statutory,
+                                         order_timeout_seconds=order_timeout_seconds))
+```
+
+`TradingSession` already passes `**kernel_kw` through to `TradingKernel`, so no changes needed there.
 
 - [ ] **Step 4: Run tests**
 
@@ -371,7 +405,7 @@ python -m pytest tests/test_broker_executor.py -v
 - [ ] **Step 5: Commit**
 
 ```bash
-git add ntrade/execution/broker_executor.py tests/test_broker_executor.py
+git add ntrade/execution/broker_executor.py ntrade/kernel/session.py tests/test_broker_executor.py
 git commit -m "feat: make order timeout configurable in BrokerExecution"
 ```
 

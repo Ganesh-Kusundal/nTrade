@@ -348,3 +348,38 @@ describe('auction trail', () => {
     expect(t?.reason).toBe('session_close')
   })
 })
+
+describe('reversal', () => {
+  // The mirror recomputes the session POC per candle; the reversal targets the
+  // *computed* POC (baseSession's heavy centre keeps it ~112), so assertions
+  // check that a reversal trade fired (non-null POC target), not a magic 118.
+  it('does NOT arm a reversal without day profit', () => {
+    const cs = [
+      ...baseSession(),
+      ...Array.from({ length: 35 }, (_, k) => candle(20 + k, { close: 120 - k * 0.5 })), // downtrend
+      absorptionBar(55, 90),
+      candle(56, { close: 92 }),
+    ]
+    const res = runValentini(cs, { ...OPTS })
+    const reversal = res.trades.find((t) => t.tp !== null && t.reason === null && t.exitIndex === null)
+    expect(reversal).toBeUndefined()
+  })
+  it('fires a BUY reversal to the leg POC after a profitable day', () => {
+    const cs = [
+      ...baseSession(),
+      ...Array.from({ length: 35 }, (_, k) => candle(20 + k, { close: 120 - k * 0.5 })),
+      absorptionBar(55, 90),
+      candle(56, { close: 92 }),
+    ]
+    // White-box: seed a profitable day, mirroring how the Python strategy
+    // test sets `strat._day_pnl = 5000.0`. The mirror is a pure function
+    // with no broker fills, so it can't manufacture a winning round-trip
+    // from the fixture — day PnL is seeded via the option.
+    const res = runValentini(cs, { ...OPTS, initialDayPnl: 5000 })
+    const reversal = res.trades.find((t) => t.side === 'BUY' && t.tp !== null && t.reason === null)
+    expect(reversal).toBeDefined()
+    // Reversal targets the computed leg POC (above entry on a BUY fade back
+    // toward it — Python's test asserts tp=118 with entry 92).
+    expect(reversal!.tp).toBeGreaterThan(reversal!.entry)
+  })
+})

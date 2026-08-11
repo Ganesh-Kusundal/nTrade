@@ -89,6 +89,9 @@ export interface ValentiniOptions {
   divergenceVolumeMult?: number
   /** Leg-POC distance multiple marking an overextended reversal zone (2.0). */
   reverseExtensionMult?: number
+  /** Starting realized day PnL (white-box; the mirror has no broker fills, so
+   *  tests seed it — mirrors Python's `_day_pnl = 5000.0` white-box setup). */
+  initialDayPnl?: number
 }
 
 const toMinutes = (hhmm: string): number => {
@@ -215,6 +218,8 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
   let priorPoc: number | null = null
   let dayBars: Candle[] = []
   let legStartIdx = 0
+  let dayPnl = opts.initialDayPnl ?? 0
+  let dayPnlSettled = 0
   let sessionVwap = 0
   let rangeBars: RangeBar[] = []
   let profileReady = false
@@ -294,6 +299,33 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
     return side === 'BUY' ? c2.close < p.low : c2.close > p.high
   }
 
+  const maybeReverse = (idx: number): boolean => {
+    if (dayPnl <= 0 || active !== null) return false
+    if (sessionPoc <= 0) return false
+    // Python's _maybe_reverse reads the most recent raw absorption in the
+    // recency window (`recent[-1]` from self._absorptions), not the
+    // value-edge-armed `_last_absorption` — a reversal can fade an
+    // absorption that sits at an extreme, far from the value edge.
+    const recentAbs = absorptions.filter(
+      (a) =>
+        a.barIndex <= idx &&
+        a.barIndex >= idx + 1 - absLookback &&
+        istDateKey(candles[a.barIndex].time) === istDateKey(candles[idx].time),
+    )
+    if (recentAbs.length === 0) return false
+    const a = recentAbs[recentAbs.length - 1]
+    const close = candles[idx].close
+    const ext = (opts.reverseExtensionMult ?? 2.0) * step
+    if (a.side === 'SELL' && close > sessionPoc + ext && close < a.price) {
+      const sl = a.price + step
+      if (sl > close) { trades.push({ side: 'SELL', entryIndex: idx, entry: close, sl, tp: sessionPoc, rr: 0, exitIndex: null, exit: null, reason: null }); active = { side: 'SELL', entry: close, sl, tp: sessionPoc, rr: 0, impulseVolume: 0 }; return true }
+    } else if (a.side === 'BUY' && close < sessionPoc - ext && close > a.price) {
+      const sl = a.price - step
+      if (sl < close) { trades.push({ side: 'BUY', entryIndex: idx, entry: close, sl, tp: sessionPoc, rr: 0, exitIndex: null, exit: null, reason: null }); active = { side: 'BUY', entry: close, sl, tp: sessionPoc, rr: 0, impulseVolume: 0 }; return true }
+    }
+    return false
+  }
+
   let dayKey = ''
   for (let i = 0; i < candles.length; i++) {
     const c = candles[i]
@@ -325,6 +357,8 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
       legStartIdx = 0
       sessionVwap = 0
       rangeBars = []
+      dayPnl = opts.initialDayPnl ?? 0
+      dayPnlSettled = 0
     }
     // Rebuild today's location profile from the bars seen so far this session.
     dayBars.push(c)
@@ -394,9 +428,18 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
       continue
     }
 
+    // Settle any closed trades' PnL once (the reversal gate reads dayPnl).
+    while (dayPnlSettled < trades.length && trades[dayPnlSettled].exit !== null) {
+      const t = trades[dayPnlSettled]
+      dayPnl += t.side === 'BUY' ? (t.exit! - t.entry) : (t.entry - t.exit!)
+      dayPnlSettled++
+    }
+
     // Warm-up + session gate: the strategy only arms setups inside the
     // trading session (never overnight risk).
     if (i < warmup || !inSession(i)) continue
+
+    if (dayPnl > 0 && maybeReverse(i)) continue
 
     // Phase machine (mirrors `_update_phase`). Absorptions are precomputed,
     // but each evaluation must only see bars up to the current close (the

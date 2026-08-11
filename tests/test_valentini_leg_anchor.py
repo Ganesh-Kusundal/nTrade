@@ -346,3 +346,40 @@ def test_volume_divergence_exit(monkeypatch):
     reason = [s.metadata.get("exit_reason") for s in _signals(k)
               if s.side == "SELL"]
     assert "divergence" in reason, f"got reasons {reason}"
+
+
+# ------------------------------------------------------------------ reversal
+
+def test_reversal_not_armed_without_day_profit():
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15,
+                             tp_multiplier=2.0, min_rr=1.5)
+    k.register_strategy(strat)
+    assert strat._day_pnl == 0.0
+    # Overextension + absorption even when all else aligns -> no reversal.
+    for i in range(35):
+        _candle(k, i, close=120.0 - i * 0.5, volume=100)
+    _absorption_bar(k, 35, at=90.0)
+    _candle(k, 36, close=92.0)
+    assert _fills(k) == []                          # flat: reversal is PnL-gated
+
+
+def test_reversal_fires_to_poc_after_profit(monkeypatch):
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15,
+                             tp_multiplier=2.0, min_rr=1.5)
+    k.register_strategy(strat)
+    strat._day_pnl = 5000.0                      # profitable day (white-box)
+    _fixed_profile(monkeypatch, val=110.0, poc=118.0, vah=126.0)
+    # Downtrend carries price far below the POC (deep oversold), a BUY
+    # absorption (big volume, tiny range, close>=open) appears at the extreme,
+    # then price responds back up -> BUY reversal targeting the leg POC 118.
+    for i in range(35):
+        _candle(k, i, close=120.0 - i * 0.5, volume=100)   # last close 102.5
+    _absorption_bar(k, 35, at=90.0)              # BUY absorption deep below POC
+    _candle(k, 36, close=92.0)                   # respond back up
+    buys = [f for f in _fills(k) if f.side == "BUY"]
+    assert buys, "reversal BUY should fill"
+    sig = [s for s in _signals(k) if s.metadata.get("phase") == "reversal"]
+    assert sig
+    assert sig[0].metadata.get("tp") == 118.0    # target = leg POC

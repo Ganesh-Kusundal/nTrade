@@ -189,6 +189,7 @@ class ValentiniScalper(Strategy):
         self._atr: float = 0.0            # current ATR, recomputed per candle
         self._step: float = 1.0           # step = max(range_size, ATR) — ATR floor
         self._leg_start_idx: int = 0      # row index where the current impulse leg began
+        self._day_pnl: float = 0.0        # realized PnL today (reversal gate)
 
     # ------------------------------------------------------------------ hooks
     @property
@@ -343,6 +344,68 @@ class ValentiniScalper(Strategy):
             return float(done.iloc[-1]["close"]) < float(p["low"])
         return float(done.iloc[-1]["close"]) > float(p["high"])
 
+    def _maybe_reverse(self, event) -> bool:
+        """Secondary mean-reversion setup (Fabio model §6): overextension +
+        absorption at the extreme + response back toward leg POC. Only armed
+        after a profitable day (``_day_pnl > 0``). Returns True when it
+        emitted a reversal (caller then skips the continuation chain)."""
+        if self._active is not None or self._pending is not None:
+            return False
+        if self._day_pnl <= 0:
+            return False
+        p = self._profile
+        if p is None or p.poc <= 0:
+            return False
+        close = float(event.close)
+        step = self._step
+        poc = p.poc
+        window_len = len(self._rows)
+        recent = [a for a in self._absorptions
+                  if a.bar_index >= window_len - self.abs_lookback]
+        if not recent:
+            return False
+        a = recent[-1]
+        if a.side == "SELL" and close > poc + self.reverse_extension_mult * step:
+            # price absorbed at the high extreme, now responding back down
+            if close < a.price:
+                entry = float(event.close)
+                sl = a.price + step
+                if sl > entry:
+                    self._emit_reversal(event, "SELL", entry, sl, poc, a)
+                    return True
+        elif a.side == "BUY" and close < poc - self.reverse_extension_mult * step:
+            if close > a.price:
+                entry = float(event.close)
+                sl = a.price - step
+                if sl < entry:
+                    self._emit_reversal(event, "BUY", entry, sl, poc, a)
+                    return True
+        return False
+
+    def _emit_reversal(self, event, side: str, entry: float, sl: float,
+                       poc: float, absorption) -> None:
+        """Size a reversal fade: risk-budget sizing, MARKET entry, SL at the
+        extension extreme, TP = the leg POC."""
+        if self._active is not None or self._pending is not None:
+            return
+        risk = float(self.ctx.account.balance) * (self.risk_per_trade_pct / 100.0)
+        per_unit = abs(entry - sl)
+        qty = int(risk / per_unit) if per_unit > 0 else 1
+        qty = max(self.lot_size, (qty // self.lot_size) * self.lot_size)
+        self._pending = {"symbol": event.symbol, "side": side, "entry": entry,
+                         "sl": sl, "tp": poc, "qty": qty, "impulse_volume": 0.0}
+        self.emit_signal(
+            symbol=event.symbol, exchange=event.exchange, side=side,
+            quantity=qty, price=0.0,  # MARKET
+            reference_price=float(event.close),
+            sl=sl, tp=poc, rr=0.0, phase="reversal",
+            absorption=absorption.side,
+            target="reversal_poc", prior_poc=self._prior_poc,
+            session_poc=poc,
+        )
+        if self.ctx.mode != "live" and self._active is None:
+            self._pending = None
+
     def on_candle_closed(self, event) -> None:
         if self.symbol is not None and event.symbol != self.symbol:
             return
@@ -378,9 +441,15 @@ class ValentiniScalper(Strategy):
         if key != self._session_key:
             if self._profile is not None:
                 self._prior_poc = self._profile.poc or self._prior_poc
+            prev_key = self._session_key
             self._session_key = key
             self._profile = None
             self._leg_start_idx = 0
+            if prev_key is not None:
+                # A genuine session rollover resets the realized day PnL.
+                # The FIRST session must not wipe a white-box _day_pnl (or
+                # the PnL gate would never arm on warm-up day one).
+                self._day_pnl = 0.0
         step = self._step
         self._range_bars = build_range_bars(
             frame, range_size=self._range_size,
@@ -448,6 +517,8 @@ class ValentiniScalper(Strategy):
             self._manage_exit(event)
             return
         if not self._in_session(event.ts):
+            return
+        if self._maybe_reverse(event):
             return
         self._update_phase(event)
 
@@ -706,6 +777,10 @@ class ValentiniScalper(Strategy):
         fill is at the bar's market when the exit is aggressive — SL/TP
         management is a backtest approximation, see the plan appendix)."""
         act = self._active
+        if act["side"] == "BUY":
+            self._day_pnl += (price - act["entry"]) * act["qty"]
+        else:
+            self._day_pnl += (act["entry"] - price) * act["qty"]
         self.emit_signal(
             symbol=event.symbol, exchange=event.exchange, side=side,
             quantity=act["qty"], price=0.0,  # MARKET

@@ -266,3 +266,83 @@ def test_trigger_requires_absorption_side_matches_direction(monkeypatch):
     _candle(k, 31, close=118.0)
     _candle(k, 32, close=122.0)               # above VWAP, not in balance
     assert not any(f.side == "BUY" for f in _fills(k))
+
+
+# ------------------------------------------------------------------ auction trail
+
+def _install_range_bars(monkeypatch, bars_df):
+    """Force build_range_bars to return a controlled completed-bar series.
+    NOTE: on_candle_closed REBUILDS self._range_bars every candle
+    (strategies.py:295-297), so a direct `strat._range_bars = ...` override
+    would be wiped before _manage_exit runs. Monkeypatching the builder (the
+    _fixed_profile idiom) survives the rebuild."""
+    monkeypatch.setattr("ntrade.engines.strategies.build_range_bars",
+                        lambda *a, **kw: bars_df)
+
+
+def _runner_long(k, monkeypatch):
+    """Drive the strategy to a filled BUY entry (runner: tp=None) at bar 32."""
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15,
+                             tp_multiplier=2.0, min_rr=1.5, fade_extended=False)
+    k.register_strategy(strat)
+    _fixed_profile(monkeypatch, val=110.0, poc=118.0, vah=126.0)
+    _uptrend_bars(k, 30)
+    _absorption_bar(k, 30, at=110.0)
+    _candle(k, 31, close=118.0)
+    _candle(k, 32, close=122.0)                # BUY entry at 122
+    buys = [f for f in _fills(k) if f.side == "BUY"]
+    assert buys, "entry did not fill"
+    return strat, buys[0]
+
+
+def test_runner_has_no_fixed_target(monkeypatch):
+    k = _kernel()
+    strat, _ = _runner_long(k, monkeypatch)
+    sig = [s for s in _signals(k)
+           if s.side == "BUY" and s.metadata.get("phase") == "signal"]
+    assert sig
+    assert sig[0].metadata.get("tp") is None       # runner, no hard target
+    assert sig[0].metadata.get("target") == "runner"
+
+
+def test_structure_break_exit(monkeypatch):
+    k = _kernel()
+    strat, _ = _runner_long(k, monkeypatch)
+    # Controlled series: latest completed bar closes (118.5) through the prior
+    # bar's low (121.0) = structure break. Volume is HIGH (4000) so the
+    # divergence gate does NOT fire first (it needs weak volume).
+    _install_range_bars(monkeypatch, pd.DataFrame({
+        "high": [116.0, 120.0, 124.0, 127.0],
+        "low":  [114.0, 117.0, 121.0, 119.0],
+        "close":[115.5, 119.0, 123.0, 118.5],
+        "volume":[100.0, 100.0, 100.0, 4000.0],
+        "is_complete":[True, True, True, True],
+    }))
+    _candle(k, 33, close=118.5, open_=122.0, high=122.5, low=118.0, volume=100)
+    sells = [f for f in _fills(k) if f.side == "SELL"]
+    assert sells, "structure break must exit the long"
+    reason = [s.metadata.get("exit_reason") for s in _signals(k)
+              if s.side == "SELL"]
+    assert "structure_break" in reason, f"got reasons {reason}"
+
+
+def test_volume_divergence_exit(monkeypatch):
+    k = _kernel()
+    strat, _ = _runner_long(k, monkeypatch)
+    # Controlled series ends with a HIGHER high (127) on weak volume (100);
+    # the same bar's close (126) is NOT below the prior low (121) so the
+    # structure-break gate does not fire. Impulse volume at entry ~4700 so
+    # 0.6 x 4700 = 2820 > 100 -> divergence fires.
+    _install_range_bars(monkeypatch, pd.DataFrame({
+        "high": [116.0, 120.0, 124.0, 127.0],
+        "low":  [114.0, 117.0, 121.0, 122.0],
+        "close":[115.5, 119.0, 123.0, 126.0],
+        "volume":[100.0, 100.0, 100.0, 100.0],
+        "is_complete":[True, True, True, True],
+    }))
+    _candle(k, 33, close=128.0, open_=126.5, high=129.0, low=126.0, volume=80)
+    sells = [f for f in _fills(k) if f.side == "SELL"]
+    assert sells
+    reason = [s.metadata.get("exit_reason") for s in _signals(k)
+              if s.side == "SELL"]
+    assert "divergence" in reason, f"got reasons {reason}"

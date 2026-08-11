@@ -295,6 +295,54 @@ class ValentiniScalper(Strategy):
             return vwap_side
         return vwap_side if struct == vwap_side else None
 
+    def _last_swing_low(self) -> float | None:
+        """Low of the most recent completed range bar that is higher than the
+        prior completed bar's low (the trail anchor for a long)."""
+        done = self._range_bars[self._range_bars["is_complete"].astype(bool)]
+        if len(done) < 2:
+            return None
+        pl = float(done.iloc[-2]["low"])
+        cl = float(done.iloc[-1]["low"])
+        return cl if cl > pl else None
+
+    def _last_swing_high(self) -> float | None:
+        """High of the most recent completed range bar that is lower than the
+        prior completed bar's high (the trail anchor for a short)."""
+        done = self._range_bars[self._range_bars["is_complete"].astype(bool)]
+        if len(done) < 2:
+            return None
+        ph = float(done.iloc[-2]["high"])
+        ch = float(done.iloc[-1]["high"])
+        return ch if ch < ph else None
+
+    def _divergence_exit(self, act) -> bool:
+        """Volume-price divergence: a new swing extreme on volume <
+        divergence_volume_mult x the impulse-leg volume -> exit."""
+        done = self._range_bars[self._range_bars["is_complete"].astype(bool)]
+        if len(done) < 2:
+            return False
+        p, c = done.iloc[-2], done.iloc[-1]
+        imp_vol = float(act.get("impulse_volume") or 0.0)
+        if imp_vol <= 0:
+            return False
+        weak = float(c["volume"]) < self.divergence_volume_mult * imp_vol
+        if not weak:
+            return False
+        if act["side"] == "BUY":
+            return float(c["high"]) > float(p["high"])
+        return float(c["low"]) < float(p["low"])
+
+    def _structure_broken(self, side: str, close: float) -> bool:
+        """A completed range bar closes through the prior bar's structure
+        extreme -> the auction narrative broke."""
+        done = self._range_bars[self._range_bars["is_complete"].astype(bool)]
+        if len(done) < 2:
+            return False
+        p = done.iloc[-2]
+        if side == "BUY":
+            return float(done.iloc[-1]["close"]) < float(p["low"])
+        return float(done.iloc[-1]["close"]) > float(p["high"])
+
     def on_candle_closed(self, event) -> None:
         if self.symbol is not None and event.symbol != self.symbol:
             return
@@ -522,28 +570,28 @@ class ValentiniScalper(Strategy):
             return
         entry = float(event.close)
         step = self._step
+        leg = pd.DataFrame(self._rows).iloc[self._leg_start_idx:]
+        impulse_volume = float(leg["volume"].sum()) if not leg.empty else 0.0
         p = self._profile
         val = p.val if p else None
         vah = p.vah if p else None
         # SL pinned at the value edge (one step outside) — never inside value.
         if side == "BUY":
             sl = (val - step) if val is not None else (self._last_absorption.price - step)
-            tp_fallback = entry + (entry - sl) * self.tp_multiplier
-            rr_fallback = (tp_fallback - entry) / (entry - sl) if entry > sl else 0.0
-            tp, rr = tp_fallback, rr_fallback
+            rr_fb = (entry + (entry - sl) * self.tp_multiplier - entry) / (entry - sl) if entry > sl else 0.0
+            tp, rr, target = None, rr_fb, "runner"
             if self._prior_poc is not None and self._prior_poc > entry:
                 rr_poc = (self._prior_poc - entry) / (entry - sl) if entry > sl else 0.0
                 if rr_poc >= self.min_rr:
-                    tp, rr = self._prior_poc, rr_poc  # target prior POC
+                    tp, rr, target = self._prior_poc, rr_poc, "prior_poc"
         else:
             sl = (vah + step) if vah is not None else (self._last_absorption.price + step)
-            tp_fallback = entry - (sl - entry) * self.tp_multiplier
-            rr_fallback = (entry - tp_fallback) / (sl - entry) if sl > entry else 0.0
-            tp, rr = tp_fallback, rr_fallback
+            rr_fb = (entry - (entry - (sl - entry) * self.tp_multiplier)) / (sl - entry) if sl > entry else 0.0
+            tp, rr, target = None, rr_fb, "runner"
             if self._prior_poc is not None and self._prior_poc < entry:
                 rr_poc = (entry - self._prior_poc) / (sl - entry) if sl > entry else 0.0
                 if rr_poc >= self.min_rr:
-                    tp, rr = self._prior_poc, rr_poc
+                    tp, rr, target = self._prior_poc, rr_poc, "prior_poc"
         if rr < self.min_rr:
             logger.info("valentini skip: RR %.2f < min %.2f", rr, self.min_rr)
             return
@@ -557,7 +605,8 @@ class ValentiniScalper(Strategy):
         # rejected the entry — and a synchronous portfolio read would break
         # live mode, where broker fills arrive asynchronously via websocket.
         self._pending = {"symbol": event.symbol, "side": side, "entry": entry,
-                         "sl": sl, "tp": tp, "qty": qty}
+                         "sl": sl, "tp": tp, "qty": qty,
+                         "impulse_volume": impulse_volume}
         self.emit_signal(
             symbol=event.symbol, exchange=event.exchange, side=side,
             quantity=qty, price=0.0,  # MARKET
@@ -565,7 +614,7 @@ class ValentiniScalper(Strategy):
             sl=sl, tp=tp, rr=round(rr, 2), phase="signal",
             absorption=self._last_absorption.side,
             sl_source="val_vah" if p else "absorption",
-            target="prior_poc" if tp == self._prior_poc else "r_multiple",
+            target=target,
             prior_poc=self._prior_poc, session_poc=p.poc if p else None,
         )
         # Synchronous modes (backtest/replay): by the time emit_signal returns
@@ -598,32 +647,59 @@ class ValentiniScalper(Strategy):
         self._pending = None
 
     def _manage_exit(self, event) -> None:
-        """Stop / target / breakeven / session-close management."""
+        """Auction-following trail / stop / target / session-close management."""
         act = self._active
         low, high, close = float(event.low), float(event.high), float(event.close)
-        if act["side"] == "BUY":
+        risk = abs(act["entry"] - act["sl"])
+        side = act["side"]
+        # Hard session close FIRST: the session gate is absolute ("never hold
+        # past close") and must win over the auction exits, which are
+        # conditional on price/volume narrative. Without this ordering a
+        # post-session candle would exit "structure_break" instead of
+        # "session_close".
+        if not self._in_session(event.ts):
+            self._exit(event, "SELL" if side == "BUY" else "BUY",
+                       close, reason="session_close")
+            return
+        if side == "BUY":
             if low <= act["sl"]:
                 self._exit(event, "SELL", act["sl"], reason="stop")
-            elif high >= act["tp"]:
+                return
+            if act.get("tp") is not None and high >= act["tp"]:
                 self._exit(event, "SELL", act["tp"], reason="target")
-            else:
-                # trail to breakeven once the trade is 0.5R in profit
-                half = act["entry"] + 0.5 * (act["tp"] - act["entry"])
-                if high >= half and act["sl"] < act["entry"]:
-                    act["sl"] = act["entry"]
+                return
+            if self._divergence_exit(act):
+                self._exit(event, "SELL", close, reason="divergence")
+                return
+            if self._structure_broken(side, close):
+                self._exit(event, "SELL", close, reason="structure_break")
+                return
+            # Auction trail: once >= trail_arm_mult R in profit, ratchet the
+            # stop under the last higher low. ponytail: swing-pivot trail;
+            # a per-tick ATR trail is the upgrade path if stops get wicked.
+            if high >= act["entry"] + self.trail_arm_mult * risk:
+                pivot = self._last_swing_low()
+                if pivot is not None and pivot > act["sl"]:
+                    act["sl"] = pivot
         else:
             if high >= act["sl"]:
                 self._exit(event, "BUY", act["sl"], reason="stop")
-            elif low <= act["tp"]:
+                return
+            if act.get("tp") is not None and low <= act["tp"]:
                 self._exit(event, "BUY", act["tp"], reason="target")
-            else:
-                half = act["entry"] - 0.5 * (act["entry"] - act["tp"])
-                if low <= half and act["sl"] > act["entry"]:
-                    act["sl"] = act["entry"]
-        # hard session close: never hold overnight
-        if self._active is not None and not self._in_session(event.ts):
-            self._exit(event, "SELL" if act["side"] == "BUY" else "BUY",
-                       close, reason="session_close")
+                return
+            if self._divergence_exit(act):
+                self._exit(event, "BUY", close, reason="divergence")
+                return
+            if self._structure_broken(side, close):
+                self._exit(event, "BUY", close, reason="structure_break")
+                return
+            # Auction trail (short): once >= trail_arm_mult R in profit,
+            # ratchet the stop down to just above the last lower high.
+            if low <= act["entry"] - self.trail_arm_mult * risk:
+                pivot = self._last_swing_high()
+                if pivot is not None and pivot < act["sl"]:
+                    act["sl"] = pivot
 
     def _exit(self, event, side: str, price: float, *, reason: str) -> None:
         """Exit at market (the trigger price is the *intent* price; the actual

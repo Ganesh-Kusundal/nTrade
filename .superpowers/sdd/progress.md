@@ -73,3 +73,4 @@ Task 1 (T-020): complete — removed fake streaming no-op capabilities (_market_
 - Remaining review findings not started: Important #2 zero-price fill, #3 SEBI conversion validation, #4 DH-904 envelope swallowing, #5-7 minor; minor findings triage
 ## Plan: 2026-08-11-valentini-amt-corrections.md
 - Task 1: complete (constructor params leg_impulse_mult=2.0/accum_volume_mult=1.5 + state _atr/_step/_leg_start_idx, commit dfe8295, 24 passed, review clean; Minor: _step comment alignment)
+- Task 2: complete (ATR floor on step: atr import + per-candle _atr/_step + 3 step sites replaced, commit 641e28a, 1 new + 24 regression passed, review clean)

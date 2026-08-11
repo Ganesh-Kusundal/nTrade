@@ -459,7 +459,8 @@ class ValentiniScalper(Strategy):
             # balance. Extended/ depth gates are layered on top.
             if self._in_balance(close):
                 return  # balance — stay flat, no signal
-            if side == "BUY" and close > self._vwap:
+            dirn = self._direction(close)
+            if side == "BUY" and dirn == "BUY":
                 if self.fade_extended and self._extended(close, side):
                     return  # extended beyond the band — wait for the pullback
                 if not self._cvd_agrees(side):
@@ -467,7 +468,7 @@ class ValentiniScalper(Strategy):
                 if self._depth_blocked(side, event.symbol):
                     return  # no live buy-side depth pressure — wait
                 self._phase = "signal"
-            elif side == "SELL" and close < self._vwap:
+            elif side == "SELL" and dirn == "SELL":
                 if self.fade_extended and self._extended(close, side):
                     return
                 if not self._cvd_agrees(side):

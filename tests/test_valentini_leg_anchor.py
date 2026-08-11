@@ -246,3 +246,23 @@ def test_direction_falls_back_to_vwap_without_structure_vote(monkeypatch):
     strat._vwap = 110.0
     assert strat._direction(close=122.0) == "BUY"
     assert strat._direction(close=105.0) == "SELL"
+
+
+# ------------------------------------------------------------------ direction-gated trigger
+
+def test_trigger_requires_absorption_side_matches_direction(monkeypatch):
+    from ntrade.domain.analytics.range_bars import swing_bias
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15,
+                             tp_multiplier=2.0, min_rr=1.5, fade_extended=False)
+    k.register_strategy(strat)
+    # Direction is SELL (structure) but the absorption is BUY at VAL -> the
+    # continuation trigger must NOT fire even though every other gate passes.
+    monkeypatch.setattr("ntrade.engines.strategies.swing_bias",
+                        lambda bars: "SELL")
+    _fixed_profile(monkeypatch, val=110.0, poc=118.0, vah=126.0)
+    _uptrend_bars(k, 30)
+    _absorption_bar(k, 30, at=110.0)          # BUY absorption at VAL
+    _candle(k, 31, close=118.0)
+    _candle(k, 32, close=122.0)               # above VWAP, not in balance
+    assert not any(f.side == "BUY" for f in _fills(k))

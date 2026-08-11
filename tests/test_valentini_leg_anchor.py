@@ -251,7 +251,6 @@ def test_direction_falls_back_to_vwap_without_structure_vote(monkeypatch):
 # ------------------------------------------------------------------ direction-gated trigger
 
 def test_trigger_requires_absorption_side_matches_direction(monkeypatch):
-    from ntrade.domain.analytics.range_bars import swing_bias
     k = _kernel()
     strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15,
                              tp_multiplier=2.0, min_rr=1.5, fade_extended=False)

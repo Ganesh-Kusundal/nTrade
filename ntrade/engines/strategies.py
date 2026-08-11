@@ -97,10 +97,12 @@ class ValentiniScalper(Strategy):
         applies when ``depth_imbalance_min`` is set.
 
     SL = VAL − step (long) / VAH + step (short). TP prefers the prior session
-    POC when its R:R clears ``min_rr``, else the guide's R-multiple fallback.
-    Stop trails to breakeven at 0.5R; the session gate keeps the scalper flat
-    overnight. True order flow (tape, footprint) is unavailable on Dhan — the
-    CVD here is an OHLCV proxy, not tape; it is labelled as such.
+    POC when its R:R clears ``min_rr``, else the position is a runner (no hard
+    target) that follows the auction: the stop trails under swing pivots and
+    exits on a structure break or volume-price divergence. The session gate
+    keeps the scalper flat overnight. True order flow (tape, footprint) is
+    unavailable on Dhan — the CVD here is an OHLCV proxy, not tape; it is
+    labelled as such.
     """
 
     name = "valentini"
@@ -634,8 +636,9 @@ class ValentiniScalper(Strategy):
 
         Stop: VAL − step (long) / VAH + step (short) — guide §4.1. Target:
         prefer the prior session's POC (Fabio's "target the POC") when its
-        R:R clears ``min_rr``; otherwise fall back to the guide's
-        ``tp_multiplier`` R-multiple. ``min_rr`` filters degenerate setups.
+        R:R clears ``min_rr``; otherwise the position is a runner (``tp=None``)
+        that follows the auction via _manage_exit (swing-pivot trail +
+        divergence/structure exits). ``min_rr`` filters degenerate setups.
         """
         if self._active is not None or self._pending is not None:
             return

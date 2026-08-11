@@ -83,3 +83,4 @@ Task 1 (T-020): complete — removed fake streaming no-op capabilities (_market_
 ## Plan: 2026-08-11-valentini-continuation-reversal.md
 - Task 1: complete (swing_bias helper + 3 tests, commit 2ef0dc3, 7 passed, review clean)
 - Task 2: complete (direction gate: swing_bias import + 4 knobs + _volume_supports/_direction, commit 804258e, 11 leg-anchor + 24 strategy passed, review clean; PLAN DEFECT found & fixed: test_direction_none_when_volume_does_not_support was flawed — no impulse leg meant _leg_start_idx=0 so volume gate short-circuited; corrected to white-box _leg_start_idx=20)
+- Task 3: complete (direction-gated trigger, commit 50198d5, 12 leg-anchor + 24 strategy passed, review clean; Minor: unused swing_bias import in new test — verbatim from brief)

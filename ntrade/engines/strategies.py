@@ -315,9 +315,10 @@ class ValentiniScalper(Strategy):
             self._vwap_upper = self._vwap_lower = self._vwap
         # Guide "location": POC/VAH/VAL over the CURRENT LEG, not the whole
         # session. A new impulse leg starts at the last 1m candle whose span
-        # >= leg_impulse_mult * range_size. Range-bar spans can't drive this
-        # (they close at range_size by construction), so the impulse test is
-        # on 1m candle span. ponytail: single-candle span heuristic; a real
+        # >= leg_impulse_mult * self._step (the ATR-floored step, so it binds
+        # even when range_size < ATR). Range-bar spans can't drive this (they
+        # close at range_size by construction), so the impulse test is on 1m
+        # candle span. ponytail: single-candle span heuristic; a real
         # leg detector (multi-candle momentum) would be over-engineering here.
         if not frame.empty:
             leg_frame = frame.iloc[self._leg_start_idx:]

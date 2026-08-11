@@ -111,6 +111,25 @@ def test_impulse_candle_reanchors_leg():
     assert strat._leg_start_idx == 32
 
 
+def test_impulse_reanchors_leg_when_atr_floor_binds():
+    k = _kernel()
+    # Tiny range_size (1.0) + wide volatile bars (high-low 5.0) -> ATR(14) of
+    # ~5.0 floors the step, so the impulse threshold is leg_impulse_mult * ATR
+    # (~10.0), not leg_impulse_mult * range_size (2.0).
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=1.0, warmup=15)
+    k.register_strategy(strat)
+    for i in range(30):
+        _candle(k, i, close=100.0 + i * 0.5, open_=99.0 + i * 0.5,
+                high=102.5 + i * 0.5, low=97.5 + i * 0.5, volume=500)
+    assert strat._leg_start_idx == 0
+    assert strat._atr > 1.0, f"setup should yield ATR > 1.0, got {strat._atr}"
+    assert strat._step > strat.range_size, (
+        f"step {strat._step} must exceed range_size {strat.range_size} "
+        "for the ATR floor to be binding")
+    _impulse_bar(k, 30, at=115.0, span=14.0)   # span 14 >= 2.0*~5.0
+    assert strat._leg_start_idx == 30
+
+
 # ------------------------------------------------------------------ volume accumulation
 
 def test_accumulation_requires_recent_volume(monkeypatch):

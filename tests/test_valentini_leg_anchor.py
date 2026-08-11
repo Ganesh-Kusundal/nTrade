@@ -86,3 +86,26 @@ def test_step_floored_to_atr_when_range_below_atr():
     assert strat._atr > 1.0, f"setup should yield ATR > 1.0, got {strat._atr}"
     assert strat._step >= strat._atr, (
         f"step {strat._step} must be >= ATR {strat._atr}")
+
+
+# ------------------------------------------------------------------ leg-anchored profile
+
+def _impulse_bar(k, i, at, span=10.0, volume=2000):
+    """A single 1m candle whose high-low range >= leg_impulse_mult * range_size
+    (2.0 * 4.0 = 8.0) — a directional impulse that starts a new leg."""
+    _candle(k, i, close=at, open_=at - span / 2,
+            high=at + span / 2, low=at - span / 2, volume=volume)
+
+
+def test_impulse_candle_reanchors_leg():
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15)
+    k.register_strategy(strat)
+    _uptrend_bars(k, 30)                 # leg starts at row 0 (no impulse yet)
+    assert strat._leg_start_idx == 0
+    _impulse_bar(k, 30, at=115.0)        # span 10 >= 8 -> new leg at row 30
+    assert strat._leg_start_idx == 30
+    _candle(k, 31, close=116.0)          # a quiet bar keeps the same leg
+    assert strat._leg_start_idx == 30
+    _impulse_bar(k, 32, at=118.0)        # another impulse -> leg re-anchors
+    assert strat._leg_start_idx == 32

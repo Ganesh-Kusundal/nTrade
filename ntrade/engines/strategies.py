@@ -290,20 +290,43 @@ class ValentiniScalper(Strategy):
                 self._prior_poc = self._profile.poc or self._prior_poc
             self._session_key = key
             self._profile = None
+            self._leg_start_idx = 0
         step = self._step
         self._range_bars = build_range_bars(
             frame, range_size=self._range_size,
             atr_period=self.atr_period, tick_size=self.tick_size)
+        # Advance the leg anchor: the last 1m candle with span >= impulse
+        # threshold starts a fresh leg. Clamp to the windowed frame.
+        imp_thr = self.leg_impulse_mult * self._step
+        imp_idx = -1
+        for i in range(len(frame) - 1, -1, -1):
+            row = frame.iloc[i]
+            if (float(row["high"]) - float(row["low"])) >= imp_thr:
+                imp_idx = i
+                break
+        if imp_idx >= 0:
+            self._leg_start_idx = imp_idx
+        self._leg_start_idx = min(self._leg_start_idx, len(frame) - 1)
         self._vwap = float(vwap(frame).iloc[-1])
         try:
             upper, lower = vwap_bands(frame, num_std=2.0)
             self._vwap_upper, self._vwap_lower = upper, lower
         except Exception:
             self._vwap_upper = self._vwap_lower = self._vwap
-        # Guide "location": POC/VAH/VAL over TODAY's rows, not a 30-bar tail.
+        # Guide "location": POC/VAH/VAL over the CURRENT LEG, not the whole
+        # session. A new impulse leg starts at the last 1m candle whose span
+        # >= leg_impulse_mult * range_size. Range-bar spans can't drive this
+        # (they close at range_size by construction), so the impulse test is
+        # on 1m candle span. ponytail: single-candle span heuristic; a real
+        # leg detector (multi-candle momentum) would be over-engineering here.
         if not frame.empty:
-            self._profile = build_volume_profile(
-                frame, step=self._step)
+            leg_frame = frame.iloc[self._leg_start_idx:]
+            if self._leg_start_idx > 0 and not leg_frame.empty:
+                self._profile = build_volume_profile(
+                    leg_frame, step=self._step)
+            else:
+                self._profile = build_volume_profile(
+                    frame, step=self._step)
         self._absorptions = detect_absorptions(
             frame, avg_volume_mult=self.abs_volume_mult,
             range_threshold=self.abs_range_threshold,

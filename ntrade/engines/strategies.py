@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from ntrade.domain.analytics.indicators import vwap, vwap_bands
+from ntrade.domain.analytics.indicators import atr, vwap, vwap_bands
 from ntrade.domain.analytics.order_flow import detect_absorptions, cvd_from_ohlcv
 from ntrade.domain.analytics.range_bars import calc_auto_range, build_range_bars
 from ntrade.domain.analytics.volume_profile import build_volume_profile
@@ -272,6 +272,15 @@ class ValentiniScalper(Strategy):
         # the location; VWAP gives the direction filter).
         self._range_size = self.range_size or calc_auto_range(
             frame, atr_period=self.atr_period, tick_size=self.tick_size)
+        # ATR floor: step can never be tighter than 1x ATR (low-tick IL&O
+        # contracts would otherwise get sub-ATR stops from a small explicit
+        # range_size). calc_auto_range already yields ~1x ATR, so this only
+        # clamps explicit range_size values.
+        a = atr(frame, self.atr_period)
+        self._atr = 0.0
+        if len(a) and pd.notna(a.iloc[-1]) and a.iloc[-1] > 0:
+            self._atr = float(a.iloc[-1])
+        self._step = max(self._range_size or 1.0, self._atr or 0.0)
         # Session key (IST date) drives the location profile. On a new day we
         # stash the prior-session POC as the aggression target and drop the
         # stale profile so today's value area is rebuilt from scratch.
@@ -281,7 +290,7 @@ class ValentiniScalper(Strategy):
                 self._prior_poc = self._profile.poc or self._prior_poc
             self._session_key = key
             self._profile = None
-        step = self._range_size or 1.0
+        step = self._step
         self._range_bars = build_range_bars(
             frame, range_size=self._range_size,
             atr_period=self.atr_period, tick_size=self.tick_size)
@@ -294,7 +303,7 @@ class ValentiniScalper(Strategy):
         # Guide "location": POC/VAH/VAL over TODAY's rows, not a 30-bar tail.
         if not frame.empty:
             self._profile = build_volume_profile(
-                frame, step=self._range_size or None)
+                frame, step=self._step)
         self._absorptions = detect_absorptions(
             frame, avg_volume_mult=self.abs_volume_mult,
             range_threshold=self.abs_range_threshold,
@@ -334,7 +343,7 @@ class ValentiniScalper(Strategy):
         window_len = len(self._rows)
         recent = [a for a in self._absorptions
                   if a.bar_index >= window_len - self.abs_lookback]
-        step = self._range_size or 1.0
+        step = self._step
 
         if self._phase == "waiting":
             # Only arm an absorption that sits at the value edge (VAL/VAH),
@@ -434,7 +443,7 @@ class ValentiniScalper(Strategy):
         if self._active is not None or self._pending is not None:
             return
         entry = float(event.close)
-        step = self._range_size or 1.0
+        step = self._step
         p = self._profile
         val = p.val if p else None
         vah = p.vah if p else None

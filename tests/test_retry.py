@@ -64,6 +64,56 @@ class TestRetryPolicy:
         policy.execute(fn, 1, 2, x=10, y=20)
         fn.assert_called_once_with(1, 2, x=10, y=20)
 
+    # ------------------------------------------------------------- B-011
+    def test_does_not_retry_rate_limited(self):
+        """A RateLimited failure is re-raised immediately (never retried):
+        retrying a DH-904 only burns more quota (B-011)."""
+        from ntrade.execution.rate_limit import Quota, RateLimited
+        policy = RetryPolicy(max_retries=3, base_delay=0.0, jitter=0.0)
+        fn = MagicMock(side_effect=RateLimited(Quota.QUOTE, message="DH-904"))
+        with pytest.raises(RateLimited):
+            policy.execute(fn)
+        assert fn.call_count == 1  # no retry attempt
+
+    def test_does_not_retry_dh904_shaped_error(self):
+        """Even a plain exception whose text matches DH-904 is not retried."""
+        policy = RetryPolicy(max_retries=3, base_delay=0.0, jitter=0.0)
+        fn = MagicMock(side_effect=RuntimeError("DH-904 rate limit exceeded"))
+        with pytest.raises(RuntimeError):
+            policy.execute(fn)
+        assert fn.call_count == 1
+
+    def test_retries_transient_errors(self):
+        """Non-rate-limit failures still retry (network fluff, LTP-is-0)."""
+        policy = RetryPolicy(max_retries=3, base_delay=0.0, jitter=0.0)
+        fn = MagicMock(side_effect=[ConnectionError("down"), ConnectionError("down"), "ok"])
+        assert policy.execute(fn) == "ok"
+        assert fn.call_count == 3
+
+    def test_custom_no_retry_on_predicate(self):
+        """A custom no_retry_on overrides the default rate-limit guard."""
+        policy = RetryPolicy(
+            max_retries=3, base_delay=0.0, jitter=0.0,
+            no_retry_on=lambda exc: isinstance(exc, KeyError),
+        )
+        fn = MagicMock(side_effect=KeyError("nope"))
+        with pytest.raises(KeyError):
+            policy.execute(fn)
+        assert fn.call_count == 1
+
+    def test_rate_limited_reexported_from_retry(self):
+        """The gate types are re-exported from ntrade.execution.retry for
+        callers that already import resilience from there."""
+        from ntrade.execution.retry import (
+            BrokerRateGate, Quota, RateLimited, is_rate_limited,
+        )
+        assert Quota.QUOTE.value == "quote"
+        assert issubclass(RateLimited, RuntimeError)
+        assert callable(is_rate_limited)
+        assert callable(BrokerRateGate)
+        from ntrade.execution import BrokerRateGate as G2, Quota as Q2
+        assert G2 is BrokerRateGate and Q2 is Quota
+
 
 class TestRetryPolicyDelays:
     def test_exponential_backoff(self):
@@ -235,3 +285,15 @@ class TestDhanTransportRetryIntegration:
         tsl.get_ltp_data.return_value = {"SYM": 50.0}
         transport = DhanTransport(tsl)
         assert transport.get_ltp("SYM") == 50.0
+
+    def test_transport_gate_consulted_for_ltp(self):
+        """A wired BrokerRateGate is actually consulted on the LTP hot path."""
+        from ntrade.brokers.dhan_transport import DhanTransport
+        from ntrade.execution.rate_limit import BrokerRateGate, Quota
+        tsl = MagicMock()
+        tsl.get_ltp_data.return_value = {"TCS": 100.0}
+        gate = BrokerRateGate()
+        transport = DhanTransport(tsl, gate=gate)
+        transport.get_ltp("TCS")
+        # the gate's QUOTE window now holds the acquire timestamp
+        assert len(gate._history[Quota.QUOTE][0]) == 1

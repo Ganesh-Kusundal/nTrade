@@ -52,6 +52,29 @@ def vwap(df: pd.DataFrame) -> pd.Series:
     return (typical * vol).cumsum() / cum_vol
 
 
+def vwap_bands(df: pd.DataFrame, num_std: float = 2.0) -> tuple[float, float]:
+    """VWAP standard-deviation bands ``(upper, lower)`` at the last bar.
+
+    Institutional-style: band = VWAP ± num_std · σ, where σ is the
+    volume-weighted standard deviation of the typical price around the
+    cumulative VWAP. Used by the Valentini model as the overbought/
+    oversold context (entry at VAL/VAH vs VWAP bias). Returns ``(nan, nan)``
+    for empty input.
+    """
+    if df is None or df.empty or "close" not in df:
+        return float("nan"), float("nan")
+    typical = (df["high"].astype(float) + df["low"].astype(float) + df["close"].astype(float)) / 3.0
+    vol = df.get("volume", pd.Series(1.0, index=df.index)).astype(float)
+    cum_vol = vol.cumsum().replace(0, pd.NA)
+    v = vwap(df)
+    # volume-weighted variance of typical around the running VWAP
+    var = ((typical - v) ** 2 * vol).cumsum() / cum_vol
+    sigma = var ** 0.5
+    last = v.iloc[-1]
+    band = num_std * sigma.iloc[-1]
+    return float(last + band), float(last - band)
+
+
 def supertrend(df: pd.DataFrame, atr_period: int = 10, multiplier: float = 3.0) -> pd.DataFrame:
     """Adds STX_<atr_period>_<multiplier> column: 'up' or 'down' per candle."""
     out = df.copy()
@@ -99,16 +122,16 @@ def heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     o = out["open"].astype(float)
     h = out["high"].astype(float)
-    l = out["low"].astype(float)
+    lo = out["low"].astype(float)
     c = out["close"].astype(float)
-    ha_close = (o + h + l + c) / 4.0
+    ha_close = (o + h + lo + c) / 4.0
     ha_open = o.copy()
     ha_open.iloc[0] = (o.iloc[0] + c.iloc[0]) / 2.0
     for i in range(1, len(out)):
         ha_open.iloc[i] = (ha_open.iloc[i - 1] + ha_close.iloc[i - 1]) / 2.0
     out["open"] = ha_open
     out["high"] = pd.concat([h, ha_open, ha_close], axis=1).max(axis=1)
-    out["low"] = pd.concat([l, ha_open, ha_close], axis=1).min(axis=1)
+    out["low"] = pd.concat([lo, ha_open, ha_close], axis=1).min(axis=1)
     out["close"] = ha_close
     return out
 
@@ -178,6 +201,15 @@ def compute_bundle(df: pd.DataFrame, **params) -> dict[str, float]:
     _series_last("rsi", lambda: rsi(df, rsi_period), store_key=f"rsi_{rsi_period}")
     _series_last("atr", lambda: atr(df, atr_period), store_key=f"atr_{atr_period}")
     _series_last("vwap", lambda: vwap(df), store_key="vwap")
+    if params.get("vwap_bands_std"):
+        try:
+            u, lo = vwap_bands(df, float(params["vwap_bands_std"]))
+            # NaN (e.g. zero-volume frame) is skipped, matching _capture's
+            # convention — the bundle never carries NaN indicator keys.
+            if pd.notna(u) and pd.notna(lo):
+                result["vwap_upper"], result["vwap_lower"] = u, lo
+        except Exception as exc:  # noqa: BLE001 — same visibility rule as _capture
+            logger.warning("vwap_bands failed on %d rows: %s", len(df), exc)
     _capture("avg_volume", lambda: float(df["volume"].astype(float).mean()))
 
     def _supertrend_last():

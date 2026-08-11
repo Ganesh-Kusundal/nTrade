@@ -1,9 +1,14 @@
-"""DhanTransport — wraps Tradehull API calls with retry and error handling.
+"""DhanTransport — wraps Tradehull API calls with rate gating, retry and error handling.
 
 Sits between DhanBroker and the raw Tradehull library.  Each method adds:
-  - retry logic for transient failures (LTP, quote)
+  - a quota-classified choke point: every ``self._tsl.*`` call passes through
+    ``_invoke(quota, fn)`` which acquires the session's ``BrokerRateGate``
+    before firing (T-026) — Quote 1/s, Data 5/s, Order 10/s, NonTrading 20/s
+  - retry logic for transient failures (LTP), never retrying DH-904 (B-011)
   - graceful fallback to empty/zero on non-critical endpoints
-  - consistent error propagation for critical endpoints (orders)
+  - consistent error propagation for critical endpoints (orders) and for
+    rate-limit failures (a DH-904 surfaces as ``RateLimited``, never as an
+    empty/None success)
 
 The transport holds a reference to the authenticated Tradehull instance
 (provided by DhanAuthProvider) and delegates all actual API calls to it.
@@ -11,30 +16,33 @@ The transport holds a reference to the authenticated Tradehull instance
 
 from __future__ import annotations
 
+import contextlib
+import io
 import threading
+import time
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import pandas as pd
 
 from ntrade.execution.retry import RetryPolicy
+from ntrade.execution.rate_limit import Quota, RateLimited, is_rate_limited
 from ntrade.brokers.dhan_mapper import (
+    DAY_BLOCK_MAPPED_EXCHANGE,
     DhanMapper,
-    chain_from_dhan_df,
     to_records,
     _f,
     _first_float,
     _first_int,
     _first_str,
 )
+from ntrade.domain.constants import DERIVATIVE_EXCHANGES
 from ntrade.domain.market.candles import CandleSeries
 from ntrade.domain.market.depth import MarketDepth
 from ntrade.domain.market.quote import Quote
-from ntrade.domain.orders.book import OrderBook, TradeBook
 
 if TYPE_CHECKING:
-    from ntrade.domain.instruments.base import Instrument
-    from ntrade.domain.orders.order import Order
+    pass
 
 
 class BrokerDataError(RuntimeError):
@@ -45,18 +53,39 @@ class BrokerDataError(RuntimeError):
     """
 
 
+@contextlib.contextmanager
+def _quiet_tsl_prints():
+    """Suppress Tradehull's raw ``print()`` noise on transient failures.
+
+    On a failed fetch the library does ``print(f"Exception at calling
+    ltp/Quote/OHLC as {e}")`` to stdout and swallows the failure into an empty
+    dict. nTrade's own error handling (retry + failure-envelope detection in
+    ``get_ltp``) already covers that path, so the prints are pure terminal
+    noise. The library's ``logger.exception`` calls are NOT suppressed — they
+    go to its own log file (``basicConfig(filename=...)``), untouched.
+
+    Note: ``redirect_stdout`` swaps the process-global ``sys.stdout``, so this
+    is only safe for short, single-threaded windows (each use is one brief
+    library call) — same tradeoff ``dhan_auth`` already accepts.
+    """
+    with contextlib.redirect_stdout(io.StringIO()):
+        yield
+
+
 class DhanTransport:
-    """Wraps Tradehull API calls with retry and normalization.
+    """Wraps Tradehull API calls with rate gating, retry and normalization.
 
     Constructed with an authenticated Tradehull instance; the DhanBroker
-    composes this alongside DhanAuthProvider and DhanMapper.
+    composes this alongside DhanAuthProvider and DhanMapper.  ``gate`` is the
+    session's shared ``BrokerRateGate`` (None ⇒ unthrottled, paper/test-safe).
     """
 
     def __init__(self, tsl: Any, retry_policy: RetryPolicy | None = None,
-                 clock=None):
+                 gate=None, clock=None):
         self._tsl = tsl
         self._mapper = DhanMapper()
         self._retry_policy = retry_policy or RetryPolicy()
+        self._gate = gate  # optional shared BrokerRateGate (T-026)
         self._clock = clock  # optional TradingClock — zero-parity timestamps
 
     def _ts(self, now=None):
@@ -75,6 +104,37 @@ class DhanTransport:
     def tsl(self, value: Any) -> None:
         self._tsl = value
 
+    # ---- rate gate --------------------------------------------------------
+
+    def _invoke(self, quota: Quota, fn: Callable[[], Any], *, retryable: bool = False) -> Any:
+        """The single choke point: acquire the quota window, run *fn*, and on a
+        rate-limit failure back the class off before re-raising.
+
+        Every outbound ``self._tsl.*`` call in this class is wrapped in
+        ``_invoke`` with its quota class (T-026).  ``retryable`` is reserved
+        for narrow, proven-flaky reads that may retry *after* the gate.
+
+        A raw exception whose text matches a rate-limit signal (DH-904 /
+        Rate_Limit / 429) is normalised into a typed :class:`RateLimited` here
+        — so callers' ``except Exception`` fallbacks can never swallow a quota
+        violation as a silent empty/None success.
+        """
+        if self._gate is not None:
+            self._gate.acquire(quota)
+        try:
+            return fn()
+        except RateLimited as exc:
+            if self._gate is not None:
+                self._gate.penalize(quota, exc.retry_after or 1.0)
+            raise
+        except Exception as exc:
+            if is_rate_limited(exc):
+                rl = RateLimited(quota, message=str(exc))
+                if self._gate is not None:
+                    self._gate.penalize(quota, rl.retry_after or 1.0)
+                raise rl from exc
+            raise
+
     # ---- market data -------------------------------------------------------
 
     def get_ltp(self, symbol: str) -> float:
@@ -83,11 +143,26 @@ class DhanTransport:
         Raises :class:`BrokerDataError` when every retry fails or the broker
         returns a zero price — a 0.0 LTP is indistinguishable from "no data"
         and would silently corrupt downstream PnL/risk (B-005 contract).
+        A DH-904 surfaces as :class:`RateLimited` (never retried, B-011).
         """
         names = [symbol]
 
         def _try_ltp() -> float:
-            data = self._tsl.get_ltp_data(names=names)
+            with _quiet_tsl_prints():
+                data = self._invoke(
+                    Quota.QUOTE, lambda: self._tsl.get_ltp_data(names=names),
+                )
+            # The Tradehull SDK does NOT raise on a failed fetch — it prints
+            # "Exception at calling ltp as {...}" and returns a failure envelope
+            # like {'status': 'failure', 'remarks': {...}, 'data': ''}. Treat any
+            # non-success envelope as a hard failure so a dead/blocked fetch can
+            # never surface a stale or seed value as a valid LTP (B-005 contract).
+            if isinstance(data, dict) and str(data.get("status", "")).lower() == "failure":
+                raise ValueError(f"LTP fetch failed: {data}")
+            # A non-dict payload (e.g. a stale float from a prior call) is also
+            # undecodable — refuse it rather than trusting an unverifiable number.
+            if not isinstance(data, dict) or names[0] not in data:
+                raise ValueError(f"LTP response missing symbol {names[0]}: {data!r}")
             candidate = float(data.get(names[0], 0.0) or 0.0)
             if candidate > 0:
                 return candidate
@@ -95,30 +170,68 @@ class DhanTransport:
 
         try:
             return self._retry_policy.execute(_try_ltp)
+        except RateLimited:
+            raise
         except Exception as exc:
             raise BrokerDataError(
                 f"LTP fetch failed for {symbol} after retries: {exc}"
             ) from exc
 
     def get_quote(self, symbol: str) -> Quote:
-        """Fetch full quote with LTP retry + optional quote-data enrichment."""
+        """Fetch full quote with LTP retry + optional quote-data enrichment.
+
+        Consumes two QUOTE tokens (get_ltp_data + get_quote_data) — effective
+        quote rate is 0.5/s under Dhan's 1/s Quote window; documented, not a
+        bug.
+        """
         ltp = self.get_ltp(symbol)
         quote = DhanMapper.normalize_quote(ltp, now=self._ts())
         try:
-            qd = self._tsl.get_quote_data(names=[symbol]).get(symbol, {})
+            with _quiet_tsl_prints():
+                qd = self._invoke(
+                    Quota.QUOTE, lambda: self._tsl.get_quote_data(names=[symbol]),
+                ).get(symbol, {})
             quote = quote.with_update(
                 high=_f(qd.get("high")), low=_f(qd.get("low")),
                 open=_f(qd.get("open")), prev_close=_f(qd.get("close_price")),
                 volume=int(qd.get("volume") or 0), oi=int(qd.get("open_interest") or 0),
             )
+        except RateLimited:
+            raise
         except Exception:
             pass
         return quote
 
-    def get_depth(self, symbol: str, exchange: str, timeout: float = 5.0) -> MarketDepth | None:
-        """20-level market depth via websocket snapshot (timeout-bounded)."""
+    def get_depth(self, symbol: str, exchange: str, timeout: float = 8.0, *,
+                  now: datetime | None = None, attempts: int = 2,
+                  settle: float = 0.5) -> MarketDepth | None:
+        """20-level market depth via websocket snapshot (retried, timeout-bounded).
+
+        Dhan streams depth over a websocket; the snapshot can hang or come
+        back empty on the first try (observed live on NSE equities). The frame
+        read is bounded by a timeout thread per attempt, and the whole snapshot
+        is retried ``attempts`` times with a short ``settle`` between attempts
+        so the websocket re-arms before re-subscribing.
+
+        A DH-904 (:class:`RateLimited`) is never retried (B-011 no-amplify) —
+        it propagates immediately even on the first attempt.
+        """
+        for attempt in range(attempts):
+            depth = self._depth_snapshot(symbol, exchange, timeout, now)
+            if depth is not None:
+                return depth
+            if attempt < attempts - 1:
+                time.sleep(settle)
+        return None
+
+    def _depth_snapshot(self, symbol: str, exchange: str, timeout: float,
+                        now: datetime | None) -> MarketDepth | None:
+        """One bounded websocket snapshot attempt; None on hang/empty client."""
         try:
-            dc = self._tsl.full_market_depth_data([(symbol, exchange)])
+            dc = self._invoke(
+                Quota.DATA,
+                lambda: self._tsl.full_market_depth_data([(symbol, exchange)]),
+            )
             key = f"{symbol.upper()}|{exchange.upper()}"
             client = dc.get(key) or next(iter(dc.values()), None)
             if client is None:
@@ -127,7 +240,9 @@ class DhanTransport:
 
             def _read_frames():
                 try:
-                    result["frames"] = self._tsl.get_market_depth_df(client)
+                    result["frames"] = self._invoke(
+                        Quota.DATA, lambda: self._tsl.get_market_depth_df(client),
+                    )
                 except Exception as exc:
                     result["error"] = exc
 
@@ -135,11 +250,18 @@ class DhanTransport:
             t.start()
             t.join(timeout)
             if "frames" not in result:
+                # Never let a quota violation be swallowed by a timed-out
+                # snapshot: a DH-904 surfaces as RateLimited, not a None.
+                err = result.get("error")
+                if isinstance(err, RateLimited):
+                    raise err
                 return None
             bid_df, ask_df = result["frames"]
             if bid_df is None or bid_df.empty:
                 return None
-            return DhanMapper.normalize_depth(symbol, bid_df, ask_df)
+            return DhanMapper.normalize_depth(symbol, bid_df, ask_df, now=now or self._ts())
+        except RateLimited:
+            raise
         except Exception:
             return None
 
@@ -147,16 +269,35 @@ class DhanTransport:
         self, symbol: str, exchange: str, timeframe: str,
         days: int | None = None, start: str | None = None, end: str | None = None,
     ) -> CandleSeries:
-        """Fetch historical data with normalization and filtering."""
+        """Fetch historical data with normalization and filtering.
+
+        - A DH-904 raises :class:`RateLimited` (never an empty ``CandleSeries``).
+        - Sub-5m timeframes (2m/3m/4m) fetch the ``1m`` base and resample
+          (F-001) — Dhan has no 2/3/4 minute backend interval.
+        - Any OTHER unexpected failure raises :class:`BrokerDataError` instead
+          of returning an empty series (B-014): a strategy must distinguish
+          "instrument has no bars" from "the broker call failed".
+        """
+        rule = DhanMapper.resample_rule(timeframe)
         tf = DhanMapper.map_timeframe(timeframe)
         try:
-            df = self._tsl.get_historical_data(
-                tradingsymbol=symbol, exchange=exchange, timeframe=tf,
+            df = self._invoke(
+                Quota.DATA,
+                lambda: self._tsl.get_historical_data(
+                    tradingsymbol=symbol, exchange=exchange, timeframe=tf,
+                ),
             )
-        except Exception:
-            return CandleSeries(pd.DataFrame(), symbol=symbol, timeframe=timeframe)
+        except RateLimited:
+            raise
+        except Exception as exc:
+            raise BrokerDataError(
+                f"historical fetch failed for {symbol} ({exchange}) "
+                f"timeframe={timeframe}: {exc}"
+            ) from exc
         df = DhanMapper.normalize_history(df)
-        return CandleSeries(DhanMapper.filter_history(df, days=days, start=start, end=end), symbol=symbol, timeframe=timeframe)
+        if rule is not None and not df.empty:
+            df = DhanMapper.resample_history(df, rule)
+        return CandleSeries(DhanMapper.filter_history(df, days=days, start=start, end=end, asof=self._ts()), symbol=symbol, timeframe=timeframe)
 
     def get_long_term_historical(
         self, symbol: str, exchange: str, timeframe: str = "DAY",
@@ -165,14 +306,20 @@ class DhanTransport:
         """Longer-dated history via Dhan's dedicated endpoint."""
         tf = DhanMapper.map_timeframe(timeframe)
         try:
-            df = self._tsl.get_long_term_historical_data(
-                tradingsymbol=symbol, exchange=exchange,
-                timeframe=tf, from_date=from_date, to_date=to_date,
+            df = self._invoke(
+                Quota.DATA,
+                lambda: self._tsl.get_long_term_historical_data(
+                    tradingsymbol=symbol, exchange=exchange,
+                    timeframe=tf, from_date=from_date, to_date=to_date,
+                ),
             )
+        except RateLimited:
+            raise
         except Exception:
             return pd.DataFrame()
         return DhanMapper.filter_history(
             DhanMapper.normalize_history(df), start=from_date, end=to_date,
+            asof=self._ts(),
         )
 
     def get_daily_historical(
@@ -183,14 +330,20 @@ class DhanTransport:
         to_date = end if end is not None else self._ts().date()
         from_date = start if start is not None else (to_date - timedelta(days=days or 365))
         try:
-            df = self._tsl.get_long_term_historical_data(
-                tradingsymbol=symbol, exchange=exchange,
-                timeframe="DAY", from_date=from_date, to_date=to_date,
+            df = self._invoke(
+                Quota.DATA,
+                lambda: self._tsl.get_long_term_historical_data(
+                    tradingsymbol=symbol, exchange=exchange,
+                    timeframe="DAY", from_date=from_date, to_date=to_date,
+                ),
             )
+        except RateLimited:
+            raise
         except Exception:
             return pd.DataFrame()
         return DhanMapper.filter_history(
             DhanMapper.normalize_history(df), days=days, start=start, end=end,
+            asof=self._ts(),
         )
 
     # ---- option chain ------------------------------------------------------
@@ -200,15 +353,23 @@ class DhanTransport:
         expiry: int = 0, num_strikes: int = 10,
     ):
         """Fetch raw option chain result from Dhan (atm, chain_df)."""
-        return self._tsl.get_option_chain(
-            Underlying=underlying, exchange=exchange,
-            expiry=expiry, num_strikes=num_strikes,
+        return self._invoke(
+            Quota.DATA,
+            lambda: self._tsl.get_option_chain(
+                Underlying=underlying, exchange=exchange,
+                expiry=expiry, num_strikes=num_strikes,
+            ),
         )
 
     def get_expiry_list(self, underlying: str, exchange: str) -> list[date]:
         """Return contract expiry dates for an underlying."""
         try:
-            raw = self._tsl.get_expiry_list(Underlying=underlying, exchange=exchange)
+            raw = self._invoke(
+                Quota.NON_TRADING,
+                lambda: self._tsl.get_expiry_list(Underlying=underlying, exchange=exchange),
+            )
+        except RateLimited:
+            raise
         except Exception:
             return []
         dates = []
@@ -222,7 +383,12 @@ class DhanTransport:
     def get_expiry_date(self, underlying: str, opt_fut: str = "OPTION") -> list[date]:
         """Resolve contract expiry dates for an option/future script."""
         try:
-            raw = self._tsl.get_expiry_date(Underlying=underlying, opt_fut=opt_fut)
+            raw = self._invoke(
+                Quota.NON_TRADING,
+                lambda: self._tsl.get_expiry_date(Underlying=underlying, opt_fut=opt_fut),
+            )
+        except RateLimited:
+            raise
         except Exception:
             return []
         dates = []
@@ -235,62 +401,97 @@ class DhanTransport:
 
     def get_future_script(self, underlying: str, expiry: int) -> str | None:
         try:
-            return self._tsl.get_future_script(underlying=underlying, expiry=expiry)
+            return self._invoke(
+                Quota.NON_TRADING,
+                lambda: self._tsl.get_future_script(underlying=underlying, expiry=expiry),
+            )
+        except RateLimited:
+            raise
         except Exception:
             return None
 
     def get_lot_size(self, symbol: str) -> int:
         try:
-            return int(self._tsl.get_lot_size(tradingsymbol=symbol))
+            return int(self._invoke(
+                Quota.NON_TRADING, lambda: self._tsl.get_lot_size(tradingsymbol=symbol),
+            ))
+        except RateLimited:
+            raise
         except Exception:
             return 0
 
     def get_ohlc(self, symbol: str) -> dict:
         try:
-            data = self._tsl.get_ohlc_data(names=[symbol])
+            with _quiet_tsl_prints():
+                data = self._invoke(
+                    Quota.QUOTE, lambda: self._tsl.get_ohlc_data(names=[symbol]),
+                )
             return dict(data.get(symbol, {}) or {})
+        except RateLimited:
+            raise
         except Exception:
             return {}
 
     def get_start_date(self):
         try:
-            return self._tsl.get_start_date()
+            return self._invoke(Quota.NON_TRADING, lambda: self._tsl.get_start_date())
+        except RateLimited:
+            raise
         except Exception:
             return None
 
     def get_instrument_file(self):
         try:
-            return self._tsl.get_instrument_file()
+            return self._invoke(
+                Quota.NON_TRADING, lambda: self._tsl.get_instrument_file(),
+            )
+        except RateLimited:
+            raise
         except Exception:
             return None
 
     @property
     def instrument_df(self) -> pd.DataFrame | None:
         try:
-            return self._tsl.instrument_df
+            return self._invoke(Quota.NON_TRADING, lambda: self._tsl.instrument_df)
+        except RateLimited:
+            raise
         except Exception:
             return None
 
     # ---- orders ------------------------------------------------------------
 
     def place_order(self, **kw) -> str:
-        return self._tsl.order_placement(**kw)
+        return self._invoke(
+            Quota.ORDER, lambda: self._tsl.order_placement(**kw),
+        )
 
     def place_super_order(self, **kw) -> str:
-        return self._tsl.place_super_order(**kw)
+        return self._invoke(
+            Quota.ORDER, lambda: self._tsl.place_super_order(**kw),
+        )
 
     def cancel_order(self, order_id: str) -> None:
-        self._tsl.cancel_order(OrderID=order_id)
+        self._invoke(Quota.ORDER, lambda: self._tsl.cancel_order(OrderID=order_id))
 
     def modify_order(self, order_id: str, **kw) -> None:
-        self._tsl.modify_order(order_id=order_id, **kw)
+        self._invoke(
+            Quota.ORDER, lambda: self._tsl.modify_order(order_id=order_id, **kw),
+        )
 
     def get_order_status(self, order_id: str) -> str:
-        return str(self._tsl.get_order_status(orderid=order_id)).upper()
+        return str(self._invoke(
+            Quota.ORDER, lambda: self._tsl.get_order_status(orderid=order_id),
+        )).upper()
 
     def get_order_detail(self, order_id: str) -> dict:
         try:
-            raw = self._tsl.get_order_detail(orderid=order_id, debug="NO") or {}
+            raw = self._invoke(
+                Quota.ORDER,
+                lambda: self._tsl.get_order_detail(orderid=order_id, debug="NO") or {},
+            )
+        except RateLimited:
+            raise
         except Exception:
             return {}
         return {
@@ -304,28 +505,45 @@ class DhanTransport:
 
     def get_executed_price(self, order_id: str) -> float:
         try:
-            return float(self._tsl.get_executed_price(orderid=order_id))
+            return float(self._invoke(
+                Quota.ORDER, lambda: self._tsl.get_executed_price(orderid=order_id),
+            ))
+        except RateLimited:
+            raise
         except Exception:
             return 0.0
 
     def get_executed_price_and_time(self, order_id: str) -> tuple[float, str]:
         try:
-            price, ts = self._tsl.get_executed_price_and_time(orderid=order_id)
+            price, ts = self._invoke(
+                Quota.ORDER,
+                lambda: self._tsl.get_executed_price_and_time(orderid=order_id),
+            )
             return float(price), str(ts)
+        except RateLimited:
+            raise
         except Exception:
             return 0.0, ""
 
     # ---- portfolio ---------------------------------------------------------
 
     def get_orderbook(self) -> list[dict]:
-        return to_records(self._tsl.get_orderbook(debug="NO"))
+        return to_records(self._invoke(
+            Quota.NON_TRADING, lambda: self._tsl.get_orderbook(debug="NO"),
+        ))
 
     def get_trade_book(self) -> list[dict]:
-        return to_records(self._tsl.get_trade_book(debug="NO"))
+        return to_records(self._invoke(
+            Quota.NON_TRADING, lambda: self._tsl.get_trade_book(debug="NO"),
+        ))
 
     def order_report(self):
         try:
-            report = self._tsl.order_report()
+            report = self._invoke(
+                Quota.NON_TRADING, lambda: self._tsl.order_report(),
+            )
+        except RateLimited:
+            raise
         except Exception:
             return {}
         if isinstance(report, dict):
@@ -338,24 +556,42 @@ class DhanTransport:
 
     def get_live_pnl(self) -> float:
         try:
-            return float(self._tsl.get_live_pnl() or 0.0)
+            return float(self._invoke(
+                Quota.NON_TRADING, lambda: self._tsl.get_live_pnl() or 0.0,
+            ))
+        except RateLimited:
+            raise
         except Exception:
             return 0.0
 
     def get_balance(self) -> float:
-        return float(self._tsl.get_balance())
+        """Broker-reported cash balance.
+
+        B-016: never swallow a failure into ``0.0`` — ``PositionSyncEngine.
+        _safe_balance`` relies on the exception to keep the previous account
+        state on a transient error. RateLimited still propagates from
+        ``_invoke``; anything else raises so callers can distinguish "balance
+        is zero" from "the broker call failed".
+        """
+        return float(self._invoke(
+            Quota.NON_TRADING, lambda: self._tsl.get_balance(),
+        ))
 
     def get_positions(self) -> list:
         """Position domain objects — no pandas leaks past the transport
         boundary (M8). The raw DataFrame from Tradehull is normalised into
         ``Position`` objects exactly like the broker adapter path, so callers
         of the transport never see a DataFrame."""
-        return DhanMapper.positions_from_df(self._tsl.get_positions())
+        return DhanMapper.positions_from_df(self._invoke(
+            Quota.NON_TRADING, lambda: self._tsl.get_positions(),
+        ))
 
     def get_holdings(self) -> list:
         """Holding domain objects — no pandas leaks past the transport
         boundary (M8)."""
-        return DhanMapper.holdings_from_df(self._tsl.get_holdings())
+        return DhanMapper.holdings_from_df(self._invoke(
+            Quota.NON_TRADING, lambda: self._tsl.get_holdings(),
+        ))
 
     # ---- instrument metadata -----------------------------------------------
 
@@ -366,7 +602,7 @@ class DhanTransport:
             idf = self.instrument_df
             if idf is None:
                 return {}
-            exch = DhanMapper.DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
+            exch = DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
             df = idf[
                 ((idf["SEM_TRADING_SYMBOL"] == symbol) | (idf["SEM_CUSTOM_SYMBOL"] == symbol))
                 & (idf["SEM_EXM_EXCH_ID"] == exch)
@@ -383,6 +619,8 @@ class DhanTransport:
             lot = _first_int(row, "SEM_LOT_UNITS") or None
             frz = _first_int(row, "SEM_FREEZE_QTY") or None
             return {"tick_size": tick, "lot_size": lot, "freeze_qty": frz}
+        except RateLimited:
+            raise
         except Exception:
             return {}
 
@@ -391,14 +629,16 @@ class DhanTransport:
         try:
             idf = self.instrument_df
             if idf is None:
-                return exchange in ("MCX", "NFO", "BFO")
-            exch = DhanMapper.DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
+                return exchange in DERIVATIVE_EXCHANGES
+            exch = DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
             df = idf[
                 ((idf["SEM_TRADING_SYMBOL"] == symbol) | (idf["SEM_CUSTOM_SYMBOL"] == symbol))
                 & (idf["SEM_EXM_EXCH_ID"] == exch)
             ]
             if df.empty:
-                return exchange in ("MCX", "NFO", "BFO")
+                return exchange in DERIVATIVE_EXCHANGES
             return "FUT" in str(df.iloc[-1]["SEM_INSTRUMENT_NAME"])
+        except RateLimited:
+            raise
         except Exception:
-            return exchange in ("MCX", "NFO", "BFO")
+            return exchange in DERIVATIVE_EXCHANGES

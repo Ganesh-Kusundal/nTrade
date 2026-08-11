@@ -49,9 +49,17 @@ class TradingContext:
         return self.clock.now()
 
     def register(self, instrument: "Instrument") -> "Instrument":
-        """Register an instrument so engines can project state into it."""
+        """Register an instrument so engines can project state into it.
+
+        D-019: the instrument's ``HistoricalSeries`` inherits the kernel clock
+        (``ctx.now``) so ``is_fresh``/``fetch`` follow replay/backtest time
+        instead of wall-clock time — deterministic freshness in replay.
+        """
         with self.lock:
             self.instruments[instrument.symbol] = instrument
+        history = getattr(instrument, "_history", None)
+        if history is not None and hasattr(history, "clock"):
+            history.clock = self.now
         return instrument
 
     def instrument(self, symbol: str) -> "Instrument | None":

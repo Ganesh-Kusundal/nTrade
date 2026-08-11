@@ -15,21 +15,39 @@ import pandas as pd
 from ntrade.domain.market.depth import DepthLevel, MarketDepth
 from ntrade.domain.market.quote import Quote
 from ntrade.domain.orders.book import OrderBook, OrderBookEntry, TradeBook, TradeBookEntry
+from ntrade.domain.constants import Exchange
 
 if TYPE_CHECKING:
     from ntrade.domain.instruments.base import Instrument
+    from ntrade.domain.instruments.chain import OptionChain
 
 
-# Timeframe mapping: user-facing → Dhan interval string.
+# Timeframe mapping: user-facing → Dhan native interval string.
+#
+# Dhan's backend serves ONLY 1/5/15/25/60m + DAY intraday (verified against
+# DhanHQ docs + the installed Dhan-Tradehull 3.3.2 library: its interval list
+# passes 2/3/4 at the library layer but the backend rejects them). 2m/3m/4m are
+# therefore served by fetching 1m and resampling (F-001), never sent to Dhan
+# directly (B-013: no more silent empty CandleSeries for "supported" timeframes).
 _DHAN_TIMEFRAMES = {
-    "1m": "1", "2m": "2", "3m": "3", "4m": "4", "5m": "5",
-    "15m": "15", "25m": "25", "60m": "60", "1h": "60",
-    "day": "DAY", "1d": "DAY", "daily": "DAY",
+    "1m": "1", "5m": "5", "15m": "15", "25m": "25", "60m": "60",
+    "1h": "60", "day": "DAY", "1d": "DAY", "daily": "DAY",
+}
+
+# Sub-5m timeframes → pandas resample rule (fetched as 1m base, then
+# aggregated). Dhan has no 2/3/4 minute endpoint; resampling is the community-
+# recommended approach (same as Dhan-Tradehull's own resample_timeframe()).
+_RESAMPLE_TIMEFRAMES = {
+    "2m": "2min", "3m": "3min", "4m": "4min",
 }
 
 # Mirrors Dhan-Tradehull's instrument_exchange mapping: NFO/BFO derivatives
 # are filed under the cash exchange id, CUR under NSE.
-DAY_BLOCK_MAPPED_EXCHANGE = {"NFO": "NSE", "BFO": "BSE", "CUR": "NSE"}
+DAY_BLOCK_MAPPED_EXCHANGE = {
+    Exchange.DERIVATIVES: Exchange.CASH,       # NFO → NSE cash segment
+    Exchange.BFO: Exchange.BSE,                 # BFO → BSE cash segment
+    Exchange.CURRENCY: Exchange.CASH,           # CUR → NSE cash segment
+}
 
 
 class DhanMapper:
@@ -46,6 +64,12 @@ class DhanMapper:
           - SEM_CUSTOM_SYMBOL:    'NIFTY 04 AUG 24400 CALL'  (spaced)
         The library's helpers (ATM/ITM/OTM, LTP, order placement) use the
         CUSTOM format, so we emit the spaced variant.
+
+        Futures follow the same rule: Dhan's instrument file lists index/stock
+        futures as e.g. ``NIFTY-Aug2026-FUT`` (trading) / ``NIFTY AUG FUT``
+        (custom). The domain symbol (``NIFTY 25Aug26``) matches neither and
+        fails Dhan's instrument-file lookup — history, LTP and orders all
+        need the CUSTOM form (B-016: front-month future resolution).
         """
         if instrument.KIND == "option":
             leg = "CALL" if instrument.option_type == "CE" else "PUT"
@@ -56,20 +80,89 @@ class DhanMapper:
                 else instrument.strike
             )
             return f"{instrument.underlying_symbol} {date_part} {strike_label} {leg}"
+        if instrument.KIND == "future":
+            # Dhan's SEM_CUSTOM_SYMBOL: 'NIFTY AUG FUT'. The security-ID
+            # resolution is Dhan-internal (instrument-file lookup) — we only
+            # need to hand over the recognized trading symbol.
+            month = instrument.expiry.strftime("%b").upper() if instrument.expiry else ""
+            return " ".join(p for p in (instrument.underlying_symbol, month, "FUT") if p).upper()
         return instrument.symbol
 
     # ---- timeframe ---------------------------------------------------------
 
     @staticmethod
     def map_timeframe(tf: str) -> str:
-        """Map a user timeframe to Dhan's interval string, raising on unsupported."""
+        """Map a user timeframe to Dhan's native interval string.
+
+        Natively-supported timeframes (1m/5m/15m/25m/60m/DAY) pass through
+        directly; 2m/3m/4m resolve to the ``1m`` base interval so callers can
+        resample after fetching. Anything else raises (B-013: fail fast with a
+        correct message instead of advertising unsupported intervals).
+        """
         key = str(tf).strip().lower()
-        if key not in _DHAN_TIMEFRAMES:
-            raise ValueError(
-                f"Unsupported timeframe {tf!r}; Dhan supports "
-                f"1m/2m/3m/4m/5m/15m/25m/60m/DAY (not 10m)"
-            )
-        return _DHAN_TIMEFRAMES[key]
+        if key in _DHAN_TIMEFRAMES:
+            return _DHAN_TIMEFRAMES[key]
+        if key in _RESAMPLE_TIMEFRAMES:
+            return "1"  # fetch 1m base; the caller resamples to the target
+        raise ValueError(
+            f"Unsupported timeframe {tf!r}; Dhan natively supports "
+            f"1m/5m/15m/25m/60m/DAY, and 2m/3m/4m via 1m resample"
+        )
+
+    @staticmethod
+    def resample_rule(tf: str) -> str | None:
+        """Pandas resample rule for sub-5m timeframes, else None (native)."""
+        key = str(tf).strip().lower()
+        return _RESAMPLE_TIMEFRAMES.get(key)
+
+    @staticmethod
+    def resample_history(df: pd.DataFrame | None, rule: str) -> pd.DataFrame:
+        """Aggregate 1m candles to a coarser rule (e.g. ``3min``).
+
+        OHLCV-safe: open=first, high=max, low=min, close=last, volume/oi=sum,
+        anchored per calendar day at the 09:15 market open so night-session
+        candles never bleed across days (mirrors Tradehull's
+        ``resample_timeframe`` day-grouping). Empty input returns as-is.
+        """
+        if df is None or df.empty or "timestamp" not in df:
+            return df if df is not None else pd.DataFrame()
+        out = df.copy()
+        out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce")
+        # Normalize tz-aware timestamps to naive IST wall time so the day-group
+        # + 09:15 origin math is exact (resample rejects tz-mixed index/origin).
+        if getattr(out["timestamp"].dt, "tz", None) is not None:
+            out["timestamp"] = out["timestamp"].dt.tz_localize(None)
+        out = out.dropna(subset=["timestamp"])
+        if out.empty:
+            return out.reset_index(drop=True)
+        indexed = out.set_index("timestamp")
+        agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+        for col in ("volume", "oi"):
+            if col in indexed.columns:
+                agg[col] = "sum"
+        rows = []
+        for day, group in indexed.groupby(indexed.index.date):
+            # Naive origin anchored at the 09:15 IST market open so
+            # night-session candles stay inside their own calendar day.
+            origin = pd.Timestamp(day) + pd.Timedelta(hours=9, minutes=15)
+            # K-025 parity: adopt the engine's RIGHT-edge label convention
+            # (bin start + span — CandleEngine labels closed candles at
+            # bucket + seconds, same as HistoricalSeries.resample). pandas
+            # defaults to label="left" (bin START), which labels a 3m bar
+            # 09:15 where the engine labels 09:18 — same bin membership
+            # (closed="left" kept so bins don't shift), different label.
+            # NOTE: exact grid parity with the engine holds only for 3m (09:15
+            # is on the 180s epoch grid); 2m/4m sit 1-3min off the engine's
+            # epoch grid by design — the 09:15 IST origin keeps night-session
+            # candles inside their own calendar day, which is the more
+            # important invariant. Do not replace the origin to chase parity.
+            resampled = group.resample(
+                rule, origin=origin, closed="left", label="right",
+            ).agg(agg).dropna(subset=["open"])
+            rows.append(resampled)
+        if not rows:
+            return pd.DataFrame(columns=out.columns)
+        return pd.concat(rows).reset_index()
 
     # ---- quote normalization -----------------------------------------------
 
@@ -112,8 +205,14 @@ class DhanMapper:
         days: int | None = None,
         start: str | None = None,
         end: str | None = None,
+        *,
+        asof: datetime | None = None,
     ) -> pd.DataFrame:
-        """Apply days/start/end filters to a normalized history frame."""
+        """Apply days/start/end filters to a normalized history frame.
+
+        ``asof`` anchors the ``days`` cutoff (injected clock for replay
+        determinism); it falls back to the wall clock when not supplied.
+        """
         if df.empty or "timestamp" not in df:
             return df
         ts = pd.to_datetime(df["timestamp"], errors="coerce")
@@ -129,9 +228,16 @@ class DhanMapper:
         if start is not None:
             mask &= ts >= _cutoff(start)
         if end is not None:
-            mask &= ts <= _cutoff(end)
+            cut = _cutoff(end)
+            # Date-only to_date (YYYY-MM-DD / midnight) is inclusive of that
+            # session. `ts <= midnight` drops every intraday bar on the end day.
+            if cut.hour == 0 and cut.minute == 0 and cut.second == 0 and cut.microsecond == 0:
+                mask &= ts < cut + pd.Timedelta(days=1)
+            else:
+                mask &= ts <= cut
         if days is not None:
-            mask &= ts >= _cutoff(datetime.now() - timedelta(days=days))
+            anchor = asof if asof is not None else datetime.now()
+            mask &= ts >= _cutoff(anchor - timedelta(days=days))
         return df[mask].reset_index(drop=True)
 
     # ---- order/trade book normalization ------------------------------------
@@ -190,7 +296,7 @@ class DhanMapper:
                 avg_price=_first_float(r, "avgTradingPrice", "avgPrice"),
                 ltp=_first_float(r, "ltp"),
                 product=_first_str(r, "productType") or "MIS",
-                exchange=_first_str(r, "exchangeSegment") or "NSE",
+                exchange=_first_str(r, "exchangeSegment") or Exchange.CASH,
             ))
         return out
 
@@ -289,7 +395,7 @@ def chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float,
                 continue
             opt = Option(
                 symbol=f"{underlying.symbol} {strike_label} {leg}",
-                exchange="NFO",
+                exchange=Exchange.DERIVATIVES,
                 strike=strike,
                 expiry=expiry or (asof or datetime.now()).date(),
                 option_type=otype,

@@ -1,64 +1,50 @@
-# Task Group 2 Report — B-007 / F-005: backtest candles carry real OHLCV
+# Task 2 Report: ATR floor on step
 
-## Status: DONE
+- **Status:** DONE
+- **Commit hash:** `641e28a3d138b1d57473c5f446617fa1f0db4d93`
+- **Branch:** `integration-completeness`
 
-## What changed
+## Test summary
 
-### `ntrade/engines/candle_engine.py`
-- `CandleEngine.__init__` now also subscribes `context.bus.subscribe(QuoteEvent, self.on_quote)` (alongside the existing `TickEvent` subscription).
-- New `on_quote(self, event)`:
-  - Returns immediately unless `self.ctx.mode == "backtest"` — live/replay `QuoteEvent`s carry day-session OHLCV (dhan_feed.py, market_feed.py) and must not mint bar candles.
-  - Otherwise ingests the bar **authoritatively** via new `_ingest_bar(...)`: sets `open/high/low/close/volume` directly from the event fields (`close` maps to `QuoteEvent.ltp`, which the backtest producer sets to the bar close) instead of min/max accumulation.
-  - Records `self._bar_seeded[symbol] = bucket` so the paired close tick is skipped.
-- `on_tick`: now skips ingestion when `self._bar_seeded.get(event.symbol) == self._bucket(event.ts)` — the simulator's close tick is the same bar's print, and ingesting it would double-count volume. The seed naturally advances/overwrites as the bucket advances.
-- `_bar_seeded: dict[str, int]` is a `(symbol -> bucket)` last-seed key (the brief's second option), so no explicit cleanup is needed beyond overwrite-on-advance.
-- Tick-only ingestion path (`_ingest`) is unchanged; existing replay-mode candle tests are untouched by the mode gate.
+- `python -m pytest tests/test_valentini_leg_anchor.py -q` → `1 passed in 0.81s`
+- `python -m pytest tests/test_valentini_strategy.py -q` → `24 passed in 5.60s`
 
-### `tests/test_candle_engine.py` (new, 3 tests)
-1. `test_backtest_candles_carry_real_ohlcv` — runs `BacktestSimulator(timeframe="5m", initial_cash=100_000.0, statutory=None)` over a 20-bar `_ohlcv` frame (per-bar `open`/`close` differ by 1.0, `high`/`low` by 3.0) and asserts all 20 closed candles carry the real bar values: `open=100+i`, `high=102+i`, `low=99+i`, `close=101+i`, `volume=1000`, and `open != close` (not degenerate). Was failing before the fix (open=high=low=close).
-2. `test_backtest_indicators_populated_with_real_candles` — after the run, asserts `instrument._indicators` holds `rsi_14`, `atr_14`, `stx_10_3`, and `atr_14 ≈ 3.0` (the real 3.0 high-low range; degenerate candles collapse ATR to ~1.0). Was failing before the fix.
-3. `test_candle_engine_ignores_live_quote_events` — a `QuoteEvent` published in `mode="replay"` must produce zero candles (guard for the mode gate). Passes both before and after (regression guard).
+## What was done (in order)
 
-## Checklist verification (against the brief)
-- [x] `CandleEngine.__init__` subscribes `QuoteEvent` → `on_quote`.
-- [x] `on_quote` gates on `self.ctx.mode == "backtest"`, ingests bar authoritatively, records `_bar_seeded[symbol] = bucket`.
-- [x] `on_tick` skips when the tick's bucket was bar-seeded; seed advances with the bucket.
-- [x] Failing tests written first (confirmed red), then impl, then green.
-- [x] IndicatorEngine populates `rsi_14`/`atr_14`/`stx_10_3` after ≥10 real bars.
-- [x] Tick-only tests stay green (`test_market_engine_projects_quote`, `test_candle_engine_closes_candle_on_next_bucket`, `test_candle_engine_flush_closes_partial`) — replay mode, untouched.
-- [x] `test_backtest_simulator_produces_equity_curve` still passes (`BuySellOnCandles` trades on candle count + `event.close`, both unchanged).
-- [x] Full suite green: `./.venv/bin/python -m pytest -q`.
+1. Created `tests/test_valentini_leg_anchor.py` with the exact code from the
+   brief (module docstring, `_kernel`, `_candle`, `_uptrend_bars`,
+   `_absorption_bar`, `_fixed_profile` helpers, and the single test
+   `test_step_floored_to_atr_when_range_below_atr`).
+2. Verified the test fails on the inert state as expected:
+   `assert 0.0 > 1.0` / `got 0.0` (1 failed).
+3. `ntrade/engines/strategies.py` changes, all verbatim per the brief:
+   - Import: `from ntrade.domain.analytics.indicators import atr, vwap, vwap_bands`
+   - Per-candle `_atr`/`_step` computation inserted after the
+     `self._range_size = self.range_size or calc_auto_range(...)` line and
+     before `step = self._range_size or 1.0`.
+   - Replaced all three `step = self._range_size or 1.0` sites (the
+     `on_candle_closed` window step, the `_update_phase` step, the `_emit_entry`
+     step) with `step = self._step`.
+   - Replaced the profile call `build_volume_profile(frame, step=self._range_size or None)`
+     with `build_volume_profile(frame, step=self._step)`.
+4. New test passes: 1 passed.
+5. Regression run passes: 24 passed (no regression).
+6. Committed exactly `ntrade/engines/strategies.py` and
+   `tests/test_valentini_leg_anchor.py` with the required message.
 
-## Test commands and output
+## Constraints honored
 
-TDD — failing test first:
-```
-$ ./.venv/bin/python -m pytest -q tests/test_candle_engine.py
-FAILED tests/test_candle_engine.py::test_backtest_candles_carry_real_ohlcv
-FAILED tests/test_candle_engine.py::test_backtest_indicators_populated_with_real_candles
-2 failed, 1 passed in 0.33s
-```
-
-After implementation:
-```
-$ ./.venv/bin/python -m pytest -q tests/test_candle_engine.py
-...                                                                      [100%]
-3 passed in 0.30s
-```
-
-Full suite:
-```
-$ ./.venv/bin/python -m pytest -q
-<…>
-[100%]
-621 passed in 5.66s
-```
-(618 baseline + 3 new tests; no regressions.)
-
-## Commit
-- `c215df6` — `backtest candles carry real OHLCV; skip paired close tick (B-007, F-005)` (only `ntrade/engines/candle_engine.py` + `tests/test_candle_engine.py` staged; pre-existing uncommitted dhan*.py / kanban / scratch changes left untouched).
+- Only the two allowed files were modified/created. Nothing else was staged.
+- `tests/test_valentini_strategy.py` was not touched (byte-identical) and was
+  not staged; it remains a working-tree modification alongside all other
+  unrelated uncommitted changes.
+- Constructor params, defaults, and semantics unchanged.
 
 ## Concerns
-- `QuoteEvent` has no `close` field; the bar close is taken from `QuoteEvent.ltp`, which the backtest producer sets to the bar close. If another backtest producer ever publishes `ltp != close`, candles would carry the wrong close. Not an issue for the current simulator (simulator.py:130 sets `ltp=close`).
-- In backtest, the bar's `QuoteEvent` is authoritative for its whole bucket: any additional ticks in that bucket are skipped. The current simulator publishes exactly one quote + one tick per bar, so this is correct and avoids volume double-counting. A backtest source that publishes *multiple* trades per bar would undercount volume (by design of this fix — the bar is the unit).
-- The report's assertion tolerance `atr_14 ≈ 3.0 ± 0.5` accommodates pandas ewm warm-up (first row's `prev_close` is NaN), which lands ATR at ~2.93, not exactly 3.0.
+
+- None. Commit contains only the two intended files (2 files changed, 102
+  insertions(+), 5 deletions(-)).
+- Note for Task 3/4 consumers: `_step` now defaults to `max(range_size or 1.0, _atr or 0.0)`
+  and is recomputed every candle; profile bucket width now uses `_step` (which
+  differs from the prior `_range_size or None` only when an explicit tiny
+  `range_size` was clamped by ATR, or when `_step` was previously `None`).

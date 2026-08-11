@@ -25,7 +25,9 @@ class OrderEngine:
             symbol=signal.symbol, exchange=signal.exchange, side=signal.side,
             quantity=signal.quantity,
             order_type="LIMIT" if signal.price else "MARKET",
-            price=signal.price, strategy=signal.strategy, ts=event.ts,
+            price=signal.price,
+            reference_price=signal.metadata.get("reference_price", 0.0),
+            strategy=signal.strategy, ts=event.ts,
         )
         self.ctx.bus.publish(intent)
         outcome = self.router.submit(intent)

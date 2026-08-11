@@ -305,6 +305,422 @@
       "title": "No integration test for full pipeline: feed → kernel → strategy → risk → execution → portfolio",
       "created": "2026-08-01T05:44:36Z",
       "updated": "2026-08-01T06:49:12Z"
+    },
+    {
+      "id": "B-006",
+      "type": "bug",
+      "status": "done",
+      "title": "F-004 live fills carry zero commission/statutory — parity gap",
+      "created": "2026-08-01T12:03:31Z",
+      "updated": "2026-08-01T12:03:31Z"
+    },
+    {
+      "id": "B-007",
+      "type": "bug",
+      "status": "done",
+      "title": "F-005 backtest candles degenerate (open=high=low=close) — QuoteEvent OHLCV ignored by CandleEngine",
+      "created": "2026-08-01T12:03:31Z",
+      "updated": "2026-08-01T12:03:31Z"
+    },
+    {
+      "id": "B-008",
+      "type": "bug",
+      "status": "done",
+      "title": "Scanner reads indicator keys pipeline never produces (avg_volume/rsi/supertrend vs rsi_14/atr_14/stx_10_3) — 3 dead branches",
+      "created": "2026-08-01T12:03:31Z",
+      "updated": "2026-08-01T12:03:31Z"
+    },
+    {
+      "id": "B-009",
+      "type": "bug",
+      "status": "done",
+      "title": "HF-001 MarketEngine.on_tick broadcasts read-model _quote.ltp instead of event.price (stale 0.0 for depth-kind ticks; fragile ordering dependence)",
+      "created": "2026-08-01T12:03:32Z",
+      "updated": "2026-08-01T12:03:32Z"
+    },
+    {
+      "id": "D-017",
+      "type": "debt",
+      "status": "done",
+      "title": "gate.py re-derives equity/drawdown with divergent MTM vs RiskEngine.equity/Position.market_value",
+      "created": "2026-08-01T12:03:32Z",
+      "updated": "2026-08-01T12:03:32Z"
+    },
+    {
+      "id": "T-011",
+      "type": "task",
+      "status": "done",
+      "title": "Auto-refresh Dhan token on expiry — proactive buffer + background timer + _ensure_tsl() in critical paths",
+      "created": "2026-08-01T12:19:51Z",
+      "updated": "2026-08-01T12:19:51Z"
+    },
+    {
+      "id": "T-012",
+      "type": "task",
+      "status": "done",
+      "title": "Route DhanBroker data calls through DhanTransport — finish T-005/D-005 provider decomposition",
+      "created": "2026-08-01T19:26:50Z",
+      "updated": "2026-08-02T03:22:35Z"
+    },
+    {
+      "id": "T-013",
+      "type": "task",
+      "status": "done",
+      "title": "Wire capability layer into production reads — finish T-002/D-001 (use .market/.history/.stream instead of inst._quote)",
+      "created": "2026-08-01T19:26:50Z",
+      "updated": "2026-08-02T04:02:17Z"
+    },
+    {
+      "id": "T-014",
+      "type": "task",
+      "status": "done",
+      "title": "Attach consumers for R-006 observability events (Heartbeat/FeedDisconnected/OrderTimeout) — watchdog + alerting",
+      "created": "2026-08-01T19:26:50Z",
+      "updated": "2026-08-02T03:27:29Z"
+    },
+    {
+      "id": "T-015",
+      "type": "task",
+      "status": "done",
+      "title": "Wire DhanAuthProvider.stop() into LiveRunner shutdown path — finish T-011 token refresh",
+      "created": "2026-08-01T19:26:54Z",
+      "updated": "2026-08-02T03:25:55Z"
+    },
+    {
+      "id": "T-016",
+      "type": "task",
+      "status": "done",
+      "title": "Arm RateLimiter/RetryPolicy in hot paths — finish D-006 resilience infrastructure",
+      "created": "2026-08-01T19:26:54Z",
+      "updated": "2026-08-02T03:24:38Z"
+    },
+    {
+      "id": "T-017",
+      "type": "task",
+      "status": "done",
+      "title": "Arm ScannerFacade M6 throttle on a built-in scanner",
+      "created": "2026-08-01T19:26:54Z",
+      "updated": "2026-08-02T03:33:48Z"
+    },
+    {
+      "id": "T-018",
+      "type": "task",
+      "status": "done",
+      "title": "Wire feed watchdog reconnection (LiveStream reconnect events) — finish R-004",
+      "created": "2026-08-01T19:26:54Z",
+      "updated": "2026-08-02T03:30:10Z"
+    },
+    {
+      "id": "T-019",
+      "type": "task",
+      "status": "done",
+      "title": "Wire DhanFeed mode matrix (ticker/quote/depth) for the live streaming plan",
+      "created": "2026-08-01T19:27:01Z",
+      "updated": "2026-08-02T03:31:55Z"
+    },
+    {
+      "id": "T-020",
+      "type": "task",
+      "status": "done",
+      "title": "Remove fake streaming no-ops (market_feed/order_update_stream stubs) from capability surface",
+      "created": "2026-08-01T19:27:01Z",
+      "updated": "2026-08-01T19:47:06Z"
+    },
+    {
+      "id": "T-021",
+      "type": "task",
+      "status": "done",
+      "title": "StrategyRunner full surface or trim to documented API",
+      "created": "2026-08-01T19:27:01Z",
+      "updated": "2026-08-02T04:03:58Z"
+    },
+    {
+      "id": "T-022",
+      "type": "task",
+      "status": "done",
+      "title": "Default backtest LIMIT fills ignore bar trade-through — optimistic fills",
+      "created": "2026-08-02T09:55:57Z",
+      "updated": "2026-08-02T09:55:57Z"
+    },
+    {
+      "id": "T-023",
+      "type": "task",
+      "status": "done",
+      "title": "EventStore._load crashes on torn final JSONL line — recovery fails when it is needed most",
+      "created": "2026-08-02T09:55:57Z",
+      "updated": "2026-08-02T09:55:57Z"
+    },
+    {
+      "id": "T-024",
+      "type": "task",
+      "status": "done",
+      "title": "LiveRunner kill switch is one-way — no DEACTIVATE on RiskResumedEvent",
+      "created": "2026-08-02T09:55:57Z",
+      "updated": "2026-08-02T09:55:57Z"
+    },
+    {
+      "id": "T-025",
+      "type": "task",
+      "status": "done",
+      "title": "BrokerRateGate + Quota + RateLimited (multi-window, injectable clock/sleep)",
+      "created": "2026-08-02T11:07:18Z",
+      "updated": "2026-08-02T12:31:49Z"
+    },
+    {
+      "id": "T-026",
+      "type": "task",
+      "status": "done",
+      "title": "Route every DhanTransport _tsl call through _invoke(quota, fn); drop 10/s LTP-only limiter",
+      "created": "2026-08-02T11:07:18Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "B-010",
+      "type": "bug",
+      "status": "done",
+      "title": "Move DhanBroker self.tsl order/status paths onto throttled transport",
+      "created": "2026-08-02T11:07:18Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "B-011",
+      "type": "bug",
+      "status": "done",
+      "title": "Stop RetryPolicy retrying DH-904; raise RateLimited instead of empty/None",
+      "created": "2026-08-02T11:07:18Z",
+      "updated": "2026-08-02T12:31:49Z"
+    },
+    {
+      "id": "T-027",
+      "type": "task",
+      "status": "done",
+      "title": "Integration tests: Quote 1/s, shared gate, order path, penalize on DH-904",
+      "created": "2026-08-02T11:07:18Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "T-028",
+      "type": "task",
+      "status": "done",
+      "title": "Route capability advanced-order placement through ORDER gate (place_super/slice/forever/conditional_trigger, cancel_all)",
+      "created": "2026-08-02T11:35:43Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "T-029",
+      "type": "task",
+      "status": "done",
+      "title": "Route capability order queries/modify/cancel through ORDER gate (get/modify/cancel super & forever, exchange_time)",
+      "created": "2026-08-02T11:35:43Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "T-030",
+      "type": "task",
+      "status": "done",
+      "title": "Route conditional-trigger lifecycle through ORDER gate (get_all/get_by_id/delete_conditional_trigger)",
+      "created": "2026-08-02T11:35:43Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "T-031",
+      "type": "task",
+      "status": "done",
+      "title": "Route kill_switch + enable_pnl_based_exit + margin_calculator through NON_TRADING gate",
+      "created": "2026-08-02T11:35:43Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "T-032",
+      "type": "task",
+      "status": "done",
+      "title": "Route strike selection + expired option data through DATA gate (ATM/ITM/OTM, expired_option_data)",
+      "created": "2026-08-02T11:35:44Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "B-012",
+      "type": "bug",
+      "status": "done",
+      "title": "Auth probes (_login_ok get_ltp_data/get_historical_data) are rate-ungoverned TSL traffic",
+      "created": "2026-08-02T11:44:16Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "T-033",
+      "type": "task",
+      "status": "done",
+      "title": "Unified pre-deploy gate script (paper gate + live read + token freshness, exit 1 on any failure)",
+      "created": "2026-08-02T11:44:16Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "T-034",
+      "type": "task",
+      "status": "done",
+      "title": "Decide DEGRADED fail-closed policy in live_read_check.py exit code",
+      "created": "2026-08-02T11:44:16Z",
+      "updated": "2026-08-02T12:31:50Z"
+    },
+    {
+      "id": "T-035",
+      "type": "task",
+      "status": "done",
+      "title": "Gate DhanMarketFeedSource login probe (_context_from_env -> get_tradehull) through session BrokerRateGate",
+      "created": "2026-08-02T17:16:07Z",
+      "updated": "2026-08-02T17:16:07Z"
+    },
+    {
+      "id": "T-036",
+      "type": "task",
+      "status": "done",
+      "title": "Expose BrokerRateGate.status() telemetry + quota headroom row in live_read_check.py",
+      "created": "2026-08-02T17:16:07Z",
+      "updated": "2026-08-02T17:16:07Z"
+    },
+    {
+      "id": "T-037",
+      "type": "task",
+      "status": "done",
+      "title": "Regression test: PositionSyncEngine sync pays NON_TRADING quota via transport gate",
+      "created": "2026-08-02T17:16:07Z",
+      "updated": "2026-08-02T17:16:07Z"
+    },
+    {
+      "id": "B-013",
+      "type": "bug",
+      "status": "done",
+      "title": "Remove 2m/3m/4m from _DHAN_TIMEFRAMES; fail fast with correct supported-timeframe error",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:25Z"
+    },
+    {
+      "id": "F-001",
+      "type": "feature",
+      "status": "done",
+      "title": "Sub-5m timeframes via 1m fetch + resample (HistoricalSeries.resample)",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:25Z"
+    },
+    {
+      "id": "B-014",
+      "type": "bug",
+      "status": "done",
+      "title": "dhan_transport.get_historical raises on unexpected exceptions (no silent empty CandleSeries)",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:25Z"
+    },
+    {
+      "id": "B-015",
+      "type": "bug",
+      "status": "done",
+      "title": "Auth: only _clear_shared on invalid-token signal; make refresh_if_needed atomic under lock",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:25Z"
+    },
+    {
+      "id": "D-018",
+      "type": "debt",
+      "status": "done",
+      "title": "DhanMarketFeedSource reuses broker tsl instead of second get_tradehull probe chain",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:26Z"
+    },
+    {
+      "id": "D-019",
+      "type": "debt",
+      "status": "done",
+      "title": "HistoricalSeries._df copy-on-write + kernel clock for is_fresh/fetch (replay parity)",
+      "created": "2026-08-02T17:41:16Z",
+      "updated": "2026-08-02T18:12:26Z"
+    },
+    {
+      "id": "D-020",
+      "type": "debt",
+      "status": "done",
+      "title": "Serialize DhanMarketFeedSource stop/reconnect under a lock",
+      "created": "2026-08-02T17:41:17Z",
+      "updated": "2026-08-02T18:12:26Z"
+    },
+    {
+      "id": "B-016",
+      "type": "bug",
+      "status": "done",
+      "title": "DhanTransport.get_balance must not swallow errors to 0.0 (silent-zero regression; position-sync keeps state on raise)",
+      "created": "2026-08-02T18:03:26Z",
+      "updated": "2026-08-02T18:12:25Z"
+    },
+    {
+      "id": "T-038",
+      "type": "task",
+      "status": "done",
+      "title": "Add pyarrow + duckdb to pyproject.toml deps and install in venv (unblocks ntrade.data import)",
+      "created": "2026-08-03T13:21:13Z",
+      "updated": "2026-08-03T15:13:41Z"
+    },
+    {
+      "id": "F-002",
+      "type": "feature",
+      "status": "done",
+      "title": "Implement ntrade/data/scanner_loader.py (ScannerLoader.load_universe, partition-pruned 2-3mo reads)",
+      "created": "2026-08-03T13:21:13Z",
+      "updated": "2026-08-03T15:13:41Z"
+    },
+    {
+      "id": "D-021",
+      "type": "debt",
+      "status": "done",
+      "title": "Remove dead Quota import in parquet_store.py",
+      "created": "2026-08-03T13:21:13Z",
+      "updated": "2026-08-03T16:43:23Z"
+    },
+    {
+      "id": "T-039",
+      "type": "task",
+      "status": "done",
+      "title": "Write tests/test_data_layer.py — PaperBroker round trip (fetch → upsert idempotency → gap detect → scanner load → derivative tagging)",
+      "created": "2026-08-03T13:21:13Z",
+      "updated": "2026-08-03T17:30:00Z"
+    },
+    {
+      "id": "T-040",
+      "type": "task",
+      "status": "done",
+      "title": "Refresh graphify knowledge graph to include ntrade/data layer",
+      "created": "2026-08-03T13:21:13Z",
+      "updated": "2026-08-03T17:30:00Z"
+    },
+    {
+      "id": "B-017",
+      "type": "bug",
+      "status": "done",
+      "title": "ParquetStorage.upsert crashes (KeyError) on partial-overlap re-fetch — existing[mask] treats MultiIndex difference as column labels, breaks fetch_missing pipeline",
+      "created": "2026-08-03T17:15:37Z",
+      "updated": "2026-08-03T17:35:48Z"
+    },
+    {
+      "id": "T-041",
+      "type": "task",
+      "status": "done",
+      "title": "Benchmark ParallelHistoryFetcher.fetch() throughput vs instrument count using PaperBroker seed",
+      "created": "2026-08-03T17:15:40Z",
+      "updated": "2026-08-03T17:35:49Z"
+    },
+    {
+      "id": "D-022",
+      "type": "debt",
+      "status": "done",
+      "title": "Configure duckdb_scan to default to 1-minute data window (start=now-1min, end=now) for live SQL querying",
+      "created": "2026-08-03T17:15:41Z",
+      "updated": "2026-08-03T17:35:53Z"
+    },
+    {
+      "id": "F-003",
+      "type": "feature",
+      "status": "done",
+      "title": "Add universe/CSV loader mapping Nifty 50/100/200/500 CSV symbols to Equity instruments via InstrumentFactory",
+      "created": "2026-08-03T17:15:45Z",
+      "updated": "2026-08-03T17:35:54Z"
     }
   ],
   "flows": {

@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from ntrade.brokers.dhan import DhanBroker
+from ntrade.brokers.dhan_transport import DhanTransport
 from ntrade.brokers.paper import PaperBroker
 from ntrade.domain.instruments.cash import Equity, Index
 from ntrade.domain.instruments.derivatives import Option
@@ -22,6 +23,7 @@ def make_broker(**tsl_methods):
     broker = DhanBroker.__new__(DhanBroker)
     broker._connected = True
     broker.tsl = types.SimpleNamespace(**tsl_methods)
+    broker._transport = DhanTransport(broker.tsl)
     return broker
 
 
@@ -181,9 +183,9 @@ def test_dhan_orderbook_dataframe_normalized():
 
 def test_to_records_symbol_keyed_dict_keeps_keys():
     """Symbol-keyed dicts must keep their key merged into each row."""
-    from ntrade.brokers.dhan import _to_records
-    rows = _to_records({"RELIANCE": {"qty": 10, "ltp": 100.0},
-                        "TCS": [{"qty": 5, "ltp": 50.0}, {"qty": 2, "ltp": 51.0}]})
+    from ntrade.brokers.dhan_mapper import to_records
+    rows = to_records({"RELIANCE": {"qty": 10, "ltp": 100.0},
+                       "TCS": [{"qty": 5, "ltp": 50.0}, {"qty": 2, "ltp": 51.0}]})
     assert rows[0]["symbol"] == "RELIANCE"
     assert rows[1]["symbol"] == "TCS"
     assert rows[2]["symbol"] == "TCS"
@@ -446,6 +448,74 @@ def test_order_executed_price_paper():
     rel = Equity("RELIANCE", broker=broker)
     order = rel.order.buy(quantity=10, price=100.0)
     assert order.executed_price() == 100.0
+
+
+# ------------------------------------------------- K-020: no silent 0.0 on DH-904
+def test_executed_price_propagates_rate_limited():
+    """A DH-904 on the executed-price poll must raise RateLimited, never look
+    like a fill at 0.0 (K-020: no-silent-swallow gap closed)."""
+    from ntrade.execution.rate_limit import Quota, RateLimited
+    broker = make_broker(
+        get_executed_price=lambda orderid, debug="NO": (_ for _ in ()).throw(
+            RateLimited(Quota.ORDER)),
+    )
+    rel = Equity("RELIANCE")
+    rel._broker = broker
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=75,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=100.0,
+                  order_id="ORD-1", status=OrderStatus.PENDING)
+    with pytest.raises(RateLimited):
+        order.executed_price()
+
+
+def test_executed_price_and_time_propagates_rate_limited():
+    """get_executed_price_and_time must also re-raise RateLimited (not return
+    (0.0, "") which looks like a fill at zero with no exchange time)."""
+    from ntrade.execution.rate_limit import Quota, RateLimited
+    broker = make_broker(
+        get_executed_price_and_time=lambda orderid, debug="NO": (_ for _ in ()).throw(
+            RateLimited(Quota.ORDER)),
+    )
+    rel = Equity("RELIANCE")
+    rel._broker = broker
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=75,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=100.0,
+                  order_id="ORD-1", status=OrderStatus.PENDING)
+    with pytest.raises(RateLimited):
+        order.executed_price_and_time()
+
+
+def test_executed_price_propagates_other_errors():
+    """Non-rate transport errors propagate (H-5): a silent fallback to the
+    order's recorded avg_price would mask a dead broker and feed stale prices
+    into PnL (B-005). Only RateLimited is treated as quota backoff."""
+    from unittest.mock import MagicMock
+    broker = make_broker()
+    broker._transport = MagicMock()
+    broker._transport.get_executed_price.side_effect = ConnectionError("network down")
+    rel = Equity("RELIANCE")
+    rel._broker = broker
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=75,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=100.0,
+                  order_id="ORD-1", status=OrderStatus.PENDING, avg_price=99.5)
+    with pytest.raises(RuntimeError, match="executed price fetch failed"):
+        order.executed_price()
+
+
+def test_executed_price_and_time_propagates_other_errors():
+    """Same no-swallow contract for the price+time pair: propagate the error
+    rather than returning (avg_price, "")."""
+    from unittest.mock import MagicMock
+    broker = make_broker()
+    broker._transport = MagicMock()
+    broker._transport.get_executed_price_and_time.side_effect = ConnectionError("network down")
+    rel = Equity("RELIANCE")
+    rel._broker = broker
+    order = Order(instrument=rel, side=OrderSide.BUY, quantity=75,
+                  order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=100.0,
+                  order_id="ORD-1", status=OrderStatus.PENDING, avg_price=99.5)
+    with pytest.raises(RuntimeError, match="executed price/time fetch failed"):
+        order.executed_price_and_time()
 
 
 def test_super_order_management_capabilities():

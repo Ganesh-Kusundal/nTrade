@@ -19,3 +19,5 @@ class Event:
 
     ts: datetime
     event_id: str = field(default_factory=lambda: uuid4().hex[:12])
+    correlation_id: str | None = None   # groups a causal chain; None = bus assigns
+    causation_id: str | None = None     # event_id of the causing event; None = root

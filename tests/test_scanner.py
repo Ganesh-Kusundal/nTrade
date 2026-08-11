@@ -52,6 +52,15 @@ def _make_instrument(symbol: str, *, ltp: float = 0, prev_close: float = 0,
         inst._depth = depth
     else:
         inst._depth = MarketDepth.empty(symbol)
+
+    market = MagicMock()
+    market.ltp.return_value = ltp
+    market.prev_close.return_value = prev_close
+    market.volume.return_value = volume
+    market.quote.return_value = inst._quote
+    market.bid.return_value = 0.0
+    market.ask.return_value = 0.0
+    inst.market = market
     return inst
 
 
@@ -105,26 +114,7 @@ class TestScannerABC:
         results = s.scan(session)
         assert len(results) == 2
 
-    def test_top_ranks_by_score(self):
-        class MyScanner(Scanner):
-            name = "ranker"
-            def scan(self, session, **kw):
-                return [
-                    ScannerResult(instrument=MagicMock(), scanner_name=self.name,
-                                  score=s, signal="BUY")
-                    for s in (1.0, 5.0, 3.0, 9.0, 2.0)
-                ]
-
-        s = MyScanner()
-        session = _make_session_with_instruments()
-        top3 = s.top(session, 3)
-        assert len(top3) == 3
-        assert top3[0].score == 9.0 and top3[0].rank == 1
-        assert top3[1].score == 5.0 and top3[1].rank == 2
-        assert top3[2].score == 3.0 and top3[2].rank == 3
-
-
-# ============================================================ ScannerFacade
+    # ============================================================ ScannerFacade
 
 class TestScannerFacade:
     def test_builtins_registered(self):
@@ -183,6 +173,34 @@ class TestScannerFacade:
         assert results[0].rank == 1
         assert results[0].score > results[1].score
 
+    def test_facade_ranks_scores_via_run(self):
+        session = _make_session_with_instruments()
+        facade = ScannerFacade(session)
+
+        class Ranker(Scanner):
+            name = "ranker"
+            def scan(self, session, **kw):
+                return [ScannerResult(instrument=MagicMock(), scanner_name=self.name,
+                                      score=s, signal="BUY")
+                        for s in (1.0, 5.0, 3.0, 9.0, 2.0)]
+
+        results = facade.custom(Ranker())
+        assert [r.score for r in results[:3]] == [9.0, 5.0, 3.0]
+        assert [r.rank for r in results[:3]] == [1, 2, 3]
+
+    def test_builtin_scanners_arm_m6_throttle(self):
+        for cls in (MomentumScanner, VolumeSpikeScanner, BreakoutScanner):
+            assert cls.name in ("momentum", "volume_spike", "breakout")
+            assert cls.rate_limit_seconds > 0, f"{cls.__name__} must arm the M6 throttle"
+        for cls in (GapScanner, ImbalanceScanner):
+            assert cls.rate_limit_seconds > 0, f"{cls.__name__} must arm the M6 throttle (K-022)"
+
+    def test_gap_imbalance_throttled(self):
+        """K-022: Gap/Imbalance scan the full universe every cycle — they must
+        throttle at 30s like the other three scanners (M6 symmetry)."""
+        assert GapScanner.rate_limit_seconds == 30.0
+        assert ImbalanceScanner.rate_limit_seconds == 30.0
+
 
 # ============================================================ Gap Scanner
 
@@ -236,6 +254,32 @@ class TestVolumeSpikeScanner:
         inst = _make_instrument("REL", ltp=2500, volume=50_000)
         session = _make_session_with_instruments(inst)
         assert VolumeSpikeScanner().scan(session, min_volume=100_000) == []
+
+    def test_volume_spike_live_uses_min_volume(self):
+        """K-023: live quote.volume is day-cumulative while avg_volume is
+        per-candle — the ratio is meaningless live. A 1.5x ratio (below the
+        2.0 spike multiplier) must still flag via the absolute min_volume
+        fallback in live mode."""
+        from ntrade.kernel.trading_session import TradingSession
+        inst = _make_instrument("REL", ltp=2500, volume=150_000,
+                                indicators={"avg_volume": 100_000})
+        session = TradingSession(mode="live")
+        session._kernel.ctx.instruments[inst.symbol] = inst
+        results = VolumeSpikeScanner().scan(session, min_volume=100_000,
+                                            spike_multiplier=2.0)
+        assert len(results) == 1  # ratio path (1.5x < 2x) would skip; min_volume flags
+
+    def test_volume_spike_live_skips_ratio_branch(self):
+        """Even a huge ratio must NOT flag in live when absolute volume is
+        below min_volume — the ratio branch is skipped entirely in live mode."""
+        from ntrade.kernel.trading_session import TradingSession
+        inst = _make_instrument("REL", ltp=2500, volume=500_000,
+                                indicators={"avg_volume": 100_000})  # 5x ratio
+        session = TradingSession(mode="live")
+        session._kernel.ctx.instruments[inst.symbol] = inst
+        results = VolumeSpikeScanner().scan(session, min_volume=1_000_000,
+                                            spike_multiplier=2.0)
+        assert results == []  # ratio 5x would flag in backtest; live must skip
 
 
 # ============================================================ Momentum

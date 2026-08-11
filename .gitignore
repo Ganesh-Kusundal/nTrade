@@ -9,6 +9,8 @@ __pycache__/
 
 # Dhan-Tradehull library artifacts (logs + cached tokens)
 Dependencies/
+# Stray root-level data dump with a literal backslash in its name
+/Dependencies*
 
 # App state / caches
 .freebuff/
@@ -22,3 +24,7 @@ Dependencies/
 # Generated graph output
 graphify-out/
 
+
+# Scratch / local artifacts
+ui/.vite/
+*.ipynb

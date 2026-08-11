@@ -148,3 +148,67 @@ def test_indicator_engine_bounds_rows():
         )
         engine.on_candle_closed(event)
     assert len(engine._rows["X"]) <= 100
+
+
+# ---------------------------------------------------------------- vwap bands
+
+
+def _vwap_df(vols, spread=2.0):
+    """OHLCV frame: closes ramp 100.., each candle spans +/-spread."""
+    closes = [100 + i for i in range(len(vols))]
+    return pd.DataFrame({
+        "timestamp": pd.date_range("2026-01-01", periods=len(vols), freq="5min"),
+        "open": closes, "high": [c + spread for c in closes],
+        "low": [c - spread for c in closes], "close": closes, "volume": vols,
+    })
+
+
+def test_vwap_bands_upper_above_lower(df):
+    from ntrade.domain.analytics.indicators import vwap_bands
+    upper, lower = vwap_bands(df)
+    assert upper > lower
+
+
+def test_vwap_bands_centered_on_vwap():
+    from ntrade.domain.analytics.indicators import vwap, vwap_bands
+    df = _vwap_df([1000] * 20)
+    upper, lower = vwap_bands(df, num_std=1.0)
+    v = vwap(df).iloc[-1]
+    # symmetric: vwap is the midpoint of the band pair (for num_std=1)
+    assert (upper + lower) / 2 == pytest.approx(v, abs=1e-6)
+
+
+def test_vwap_bands_widen_with_volatility():
+    from ntrade.domain.analytics.indicators import vwap_bands
+    # Bands widen when closes swing hard around the running VWAP (typical
+    # price == close for symmetric candles, so only close dispersion counts).
+    calm = pd.DataFrame({
+        "timestamp": pd.date_range("2026-01-01", periods=20, freq="5min"),
+        "open": [100 + i for i in range(20)],
+        "high": [101 + i for i in range(20)],
+        "low": [99 + i for i in range(20)],
+        "close": [100 + i for i in range(20)],
+        "volume": [1000] * 20,
+    })
+    wild = calm.copy()
+    wild["close"] = [100 + (10 if i % 2 == 0 else -10) for i in range(20)]
+    wild["open"] = wild["close"]
+    wild["high"] = wild["close"] + 1
+    wild["low"] = wild["close"] - 1
+    u1, l1 = vwap_bands(calm, num_std=2.0)
+    u2, l2 = vwap_bands(wild, num_std=2.0)
+    assert (u2 - l2) > (u1 - l1)
+
+
+def test_vwap_bands_empty():
+    from ntrade.domain.analytics.indicators import vwap_bands
+    u, l = vwap_bands(pd.DataFrame())
+    assert u != u and l != l  # NaN
+
+
+def test_vwap_bands_in_bundle_keys():
+    """Bands exposed via compute_bundle for the strategy engine."""
+    bundle = compute_bundle(_vwap_df([1000] * 20), vwap_bands_std=2.0)
+    assert "vwap_upper" in bundle
+    assert "vwap_lower" in bundle
+    assert bundle["vwap_upper"] > bundle["vwap_lower"]

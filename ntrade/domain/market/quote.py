@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 
+from ntrade.domain.constants import QUOTE_MAX_AGE_S
+
 
 @dataclass(frozen=True)
 class Quote:
@@ -56,7 +58,7 @@ class Quote:
         """Return a new Quote with only the given fields changed (immutability)."""
         return replace(self, **kwargs)
 
-    def is_stale(self, max_age_seconds: float = 5.0, *, now: datetime | None = None) -> bool:
+    def is_stale(self, max_age_seconds: float = QUOTE_MAX_AGE_S, *, now: datetime | None = None) -> bool:
         if self.timestamp is None:
             return True
         reference = now if now is not None else datetime.now()

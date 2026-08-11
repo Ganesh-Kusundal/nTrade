@@ -103,11 +103,15 @@ class Expiry:
         while len(result) < n:
             added = False
             if ci < len(otm_calls):
-                result.append(otm_calls[ci]); ci += 1; added = True
+                result.append(otm_calls[ci])
+                ci += 1
+                added = True
             if len(result) >= n:
                 break
             if pi < len(otm_puts):
-                result.append(otm_puts[pi]); pi += 1; added = True
+                result.append(otm_puts[pi])
+                pi += 1
+                added = True
             if not added:
                 break
         return result
@@ -135,11 +139,15 @@ class Expiry:
         while len(result) < n:
             added = False
             if ci < len(itm_calls):
-                result.append(itm_calls[ci]); ci += 1; added = True
+                result.append(itm_calls[ci])
+                ci += 1
+                added = True
             if len(result) >= n:
                 break
             if pi < len(itm_puts):
-                result.append(itm_puts[pi]); pi += 1; added = True
+                result.append(itm_puts[pi])
+                pi += 1
+                added = True
             if not added:
                 break
         return result

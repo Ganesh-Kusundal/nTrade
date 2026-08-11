@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 
 from ntrade.events.base import Event
 
@@ -80,3 +79,16 @@ class IndicatorUpdatedEvent(Event):
     exchange: str
     timeframe: str
     indicators: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True, kw_only=True)
+class WatchlistReady(Event):
+    """Published when a screener run completes.
+
+    Carries the ranked ``ScannerResult`` list so strategies can react to
+    fresh watchlists via ``on_watchlist`` — works identically in backtest,
+    replay, and live (zero-parity).
+    """
+
+    results: tuple = ()
+    strategy: str = ""

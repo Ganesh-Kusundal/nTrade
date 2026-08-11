@@ -448,6 +448,16 @@ print(f'Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {len(co
 
 If this step prints `ERROR: Graph is empty`, stop and tell the user what happened - do not proceed to labeling or visualization.
 
+**Re-apply persisted edge resolutions (full builds, `--update`, `--cluster-only`).** If
+`graphify-out/resolutions.json` exists, the rebuild just wiped manual edge
+relabels — re-apply them before continuing:
+
+```bash
+if [ -f graphify-out/resolutions.json ]; then
+    python scripts/apply_graph_resolutions.py graphify-out
+fi
+```
+
 Replace INPUT_PATH with the actual path.
 
 ### Step 4.5 - Graph health check (read-only integrity gate)

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
-    from ntrade.brokers.base import BrokerAdapter
+    from ntrade.domain.ports import BrokerAdapter
 
 
 @dataclass

@@ -1,9 +1,9 @@
 """StrategyRunner — multi-strategy management on top of TradingKernel.
 
 Responsibilities: register several strategies per session, give each its own
-risk limits (per-strategy RiskEngine), hot attach/detach while the kernel is
-live, and report per-strategy status. The kernel itself stays untouched; the
-runner only wires strategies and scoped risk.
+risk limits (per-strategy RiskEngine), and report per-strategy status. The
+kernel itself stays untouched; the runner only wires strategies and scoped
+risk.
 """
 
 from __future__ import annotations
@@ -66,32 +66,6 @@ class StrategyRunner:
             )
         self.kernel._risk_pause_count = count + 1
         self._global_risk_paused = True
-
-    # ------------------------------------------------------------------ detach
-    def remove(self, name: str) -> bool:
-        """Hot-detach a strategy and its scoped risk engine."""
-        strategy = self._handles.pop(name, None)
-        if strategy is None:
-            return False
-        self.kernel.strategy_engine.remove(strategy)
-        engine = self._risk.pop(name, None)
-        if engine is not None:
-            self.kernel.bus.unsubscribe(SignalGeneratedEvent, engine.on_signal)
-        return True
-
-    # ------------------------------------------------------------------ toggles
-    def enable(self, name: str) -> bool:
-        return self._set_enabled(name, True)
-
-    def disable(self, name: str) -> bool:
-        return self._set_enabled(name, False)
-
-    def _set_enabled(self, name: str, enabled: bool) -> bool:
-        strategy = self._handles.get(name)
-        if strategy is None:
-            return False
-        strategy.enabled = enabled
-        return True
 
     def running(self, name: str) -> bool:
         strategy = self._handles.get(name)

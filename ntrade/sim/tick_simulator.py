@@ -8,6 +8,7 @@ Invariants (all test-enforced):
   - max(price) == high and min(price) == low (both extremes touched)
   - sum(tick.quantity) == bar volume
   - same seed + same bar -> identical ticks
+  - |idx(high) - idx(low)| >= max(1, min(MIN_ANCHOR_GAP, (seconds-3)//2))
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+MIN_ANCHOR_GAP = 5  # minimum seconds between hi and lo anchors
 
 
 @dataclass(frozen=True)
@@ -57,9 +60,11 @@ def synthesize_1m_ticks(bar_ts: datetime, open_: float, high: float, low: float,
         raise ValueError("seconds must be >= 4")
     rng = random.Random(seed)
     n = seconds
+    # max(1, ...) preserves lo != hi for n=4 where (n-3)//2 == 0
+    min_gap = max(1, min(MIN_ANCHOR_GAP, (n - 3) // 2))
     hi = rng.randrange(1, n - 1)
     lo = rng.randrange(1, n - 1)
-    while lo == hi:
+    while abs(hi - lo) < min_gap:
         lo = rng.randrange(1, n - 1)
     anchors = sorted([(0, open_), (hi, high), (lo, low), (n - 1, close)])
     prices = _interp(anchors, n)

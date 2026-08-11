@@ -1,0 +1,1 @@
+Install with `pip install -e .[dev,ui]` to get test and optional UI dependencies. Run tests via `pytest` (configured in `pyproject.toml`). Live runs are orchestrated by scripts under `scripts/` (e.g. `live_runner_run.py`, `paper_gate_run.py`, `benchmark_latency.py`). Synthetic feed mode (`feed="synth"`) lets rehearse the full pipeline offline before connecting to Dhan websockets.

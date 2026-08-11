@@ -16,7 +16,7 @@ Example::
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +31,11 @@ class ScannerResult:
 
     Always carries an ``Instrument`` (never a raw symbol string) so callers
     can immediately access market data, analytics, or place orders.
+
+    **Score contract:** ``score`` is a scanner-local metric (e.g. gap %, RSI,
+    volume ratio).  It is **not** comparable across scanner types.  Before
+    combining results from different scanners, run each batch through
+    ``Scanner.normalize()``.
     """
 
     instrument: "Instrument"
@@ -44,11 +49,19 @@ class ScannerResult:
     timestamp: datetime | None = None
 
 
+def top(results: list[ScannerResult], n: int) -> list[ScannerResult]:
+    """Return the ``n`` highest-scoring results (already ranked by the
+    facade).  Zero-alloc slice — no re-sort."""
+    return results[:n]
+
+
 class Scanner(ABC):
     """Abstract base for all scanners.
 
     Subclasses implement ``scan()`` which receives the active
-    ``TradingSession`` and returns a list of ``ScannerResult``.
+    ``TradingSession`` and returns a list of ``ScannerResult``.  Ranking and
+    rate-limit throttling are handled by ``ScannerFacade._run`` (the canonical
+    path); ``scan()`` itself returns raw, unranked results.
     """
 
     name: str = "base"
@@ -58,16 +71,26 @@ class Scanner(ABC):
 
     @abstractmethod
     def scan(self, session: "TradingSession", **kw: Any) -> list[ScannerResult]:
-        """Run the scan and return ranked results."""
+        """Run the scan and return raw results (unranked)."""
         ...
 
-    def top(self, session: "TradingSession", n: int = 10, **kw: Any) -> list[ScannerResult]:
-        """Convenience: run scan and return top *n* results by score."""
-        results = self.scan(session, **kw)
-        results.sort(key=lambda r: r.score, reverse=True)
-        for i, r in enumerate(results[:n]):
-            object.__setattr__(r, "rank", i + 1)
-        return results[:n]
+    def normalize(self, results: list[ScannerResult]) -> list[ScannerResult]:
+        """Map each result's raw ``score`` into a 0–1 band so that a
+        ``ScreenerFacade`` composing multiple scanners never lets one
+        metric's magnitude (e.g. volume ratio) drown out another (e.g. gap
+        pct).
+
+        Default: min-max rescale within the batch.  Override when raw scores
+        are already comparable or when a domain-specific transform is needed.
+        """
+        if not results:
+            return results
+        scores = [r.score for r in results]
+        lo, hi = min(scores), max(scores)
+        if hi == lo:
+            return [replace(r, score=1.0) for r in results]
+        span = hi - lo
+        return [replace(r, score=(r.score - lo) / span) for r in results]
 
 
 class ScannerFacade:

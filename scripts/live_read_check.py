@@ -7,6 +7,7 @@ No orders are placed; every call is read-only.
 """
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -14,6 +15,62 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ntrade.kernel.trading_session import TradingSession  # noqa: E402
 
 RESULTS: list[tuple[str, str, str]] = []
+
+# T-036: the B-012 connect-time login probe acquires the single 1/s QUOTE
+# slot, so a snapshot taken immediately after connect is inside that same
+# window and the quota row reports quote=1/1 (spurious DEGRADED). Settle past
+# the 1s burst window before snapshotting so the row reflects steady-state
+# usage, not the login probe itself.
+RATE_GATE_SETTLE_S = 1.05
+
+
+def quota_status_row(gate) -> tuple[str, str, str]:
+    """Render a live quota-headroom row from a session BrokerRateGate (T-036).
+
+    Reports each quota class's current window usage plus any active cooldown
+    (e.g. after a DH-904) so an operator can see headroom at a glance. A gate
+    that is already blocked is DEGRADED — go-live should not proceed into an
+    exhausted quota window.
+    """
+    try:
+        snap = gate.status()
+    except Exception as exc:  # noqa: BLE001
+        return ("rate_gate", "FAIL", f"{type(exc).__name__}: {exc}")
+    parts = []
+    blocked = False
+    for cls in ("quote", "data", "order", "non_trading"):
+        info = snap.get(cls)
+        if info is None:
+            continue
+        # Report the TIGHTEST window (shortest span) per class — that is the
+        # binding one for burst shaping. Summing across overlapping windows
+        # (1s/60s/1h/1d) would double-count the same tokens.
+        tightest = min(info["windows"], key=lambda w: w["span_s"])
+        label = f"{cls}={tightest['used']}/{tightest['limit']}"
+        if info["cooldown_remaining"] > 0:
+            label += f"-cd{info['cooldown_remaining']}s"
+        parts.append(label)
+        blocked = blocked or info["blocked"]
+    summary = "; ".join(parts) or "no gate"
+    return ("rate_gate", "DEGRADED" if blocked else "PASS", summary)
+
+
+def exit_code(results, strict: bool = False) -> int:
+    """Exit decision for a live-read run (T-034).
+
+    FAIL rows always fail the run (a crashed endpoint is never go-live safe).
+    DEGRADED rows (degenerate but non-crashing reads, e.g. lot_size 0) fail
+    closed under ``strict`` — for go-live, a DEGRADED market-data row means a
+    strategy may size wrong. Plain ``strict=False`` (diagnostics) tolerates
+    DEGRADED.
+    """
+    failed = [name for name, status, _ in results if status == "FAIL"]
+    degraded = [name for name, status, _ in results if status == "DEGRADED"]
+    if failed:
+        return 1
+    if strict and degraded:
+        return 1
+    return 0
 
 
 def check(name: str, fn, sane=None):
@@ -38,7 +95,13 @@ def check(name: str, fn, sane=None):
     RESULTS.append((name, status, summary))
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(description="Live read-only check (T-034 strict mode)")
+    parser.add_argument("--strict", action="store_true",
+                        help="fail closed on DEGRADED rows (recommended for go-live)")
+    args = parser.parse_args(argv)
+
     print("== ntrade live read-only check ==")
 
     # ------------------------------------------------------------ connection
@@ -49,6 +112,12 @@ def main() -> int:
         RESULTS.append(("connect", "PASS" if ok else "FAIL",
                         f"broker={session.broker.name} connected={session.connected}"))
         _tsl = session.broker.tsl
+        # T-036: report quota headroom from the session's shared rate gate.
+        gate = getattr(session.broker, "_gate", None)
+        if gate is not None:
+            # Let the login probe's 1/s QUOTE burst window roll off (T-036).
+            time.sleep(RATE_GATE_SETTLE_S)
+            RESULTS.append(quota_status_row(gate))
     except Exception as exc:  # noqa: BLE001
         RESULTS.append(("connect", "FAIL", f"{type(exc).__name__}: {exc}"))
         print("connection failed; aborting endpoint checks")
@@ -56,11 +125,11 @@ def main() -> int:
         return 1
 
     nifty = session.index("NIFTY")
-    rel = session.index("RELIANCE")
+    rel = session.stock("RELIANCE")  # equity — index("RELIANCE") makes get_depth return None
 
     # ------------------------------------------------------------ market data
-    check("quote.ltp (NIFTY)", lambda: nifty.refresh() and nifty.ltp, sane=lambda v: v > 0)
-    check("quote.full (get_quote_data)", lambda: nifty.quote.as_dict(),
+    check("quote.ltp (NIFTY)", lambda: nifty.refresh() and nifty.market.ltp(), sane=lambda v: v > 0)
+    check("quote.full (get_quote_data)", lambda: nifty.market.quote().as_dict(),
           sane=lambda d: isinstance(d, dict) and d.get("ltp", 0) > 0)
     check("quote.ohlc (get_ohlc_data)", lambda: nifty.broker.ohlc(),
           sane=lambda d: isinstance(d, dict) and bool(d))
@@ -71,8 +140,8 @@ def main() -> int:
     check("depth20 capability (RELIANCE)", lambda: rel.broker.depth20(levels=5),
           sane=lambda d: len(d.bids) > 0)
 
-    check("history 5m (NIFTY)", lambda: len(nifty.history("5m", days=1).df), sane=lambda v: v > 0)
-    check("history DAY (NIFTY)", lambda: len(nifty.history("1d", days=5).df), sane=lambda v: v > 0)
+    check("history 5m (NIFTY)", lambda: len(nifty.market.history()("5m", days=1).df), sane=lambda v: v > 0)
+    check("history DAY (NIFTY)", lambda: len(nifty.market.history()("1d", days=5).df), sane=lambda v: v > 0)
     check("history long-term (1d, 2026-07-01..2026-07-31)",
           lambda: len(session.broker.get_long_term_historical(nifty, timeframe="1d",
                                                        from_date="2026-07-01", to_date="2026-07-31")),
@@ -92,7 +161,7 @@ def main() -> int:
     chain_ref = {}
 
     def fetch_chain():
-        chain = nifty.option_chain(expiry=0, num_strikes=5)
+        chain = nifty.derivatives.option_chain(expiry=0, num_strikes=5)
         chain_ref["chain"] = chain
         return f"options={len(chain)} atm={chain.atm_strike} expiry={chain.target_expiry} idx_used={chain.expiry_index_used}"
 
@@ -137,7 +206,7 @@ def main() -> int:
     degraded = [name for name, status, _ in RESULTS if status == "DEGRADED"]
     print(f"\nRESULT: {len(RESULTS) - len(failed)}/{len(RESULTS)} endpoints OK"
           f" ({len(degraded)} degraded: {degraded})")
-    return 1 if failed else 0
+    return exit_code(RESULTS, strict=args.strict)
 
 
 def _dhan_symbol_of(instrument) -> str:

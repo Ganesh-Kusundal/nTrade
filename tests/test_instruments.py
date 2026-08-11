@@ -39,6 +39,34 @@ def test_refresh_via_paper_broker():
     assert rel.last_refresh_at is not None
 
 
+def test_refresh_keeps_stale_on_failure():
+    """Regression: a failed quote fetch must NOT stamp _last_refresh_at, or a
+    dead broker would report a stale quote as fresh (is_stale() lies)."""
+    broker = PaperBroker()
+    rel = Equity("RELIANCE", broker=broker)
+
+    # Seed a prior good quote + timestamp so "keep previous" is exercised.
+    rel._quote = rel._quote.with_update(ltp=2500.0, timestamp=__import__("datetime").datetime.now())
+    rel._last_refresh_at = __import__("datetime").datetime.now()
+
+    # Force get_quote to fail (mirrors a dead/blocked broker fetch).
+    # get_depth internally calls get_quote in PaperBroker, so only fail the
+    # quote path — depth falls back to the prior quote via the broker's own
+    # seed, which is fine; we only care that refresh() does not re-stamp.
+    def boom(inst):
+        raise RuntimeError("LTP fetch failed")
+    broker.get_quote = boom
+    broker.get_depth = lambda inst: None  # do not let depth re-trigger get_quote
+
+    before = rel.last_refresh_at
+    rel.refresh()
+    # Quote preserved, but refresh timestamp unchanged — a failed refresh must
+    # not be reported as fresh (is_stale keyed on quote ts, so assert the
+    # refresh bookmark explicitly: it must not advance on failure).
+    assert rel.market.ltp() == 2500.0
+    assert rel.last_refresh_at == before
+
+
 def test_subscription_lifecycle():
     broker = PaperBroker()
     rel = Equity("RELIANCE", broker=broker)

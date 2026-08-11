@@ -78,7 +78,11 @@ class SimulatedExecution:
                 strategy=intent.strategy, ts=intent.ts,
             )
         if intent.order_type == "MARKET":
-            base = instrument._quote.ltp or 0.0
+            # Zero-parity fill source: the bar-close reference price carried
+            # from the CandleClosedEvent that generated the signal (backtest/
+            # replay fire on the bar close; the instrument's live LTP may
+            # already reflect the NEXT bar). 0.0 = fall back to the live LTP.
+            base = intent.reference_price or (instrument._quote.ltp or 0.0)
             if base <= 0:
                 return OrderRejectedEvent(
                     symbol=intent.symbol, exchange=intent.exchange, side=intent.side,

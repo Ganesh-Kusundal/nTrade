@@ -1,0 +1,1412 @@
+{
+  "cards": {
+    "K-001": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:17+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/brokers/dhan.py",
+        "ntrade/brokers/paper.py",
+        "ntrade/brokers/dhan_mapper.py",
+        "ntrade/brokers/dhan_transport.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:17+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P0",
+      "tags": [
+        "zero-parity",
+        "replay"
+      ],
+      "title": "C1: Broker clock injection \u2014 remove now-or-datetime.now fallbacks (zero-parity)",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-002": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:17+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/runner/live_runner.py",
+        "ntrade/scanners/builtin.py",
+        "ntrade/kernel/resilient.py",
+        "ntrade/kernel/trading_session.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:17+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "bug",
+      "lane": "done",
+      "links": [],
+      "priority": "P0",
+      "tags": [
+        "d-007",
+        "thread-safety"
+      ],
+      "title": "C2: Reroute ctx.instruments direct iterators through lock-guarded accessors",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-003": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:17+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/brokers/dhan_transport.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:17+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "bug",
+      "lane": "done",
+      "links": [],
+      "priority": "P0",
+      "tags": [
+        "b-005",
+        "pnl"
+      ],
+      "title": "H1: get_ltp/get_quote must raise on total failure not return 0.0",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-004": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:17+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/execution/broker_executor.py",
+        "ntrade/kernel/resilient.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:17+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T08:11:49+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P1",
+      "tags": [
+        "recovery"
+      ],
+      "title": "H3: Partial-fill delta state must be rebuildable on recovery",
+      "updated": "2026-08-01T08:11:49+00:00"
+    },
+    "K-005": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:17+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/storage/event_store.py",
+        "ntrade/kernel/resilient.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:17+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P1",
+      "tags": [
+        "replay"
+      ],
+      "title": "H5: EventStore causal ordering needs monotonic seq not ts sort",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-006": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/execution/costs.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "task",
+      "lane": "done",
+      "links": [],
+      "priority": "P1",
+      "tags": [
+        "pnl",
+        "backtest"
+      ],
+      "title": "H6: Indian-market cost model (STT, exchange charges, SEBI, GST, stamp)",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-007": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/runner/live_runner.py",
+        "ntrade/engines/risk_engine.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "task",
+      "lane": "done",
+      "links": [],
+      "priority": "P1",
+      "tags": [
+        "risk"
+      ],
+      "title": "M1: Stale-feed guard \u2014 halt on frozen feed",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-008": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/execution/broker_executor.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T08:32:06+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "oms"
+      ],
+      "title": "M2: BRK- fallback order id merging",
+      "updated": "2026-08-01T08:32:06+00:00"
+    },
+    "K-009": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/kernel/runner.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "bug",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "risk"
+      ],
+      "title": "M3: StrategyRunner refcount leak on abandoned runner",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-010": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/registry.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "bug",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "tests"
+      ],
+      "title": "M4: unregister_all must reset default-broker flag",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-011": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/kernel/context.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "thread-safety"
+      ],
+      "title": "M5: instruments_snapshot shallow-copy semantics + deep snapshot",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-012": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/scanners/builtin.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T08:32:06+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "task",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "scanner"
+      ],
+      "title": "M6: Scanner rate-limiting + snapshot semantics",
+      "updated": "2026-08-01T08:32:06+00:00"
+    },
+    "K-013": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "scripts/paper_gate_run.py",
+        "scripts/live_read_check.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "task",
+      "lane": "done",
+      "links": [],
+      "priority": "P1",
+      "tags": [
+        "safety"
+      ],
+      "title": "M7: Pre-live gate scripts must fail closed (exit 1)",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-014": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/brokers/dhan_transport.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T08:32:06+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "d-003"
+      ],
+      "title": "M8: pandas leak at transport boundary (get_positions etc)",
+      "updated": "2026-08-01T08:32:06+00:00"
+    },
+    "K-015": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/domain/analytics/indicators.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:43+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [],
+      "title": "L1: indicators bare-pass fallbacks -> log + NaN",
+      "updated": "2026-08-01T07:48:43+00:00"
+    },
+    "K-016": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/facade.py",
+        "ntrade/kernel/trading_session.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T08:32:06+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "task",
+      "lane": "done",
+      "links": [],
+      "priority": "P3",
+      "tags": [
+        "api"
+      ],
+      "title": "L2: Market vs TradingSession consolidation (T-004)",
+      "updated": "2026-08-01T08:32:06+00:00"
+    },
+    "K-017": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "tests/test_context.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T07:48:44+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "tests"
+      ],
+      "title": "L3: test_context concurrency test deterministic (Barrier storm)",
+      "updated": "2026-08-01T07:48:44+00:00"
+    },
+    "K-018": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/registry.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T08:32:06+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "thread-safety"
+      ],
+      "title": "L4: SymbolMaster cache synchronization",
+      "updated": "2026-08-01T08:32:06+00:00"
+    },
+    "K-019": {
+      "blocked_by": "",
+      "created": "2026-08-01T07:33:18+00:00",
+      "detail": "",
+      "files": [
+        "ntrade/domain/analytics/greeks.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-01T07:33:18+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-01T08:32:06+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P3",
+      "tags": [],
+      "title": "L5: Greeks zero-filled footgun -> not-computed sentinel",
+      "updated": "2026-08-01T08:32:06+00:00"
+    },
+    "K-020": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:19+00:00",
+      "detail": "dhan.py:386-403 \u2014 get_executed_price and get_executed_price_and_time wrap transport calls in except Exception: return float(order.avg_price or 0.0). Unlike get_order_status/get_order_detail (which re-raise RateLimited), these two still swallow a DH-904 rate-limit rejection and return 0.0 \u2014 the exact silent-zero pattern H1/B-016 eliminated elsewhere. A rate-limited execution-price poll looks like a fill at 0.0 to portfolio/position accounting.",
+      "files": [
+        "ntrade/brokers/dhan.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:19+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:21:55+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "bug",
+      "lane": "done",
+      "links": [],
+      "priority": "P1",
+      "tags": [
+        "rate-limit",
+        "silent-zero",
+        "order-lifecycle"
+      ],
+      "title": "get_executed_price/_and_time swallow RateLimited -> 0.0 (no-silent-swallow gap)",
+      "updated": "2026-08-03T05:21:55+00:00"
+    },
+    "K-021": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:19+00:00",
+      "detail": "T-026 gated the transport choke point, but broker convenience methods still wrap _tsl calls in except Exception -> empty/None. Full list (11, incl. get_future_script -> None dhan.py:482 and get_lot_size -> 0 dhan.py:489, which can divide-by-zero downstream): get_orderbook->OrderBook(), get_trade_book->TradeBook(), order_report->[], get_expiry_list->[], get_expiry_date->[], get_long_term_historical->{}, get_start_date->None, get_instrument_file->None, get_instrument_metadata->{} (dhan.py:405-533). A DH-904 on expiry list looks like 'no expiries' to strategies (ERROR-016 class). Decision: propagate RateLimited at broker boundary like the order-status path; keep degrade for non-rate errors.",
+      "files": [
+        "ntrade/brokers/dhan.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:19+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:26:07+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "rate-limit",
+        "silent-empty",
+        "error-016"
+      ],
+      "title": "Broker-level data reads still swallow failures to empty/None (DH-904 looks like no data)",
+      "updated": "2026-08-03T05:26:07+00:00"
+    },
+    "K-022": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:19+00:00",
+      "detail": "Momentum/VolumeSpike/Breakout throttle at 30s (M6/T-017) but GapScanner and ImbalanceScanner have no rate_limit_seconds (0.0) \u2014 they scan the full instrument universe every cycle with no app-level cache. On a live multi-instrument scan this multiplies broker DATA-quota burn and CPU. Either set a throttle or confirm their cache path.",
+      "files": [
+        "ntrade/scanners/builtin.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:19+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:28:56+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "task",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "scanner",
+        "rate-limit",
+        "quota"
+      ],
+      "title": "Gap/Imbalance scanners unthrottled (rate_limit_seconds asymmetry)",
+      "updated": "2026-08-03T05:28:56+00:00"
+    },
+    "K-023": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:19+00:00",
+      "detail": "builtin.py:82-85 documents that live quote.volume is day-cumulative while avg_volume is per-candle, so the spike ratio path is meaningless live (only the absolute min_volume fallback is reliable). Documented in the docstring but the ratio path still fires on live data \u2014 normalize units or guard the ratio branch in live mode.",
+      "files": [
+        "ntrade/scanners/builtin.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:19+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:31:49+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "scanner",
+        "volume",
+        "unit-mismatch"
+      ],
+      "title": "VolumeSpikeScanner live volume-unit mismatch (documented, unfixed)",
+      "updated": "2026-08-03T05:31:49+00:00"
+    },
+    "K-024": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:19+00:00",
+      "detail": "order.py buy/sell/limit/market/stop default trade_type=TradeType.MIS regardless of instrument kind. For an Equity the correct default is usually CNC (delivery); MIS on an equity order is an intraday margin order \u2014 a silent wrong-product-type risk for users who don't pass trade_type. Derive the default from instrument kind (Equity->CNC, Future/Option->MIS) or validate.",
+      "files": [
+        "ntrade/domain/orders/order.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:19+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:34:26+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "order-model",
+        "footgun",
+        "product-type"
+      ],
+      "title": "OrderFacade defaults TradeType.MIS for all instruments incl. equities",
+      "updated": "2026-08-03T05:34:26+00:00"
+    },
+    "K-025": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:30+00:00",
+      "detail": "CandleEngine._bucket (candle_engine.py:30-34) floors to UTC-pinned epoch with closed-LEFT bin membership and labels closed candles at bucket+seconds (right edge). HistoricalSeries.resample (history.py:103-111) uses pandas defaults (closed='left', label='left') \u2014 same membership, different LABEL. Fix: label='right' ONLY, keep closed='left' (changing closed breaks bin membership). Verify index is timezone-naive like the engine. Add parity test (1m->5m) in test_candle_timezone.py or test_history_stream.py.",
+      "files": [
+        "ntrade/domain/market/history.py",
+        "ntrade/engines/candle_engine.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:30+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:38:54+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "zero-parity",
+        "resample",
+        "timeframes"
+      ],
+      "title": "HistoricalSeries.resample label/closed convention vs CandleEngine UTC bucketing parity",
+      "updated": "2026-08-03T05:38:54+00:00"
+    },
+    "K-026": {
+      "blocked_by": "",
+      "created": "2026-08-03T04:55:30+00:00",
+      "detail": "gate.py:28-30 writes positions[e.symbol] = (q, ltp) then immediately pops when q==0 \u2014 redundant write-then-pop, simplifies to a conditional. Also the docstring drift noted in the D-017 final review (yields-on-balance-event semantics vs 'each state change'). Trivial cleanup.",
+      "files": [
+        "ntrade/runner/gate.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T04:55:30+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T05:41:30+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "chore",
+      "lane": "done",
+      "links": [],
+      "priority": "P3",
+      "tags": [
+        "cleanup",
+        "gate"
+      ],
+      "title": "gate._equity_trace write-then-pop redundancy + docstring drift",
+      "updated": "2026-08-03T05:41:30+00:00"
+    },
+    "K-027": {
+      "blocked_by": "",
+      "created": "2026-08-03T06:07:00+00:00",
+      "detail": "F-001 label-convention parity (K-025 class): DhanMapper.resample_history used pandas' default label='left' (bin-START), labeling a 3m bar 09:15 where CandleEngine and HistoricalSeries.resample label 09:18 — identical bins, different timestamps. Adopted label='right' keeping closed='left' and the 09:15 IST per-day origin (night-session containment). Exact grid parity with the engine holds for 3m only; 2m/4m sit 1-3min off the engine's epoch grid by design (documented in-code). Cross-path parity test locks the 3m identity and the 2m/4m right-edge convention.",
+      "files": [
+        "ntrade/brokers/dhan_mapper.py",
+        "tests/test_dhan_transport.py",
+        "tests/test_history_stream.py"
+      ],
+      "history": [
+        {
+          "at": "2026-08-03T06:07:00+00:00",
+          "from": "created",
+          "to": "backlog"
+        },
+        {
+          "at": "2026-08-03T06:07:00+00:00",
+          "from": "backlog",
+          "to": "done"
+        }
+      ],
+      "kind": "debt",
+      "lane": "done",
+      "links": [],
+      "priority": "P2",
+      "tags": [
+        "parity",
+        "resample",
+        "F-001",
+        "label-convention"
+      ],
+      "title": "F-001 resample_history labels right-edge bars (CandleEngine parity)",
+      "updated": "2026-08-03T06:07:00+00:00"
+    }
+  },
+  "components": {},
+  "files": {
+    "pyproject.toml": {
+      "annotated_at": "",
+      "annotated_hash": "f5ca67e75ecc811b0a02679379fcfa1e424a2c84",
+      "component": "",
+      "hash": "f5ca67e75ecc811b0a02679379fcfa1e424a2c84",
+      "loc": 24,
+      "purpose": ""
+    },
+    "scripts/benchmark_latency.py": {
+      "annotated_at": "",
+      "annotated_hash": "ed5974d914bffaab938988ef67036400efb8f28e",
+      "component": "",
+      "hash": "ed5974d914bffaab938988ef67036400efb8f28e",
+      "loc": 36,
+      "purpose": ""
+    },
+    "scripts/ema_cross_run.py": {
+      "annotated_at": "",
+      "annotated_hash": "2dcf66a807a59388139442f6ec3c929f63aec68d",
+      "component": "",
+      "hash": "2dcf66a807a59388139442f6ec3c929f63aec68d",
+      "loc": 86,
+      "purpose": ""
+    },
+    "scripts/live_read_check.py": {
+      "annotated_at": "",
+      "annotated_hash": "5d1df8692ce10bcc952fb0212b0a0d8f440eeb69",
+      "component": "",
+      "hash": "5d1df8692ce10bcc952fb0212b0a0d8f440eeb69",
+      "loc": 187,
+      "purpose": ""
+    },
+    "scripts/live_runner_run.py": {
+      "annotated_at": "",
+      "annotated_hash": "0d20a1797649e4a143dea3f860a6a32b047b231a",
+      "component": "",
+      "hash": "0d20a1797649e4a143dea3f860a6a32b047b231a",
+      "loc": 68,
+      "purpose": ""
+    },
+    "scripts/live_smoke.py": {
+      "annotated_at": "",
+      "annotated_hash": "b9918b862da58747f04abaee86e2ce4600c6d083",
+      "component": "",
+      "hash": "b9918b862da58747f04abaee86e2ce4600c6d083",
+      "loc": 69,
+      "purpose": ""
+    },
+    "scripts/paper_gate_run.py": {
+      "annotated_at": "",
+      "annotated_hash": "689dd6d1bd73d4934c635b60a38d910c1d602a58",
+      "component": "",
+      "hash": "689dd6d1bd73d4934c635b60a38d910c1d602a58",
+      "loc": 53,
+      "purpose": ""
+    },
+    "tests/test_benchmark.py": {
+      "annotated_at": "",
+      "annotated_hash": "da9ecd8d7815fdaaa18e1312aff7b97fe5b8ad4a",
+      "component": "",
+      "hash": "da9ecd8d7815fdaaa18e1312aff7b97fe5b8ad4a",
+      "loc": 14,
+      "purpose": ""
+    },
+    "tests/test_broker_executor.py": {
+      "annotated_at": "",
+      "annotated_hash": "8c3943d8737deec3bcdafcc884f62ea4fcdd43ea",
+      "component": "",
+      "hash": "8c3943d8737deec3bcdafcc884f62ea4fcdd43ea",
+      "loc": 38,
+      "purpose": ""
+    },
+    "tests/test_brokers.py": {
+      "annotated_at": "",
+      "annotated_hash": "84f8ba8d25825cc06a655bdb5fffa93151186acd",
+      "component": "",
+      "hash": "84f8ba8d25825cc06a655bdb5fffa93151186acd",
+      "loc": 106,
+      "purpose": ""
+    },
+    "tests/test_candle_series.py": {
+      "annotated_at": "",
+      "annotated_hash": "ee8398b6882f7ec9235e3a0dec0044f1e35f0880",
+      "component": "",
+      "hash": "ee8398b6882f7ec9235e3a0dec0044f1e35f0880",
+      "loc": 97,
+      "purpose": ""
+    },
+    "tests/test_candle_timezone.py": {
+      "annotated_at": "",
+      "annotated_hash": "7da2425d03cbd3a868f842a2cbdd25804100080e",
+      "component": "",
+      "hash": "7da2425d03cbd3a868f842a2cbdd25804100080e",
+      "loc": 73,
+      "purpose": ""
+    },
+    "tests/test_chain_navigation.py": {
+      "annotated_at": "",
+      "annotated_hash": "58590914e6b1d7a309e5c88396743a37ee5d1bd2",
+      "component": "",
+      "hash": "58590914e6b1d7a309e5c88396743a37ee5d1bd2",
+      "loc": 273,
+      "purpose": ""
+    },
+    "tests/test_context.py": {
+      "annotated_at": "",
+      "annotated_hash": "8c768417b40333b25853b82cfe253d0a619acf7c",
+      "component": "",
+      "hash": "8c768417b40333b25853b82cfe253d0a619acf7c",
+      "loc": 68,
+      "purpose": ""
+    },
+    "tests/test_dhan_auth_unit.py": {
+      "annotated_at": "",
+      "annotated_hash": "c0a966ec935bedace5b6b1031807394d28a96fa7",
+      "component": "",
+      "hash": "c0a966ec935bedace5b6b1031807394d28a96fa7",
+      "loc": 147,
+      "purpose": ""
+    },
+    "tests/test_dhan_broker.py": {
+      "annotated_at": "",
+      "annotated_hash": "7a42424eba7fad56ed270089eafedc7317cbda56",
+      "component": "",
+      "hash": "7a42424eba7fad56ed270089eafedc7317cbda56",
+      "loc": 483,
+      "purpose": ""
+    },
+    "tests/test_dhan_feed.py": {
+      "annotated_at": "",
+      "annotated_hash": "d084fa84249253df4e0f48b2042e62f710f62991",
+      "component": "",
+      "hash": "d084fa84249253df4e0f48b2042e62f710f62991",
+      "loc": 30,
+      "purpose": ""
+    },
+    "tests/test_dhan_feed_source.py": {
+      "annotated_at": "",
+      "annotated_hash": "5124e9f2ce88c016b787e168d35c9c5aa1579cf7",
+      "component": "",
+      "hash": "5124e9f2ce88c016b787e168d35c9c5aa1579cf7",
+      "loc": 294,
+      "purpose": ""
+    },
+    "tests/test_dhan_providers.py": {
+      "annotated_at": "",
+      "annotated_hash": "68c5d14f3d6f8c0100b7270713e3e513d7b312c8",
+      "component": "",
+      "hash": "68c5d14f3d6f8c0100b7270713e3e513d7b312c8",
+      "loc": 249,
+      "purpose": ""
+    },
+    "tests/test_domain_types.py": {
+      "annotated_at": "",
+      "annotated_hash": "b4393a6aaf13361638a0b296ceeaa47919bd3fd5",
+      "component": "",
+      "hash": "b4393a6aaf13361638a0b296ceeaa47919bd3fd5",
+      "loc": 238,
+      "purpose": ""
+    },
+    "tests/test_ema_cross_strategy.py": {
+      "annotated_at": "",
+      "annotated_hash": "d10f9419ffa9ec912a022fbc5a4ad54fd7045038",
+      "component": "",
+      "hash": "d10f9419ffa9ec912a022fbc5a4ad54fd7045038",
+      "loc": 88,
+      "purpose": ""
+    },
+    "tests/test_engine_pipeline.py": {
+      "annotated_at": "",
+      "annotated_hash": "ea8f45be31b4a4cc6d05eaaa38cb3a7bf516a018",
+      "component": "",
+      "hash": "ea8f45be31b4a4cc6d05eaaa38cb3a7bf516a018",
+      "loc": 133,
+      "purpose": ""
+    },
+    "tests/test_event_bus_clock.py": {
+      "annotated_at": "",
+      "annotated_hash": "50ea9f7831d8ad8559752482587b6ae7db2404d5",
+      "component": "",
+      "hash": "50ea9f7831d8ad8559752482587b6ae7db2404d5",
+      "loc": 127,
+      "purpose": ""
+    },
+    "tests/test_event_bus_threads.py": {
+      "annotated_at": "",
+      "annotated_hash": "2edccad9bd427254f02c4f138bb0002fb48aa9e1",
+      "component": "",
+      "hash": "2edccad9bd427254f02c4f138bb0002fb48aa9e1",
+      "loc": 62,
+      "purpose": ""
+    },
+    "tests/test_factories_facade.py": {
+      "annotated_at": "",
+      "annotated_hash": "45492f5ab7d6537694dedcba6ee679568c71b0ec",
+      "component": "",
+      "hash": "45492f5ab7d6537694dedcba6ee679568c71b0ec",
+      "loc": 84,
+      "purpose": ""
+    },
+    "tests/test_feed_warmup.py": {
+      "annotated_at": "",
+      "annotated_hash": "c90bff903dcab74a577cb608052dad1cb521f97f",
+      "component": "",
+      "hash": "c90bff903dcab74a577cb608052dad1cb521f97f",
+      "loc": 66,
+      "purpose": ""
+    },
+    "tests/test_gap_closure.py": {
+      "annotated_at": "",
+      "annotated_hash": "6b347c9ff55708e9d39fe108dd342808d0754759",
+      "component": "",
+      "hash": "6b347c9ff55708e9d39fe108dd342808d0754759",
+      "loc": 520,
+      "purpose": ""
+    },
+    "tests/test_history_stream.py": {
+      "annotated_at": "",
+      "annotated_hash": "42089328b8590a4a562f9181bc260e71b724d90a",
+      "component": "",
+      "hash": "42089328b8590a4a562f9181bc260e71b724d90a",
+      "loc": 125,
+      "purpose": ""
+    },
+    "tests/test_indicators.py": {
+      "annotated_at": "",
+      "annotated_hash": "0489ea0895721bb2dc1766d17c27b34025ad21e2",
+      "component": "",
+      "hash": "0489ea0895721bb2dc1766d17c27b34025ad21e2",
+      "loc": 148,
+      "purpose": ""
+    },
+    "tests/test_instruments.py": {
+      "annotated_at": "",
+      "annotated_hash": "6f5b3ff5361c6760d901b7d4e16b0e04db556681",
+      "component": "",
+      "hash": "6f5b3ff5361c6760d901b7d4e16b0e04db556681",
+      "loc": 164,
+      "purpose": ""
+    },
+    "tests/test_integration_pipeline.py": {
+      "annotated_at": "",
+      "annotated_hash": "e26fd39310a15d2f491a6f0493360c04695c907e",
+      "component": "",
+      "hash": "e26fd39310a15d2f491a6f0493360c04695c907e",
+      "loc": 135,
+      "purpose": ""
+    },
+    "tests/test_kernel_engines.py": {
+      "annotated_at": "",
+      "annotated_hash": "9fffffdd2f9f60e82641c40cabdcbd0cc987cf0f",
+      "component": "",
+      "hash": "9fffffdd2f9f60e82641c40cabdcbd0cc987cf0f",
+      "loc": 101,
+      "purpose": ""
+    },
+    "tests/test_kernel_order_passthrough.py": {
+      "annotated_at": "",
+      "annotated_hash": "de950131b323e1e03e0361bff370fc2deb6461f9",
+      "component": "",
+      "hash": "de950131b323e1e03e0361bff370fc2deb6461f9",
+      "loc": 70,
+      "purpose": ""
+    },
+    "tests/test_kernel_recording.py": {
+      "annotated_at": "",
+      "annotated_hash": "e21689257a50edfce31dd8213c0f418f4e31049b",
+      "component": "",
+      "hash": "e21689257a50edfce31dd8213c0f418f4e31049b",
+      "loc": 93,
+      "purpose": ""
+    },
+    "tests/test_kernel_resilient.py": {
+      "annotated_at": "",
+      "annotated_hash": "e8845d735c800caad0e7e4b77b0ff2e48ef5ea12",
+      "component": "",
+      "hash": "e8845d735c800caad0e7e4b77b0ff2e48ef5ea12",
+      "loc": 224,
+      "purpose": ""
+    },
+    "tests/test_kill_switch_wiring.py": {
+      "annotated_at": "",
+      "annotated_hash": "3943aaf813e74dda8aab5a0f036edfb5664768fe",
+      "component": "",
+      "hash": "3943aaf813e74dda8aab5a0f036edfb5664768fe",
+      "loc": 111,
+      "purpose": ""
+    },
+    "tests/test_live_execution.py": {
+      "annotated_at": "",
+      "annotated_hash": "84fa4de14fa3d04bf0e8861e581331f5bb9f95b7",
+      "component": "",
+      "hash": "84fa4de14fa3d04bf0e8861e581331f5bb9f95b7",
+      "loc": 445,
+      "purpose": ""
+    },
+    "tests/test_live_runner.py": {
+      "annotated_at": "",
+      "annotated_hash": "a2f86c4821856836fc66d939615fa7a07c07e051",
+      "component": "",
+      "hash": "a2f86c4821856836fc66d939615fa7a07c07e051",
+      "loc": 97,
+      "purpose": ""
+    },
+    "tests/test_mission_behaviors.py": {
+      "annotated_at": "",
+      "annotated_hash": "4ef1b6429c50041733b4dd9620f0b67831037234",
+      "component": "",
+      "hash": "4ef1b6429c50041733b4dd9620f0b67831037234",
+      "loc": 120,
+      "purpose": ""
+    },
+    "tests/test_mission_gaps.py": {
+      "annotated_at": "",
+      "annotated_hash": "d37fdf4a5bb4390bb10675852e7eaa8ddb0f8521",
+      "component": "",
+      "hash": "d37fdf4a5bb4390bb10675852e7eaa8ddb0f8521",
+      "loc": 241,
+      "purpose": ""
+    },
+    "tests/test_observability.py": {
+      "annotated_at": "",
+      "annotated_hash": "e5f5688d7081fabd019977696c8dcf2ff25961e1",
+      "component": "",
+      "hash": "e5f5688d7081fabd019977696c8dcf2ff25961e1",
+      "loc": 61,
+      "purpose": ""
+    },
+    "tests/test_options_analytics.py": {
+      "annotated_at": "",
+      "annotated_hash": "5d1b3fb066f9fd580b44f08fcd4a18b9ba433633",
+      "component": "",
+      "hash": "5d1b3fb066f9fd580b44f08fcd4a18b9ba433633",
+      "loc": 140,
+      "purpose": ""
+    },
+    "tests/test_order_state_events.py": {
+      "annotated_at": "",
+      "annotated_hash": "2359424c406f7531729dcc5ecdc670eb1e34d6cb",
+      "component": "",
+      "hash": "2359424c406f7531729dcc5ecdc670eb1e34d6cb",
+      "loc": 108,
+      "purpose": ""
+    },
+    "tests/test_orders.py": {
+      "annotated_at": "",
+      "annotated_hash": "a06136973695c7237b0852c9a31bbbd58a79f8c9",
+      "component": "",
+      "hash": "a06136973695c7237b0852c9a31bbbd58a79f8c9",
+      "loc": 89,
+      "purpose": ""
+    },
+    "tests/test_paper_gate.py": {
+      "annotated_at": "",
+      "annotated_hash": "7b982fb3bf5f31d96defc99f95ec7ede0fdf91fa",
+      "component": "",
+      "hash": "7b982fb3bf5f31d96defc99f95ec7ede0fdf91fa",
+      "loc": 14,
+      "purpose": ""
+    },
+    "tests/test_portfolio_account.py": {
+      "annotated_at": "",
+      "annotated_hash": "9954c2c0638f2e09e8c1e1848b040dc1c7d63aab",
+      "component": "",
+      "hash": "9954c2c0638f2e09e8c1e1848b040dc1c7d63aab",
+      "loc": 55,
+      "purpose": ""
+    },
+    "tests/test_portfolio_exit_cost.py": {
+      "annotated_at": "",
+      "annotated_hash": "3232ab2da8eb424e92de3f35b548bfd5efd680aa",
+      "component": "",
+      "hash": "3232ab2da8eb424e92de3f35b548bfd5efd680aa",
+      "loc": 46,
+      "purpose": ""
+    },
+    "tests/test_quote.py": {
+      "annotated_at": "",
+      "annotated_hash": "353d200354873c34acb43f907e18daf4d1708f42",
+      "component": "",
+      "hash": "353d200354873c34acb43f907e18daf4d1708f42",
+      "loc": 65,
+      "purpose": ""
+    },
+    "tests/test_registry.py": {
+      "annotated_at": "",
+      "annotated_hash": "9dd1507dc3da4738556718ba133b4354aa0e8f68",
+      "component": "",
+      "hash": "9dd1507dc3da4738556718ba133b4354aa0e8f68",
+      "loc": 34,
+      "purpose": ""
+    },
+    "tests/test_replay_backtest.py": {
+      "annotated_at": "",
+      "annotated_hash": "27428e9c894291b0161ecd69a6aa4c5986c5060c",
+      "component": "",
+      "hash": "27428e9c894291b0161ecd69a6aa4c5986c5060c",
+      "loc": 266,
+      "purpose": ""
+    },
+    "tests/test_retry.py": {
+      "annotated_at": "",
+      "annotated_hash": "d32e055f8b0fdde7024373569422a64dc298f924",
+      "component": "",
+      "hash": "d32e055f8b0fdde7024373569422a64dc298f924",
+      "loc": 236,
+      "purpose": ""
+    },
+    "tests/test_risk_breakers.py": {
+      "annotated_at": "",
+      "annotated_hash": "b5b847e16e3997dedec8afa7cf645a13aa90063f",
+      "component": "",
+      "hash": "b5b847e16e3997dedec8afa7cf645a13aa90063f",
+      "loc": 110,
+      "purpose": ""
+    },
+    "tests/test_runner_feeds.py": {
+      "annotated_at": "",
+      "annotated_hash": "0ef9df94971c1f617234ab5a2ecab4250ddbb98b",
+      "component": "",
+      "hash": "0ef9df94971c1f617234ab5a2ecab4250ddbb98b",
+      "loc": 42,
+      "purpose": ""
+    },
+    "tests/test_scanner.py": {
+      "annotated_at": "",
+      "annotated_hash": "b3f9460437a9c37eb13b3471d9c87314fd2217f6",
+      "component": "",
+      "hash": "b3f9460437a9c37eb13b3471d9c87314fd2217f6",
+      "loc": 381,
+      "purpose": ""
+    },
+    "tests/test_session.py": {
+      "annotated_at": "",
+      "annotated_hash": "d94b6f26a48d04f45ac475f5c8dfd7bd8af3fd06",
+      "component": "",
+      "hash": "d94b6f26a48d04f45ac475f5c8dfd7bd8af3fd06",
+      "loc": 20,
+      "purpose": ""
+    },
+    "tests/test_sources.py": {
+      "annotated_at": "",
+      "annotated_hash": "9d44c970dce0fc2b611187c271abf969387479e0",
+      "component": "",
+      "hash": "9d44c970dce0fc2b611187c271abf969387479e0",
+      "loc": 62,
+      "purpose": ""
+    },
+    "tests/test_strategy_runner.py": {
+      "annotated_at": "",
+      "annotated_hash": "2b49692d89fb027ae7ed8ac757d59480159db872",
+      "component": "",
+      "hash": "2b49692d89fb027ae7ed8ac757d59480159db872",
+      "loc": 242,
+      "purpose": ""
+    },
+    "tests/test_synthetic_feed.py": {
+      "annotated_at": "",
+      "annotated_hash": "2ac8afa259ea97ba9c9872967264ea2612c32b92",
+      "component": "",
+      "hash": "2ac8afa259ea97ba9c9872967264ea2612c32b92",
+      "loc": 62,
+      "purpose": ""
+    },
+    "tests/test_tick_simulator.py": {
+      "annotated_at": "",
+      "annotated_hash": "e9e240e3d75295b4cb29d59fac85a2286fb03861",
+      "component": "",
+      "hash": "e9e240e3d75295b4cb29d59fac85a2286fb03861",
+      "loc": 72,
+      "purpose": ""
+    },
+    "tests/test_trading_session.py": {
+      "annotated_at": "",
+      "annotated_hash": "90651bb6e57b0470e201a3379a2a6313ad19becb",
+      "component": "",
+      "hash": "90651bb6e57b0470e201a3379a2a6313ad19becb",
+      "loc": 212,
+      "purpose": ""
+    }
+  },
+  "flows": {},
+  "next_id": {
+    "card": 28,
+    "risk": 1
+  },
+  "project": {
+    "created": "2026-08-01T07:32:56+00:00",
+    "name": "ntrade",
+    "updated": "2026-08-01T07:32:56+00:00"
+  },
+  "risks": {},
+  "scan": {
+    "at": "2026-08-01T07:32:56+00:00",
+    "changed_last_run": [
+      "gitignore",
+      ".kanban/CONTEXT.md",
+      ".kanban/scan.json",
+      "ntrade/kernel/context.py",
+      ".kanban/BOARD.md",
+      ".kanban/state.json",
+      "tests/test_context.py"
+    ],
+    "counts": {
+      "pytest_collected": null,
+      "src_files": 6,
+      "test_files": 53,
+      "test_functions": 564
+    },
+    "deps": {
+      "dev": {
+        "pytest": ">=8.0"
+      },
+      "runtime": {
+        "dhan-tradehull": ">=3.3.2",
+        "numpy": ">=1.24",
+        "pandas": ">=2.0",
+        "python-dotenv": ">=1.0"
+      }
+    },
+    "git": {
+      "branch": "main",
+      "dirty": [
+        "gitignore",
+        ".kanban/CONTEXT.md",
+        ".kanban/scan.json",
+        "ntrade/kernel/context.py",
+        ".kanban/BOARD.md",
+        ".kanban/state.json",
+        "tests/test_context.py"
+      ],
+      "head": "e418df5",
+      "recent": [
+        {
+          "date": "2026-08-01",
+          "sha": "e418df5",
+          "subject": "Initial commit: nTrade quantitative trading SDK"
+        }
+      ]
+    },
+    "graphify": {
+      "available": true,
+      "built": "2026-07-31T19:32:56Z",
+      "communities": 104,
+      "edges": 5034,
+      "fresh": false,
+      "hubs": [],
+      "nodes": 2160,
+      "stale": {
+        "deleted": [
+          ".agents/skills/dhan-tradehull/SKILL.md",
+          ".agents/skills/dhan-tradehull/examples/intraday_options_algo.py",
+          ".agents/skills/dhan-tradehull/examples/nifty50_scanner_algo.py",
+          ".agents/skills/dhan-tradehull/examples/positional_spread_algo.py",
+          ".agents/skills/dhan-tradehull/references/algo-dev-workflow.md",
+          ".agents/skills/dhan-tradehull/references/algo-intraday-options.md",
+          ".agents/skills/dhan-tradehull/references/algo-positional-spread.md",
+          ".agents/skills/dhan-tradehull/references/algo-scanner.md",
+          ".agents/skills/dhan-tradehull/references/answer-patterns.md",
+          ".agents/skills/dhan-tradehull/references/auth.md"
+        ],
+        "deleted_total": 24,
+        "modified": [
+          "ntrade/__init__.py",
+          "ntrade/brokers/base.py",
+          "ntrade/brokers/dhan.py",
+          "ntrade/brokers/dhan_auth.py",
+          "ntrade/brokers/paper.py",
+          "ntrade/domain/instruments/__init__.py",
+          "ntrade/domain/instruments/base.py",
+          "ntrade/domain/instruments/chain.py",
+          "ntrade/domain/instruments/derivatives.py",
+          "ntrade/domain/market/__init__.py"
+        ],
+        "modified_total": 60,
+        "new": [
+          "ntrade/brokers/dhan_auth_provider.py",
+          "ntrade/brokers/dhan_mapper.py",
+          "ntrade/brokers/dhan_transport.py",
+          "ntrade/domain/analytics/surface.py",
+          "ntrade/domain/instruments/capabilities.py",
+          "ntrade/domain/instruments/expiry.py",
+          "ntrade/domain/market/candles.py",
+          "ntrade/domain/orders/book.py",
+          "ntrade/domain/scanner.py",
+          "ntrade/execution/retry.py"
+        ],
+        "new_total": 26
+      }
+    },
+    "python_requires": ">=3.10"
+  },
+  "version": 1
+}

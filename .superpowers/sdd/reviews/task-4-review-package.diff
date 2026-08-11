@@ -1,0 +1,62 @@
+diff --git a/ntrade/engines/market_engine.py b/ntrade/engines/market_engine.py
+index 75a4529..1db485a 100644
+--- a/ntrade/engines/market_engine.py
++++ b/ntrade/engines/market_engine.py
+@@ -26,21 +26,21 @@ class MarketEngine:
+         instrument = self._instrument(event.symbol)
+         if instrument is None:
+             return
+         tick = Tick(
+             symbol=event.symbol, price=event.price, quantity=event.quantity,
+             side=event.side, timestamp=event.ts, kind=event.kind,
+         )
+         instrument._stream.ingest_tick(tick)
+         self.ctx.bus.publish(QuoteUpdatedEvent(
+             symbol=event.symbol, exchange=event.exchange,
+-            ltp=instrument._quote.ltp, bid=instrument._quote.bid, ask=instrument._quote.ask, ts=event.ts,
++            ltp=event.price, bid=instrument._quote.bid, ask=instrument._quote.ask, ts=event.ts,
+         ))
+ 
+     def on_quote(self, event: QuoteEvent) -> None:
+         instrument = self._instrument(event.symbol)
+         if instrument is None:
+             return
+         instrument.apply_quote(Quote(
+             ltp=event.ltp, bid=event.bid, ask=event.ask, open=event.open,
+             high=event.high, low=event.low, prev_close=event.prev_close,
+             volume=event.volume, oi=event.oi, timestamp=event.ts,
+diff --git a/tests/test_kernel_engines.py b/tests/test_kernel_engines.py
+index 588fd75..dc1220d 100644
+--- a/tests/test_kernel_engines.py
++++ b/tests/test_kernel_engines.py
+@@ -28,20 +28,30 @@ def test_market_engine_projects_tick():
+     k = _kernel()
+     updated = []
+     k.bus.subscribe(QuoteUpdatedEvent, lambda e: updated.append(e))
+     k.bus.publish(_tick(2500.5))
+     inst = k.ctx.instrument("RELIANCE")
+     assert inst.market.ltp() == 2500.5
+     assert inst.stream.last_tick is not None and inst.stream.last_tick.price == 2500.5
+     assert updated and updated[0].ltp == 2500.5
+ 
+ 
++def test_market_engine_broadcasts_tick_own_price_for_depth_kind():
++    k = _kernel()
++    updated = []
++    k.bus.subscribe(QuoteUpdatedEvent, lambda e: updated.append(e))
++    tick = TickEvent(symbol="RELIANCE", exchange="NSE", price=2498.75, quantity=0,
++                     kind="depth", ts=datetime(2026, 1, 1, 9, 15))
++    k.bus.publish(tick)
++    assert updated and updated[0].ltp == tick.price
++
++
+ def test_market_engine_projects_quote():
+     k = _kernel()
+     k.bus.publish(QuoteEvent(symbol="RELIANCE", exchange="NSE", ltp=2500.0, bid=2499.5,
+                              ask=2500.5, open=2490.0, high=2510.0, low=2485.0,
+                              prev_close=2480.0, volume=1000, oi=500,
+                              ts=datetime(2026, 1, 1, 9, 15)))
+     inst = k.ctx.instrument("RELIANCE")
+     assert inst.market.ltp() == 2500.0 and inst.market.bid() == 2499.5 and inst.market.ask() == 2500.5
+     assert inst.market.volume() == 1000 and inst.market.oi() == 500
+ 

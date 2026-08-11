@@ -7,13 +7,14 @@ decisions to live trading — the zero-parity invariant.
 
 from __future__ import annotations
 
+from ntrade.domain.constants import DEFAULT_TIMEFRAME
 from ntrade.kernel.clock import ReplayClock
 from ntrade.kernel.session import TradingKernel
 
 
 class ReplayEngine:
     def __init__(self, kernel: TradingKernel | None = None, *, clock: ReplayClock | None = None,
-                 timeframe: str = "1m", **kw):
+                 timeframe: str = DEFAULT_TIMEFRAME, **kw):
         self.clock = clock or ReplayClock()
         self.kernel = kernel or TradingKernel(mode="replay", clock=self.clock,
                                               timeframe=timeframe, **kw)

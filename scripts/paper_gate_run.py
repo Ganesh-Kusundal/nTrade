@@ -30,7 +30,7 @@ def main() -> int:
     from ntrade.kernel.trading_session import TradingSession
     session = TradingSession.connect("dhan")
     instrument = session.index(args.symbol)
-    frame = instrument.history(args.timeframe, days=args.days, force=True).df
+    frame = instrument.market.history()(args.timeframe, days=args.days, force=True).df
     print(f"paper gate: {len(frame)} x {args.timeframe} bars for {args.symbol} ({args.days}d)")
 
     k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe=args.timeframe,
@@ -49,7 +49,7 @@ def main() -> int:
     # Fail closed: a gate that only prints a checklist does not prevent a bad
     # go-live. Exit non-zero when the report shows no fills or an unhealthy
     # drawdown, so CI / humans actually notice.
-    fills = int(report.get("fills", 0) or 0)
+    fills = int(report.get("n_trades", 0) or 0)
     max_dd = float(report.get("max_drawdown_pct", 0.0) or 0.0)
     if fills == 0:
         print("PAPER GATE FAIL: 0 fills produced — strategy did not trade")

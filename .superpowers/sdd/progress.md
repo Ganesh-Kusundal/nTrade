@@ -3,3 +3,78 @@ Task F2: complete (H2 check() + per-step evaluation, review clean, 353 passing)
 Task F3: complete (H1 EventBus RLock, review clean, 355 passing)
 Task F4: complete (M2 UTC-pinned candle bucketing, review clean, 357 passing)
 Task F5: complete (M3 unverifiable-price rejection, review clean, 358 passing)
+Task G1 (C1): complete — broker clock injection (BrokerAdapter.clock/set_clock/_ts, TradingKernel injects, DhanBroker→transport propagation, asof through history/chain expiry), review clean
+Task G2 (C2): complete — all ctx.instruments iterators rerouted via instruments_snapshot() + Barrier storm test, review clean
+Task G3 (H1): complete — get_ltp raises BrokerDataError on total failure (no silent 0.0), legacy tests updated, review clean
+Task G4 (H5): complete — EventStore append-order causal replay (index-as-seq tiebreak), _seq dead state removed, review clean
+Task G5 (H6): complete — IndianStatutoryCosts (STT/exchange/SEBI/GST/stamp) incl. method-shadowing fix + intraday-buy STT fix, review clean
+Task G6 (M1/M3/M4/M5/M7): complete — stale-feed watchdog halt, StrategyRunner ctx-manager, unregister_all reset, deep snapshot, fail-closed gate scripts, review clean
+Task G7 (L1/L3): complete — indicator bare-pass→warn logging, deterministic concurrency test, review clean
+Task G8 (K-004 H3): complete — partial-fill delta state rebuildable on recovery (EventStore.open_order_deltas reconstructs per-order filled/remaining from the recorded lifecycle; BrokerExecution.restore_open rehydrates the _open tracker + bumps BRK- seq; ResilientKernel.recover() wires it in; 5 new tests incl. resumed-poll-emits-only-remaining-delta and BRK- id collision), review clean
+FINAL: 587 passing, hardening batch + H3 recovery reviewed clean
+Task G9 (K-008 M2): complete — BRK- fallback order ids guaranteed unique vs open orders (_next_brk_id loop), no key merging, tests
+Task G10 (K-012 M6): complete — scanner rate-limiting (rate_limit_seconds + id-keyed cache in ScannerFacade), tests
+Task G11 (K-014 M8): complete — DhanTransport get_positions/get_holdings return domain objects (no pandas leak), tests
+Task G12 (K-016 L2): complete — Market facade rewritten as thin adapter over TradingSession (single implementation), tests
+Task G13 (K-018 L4): complete — BrokerRegistry class-level RLock guarding shared factory map, tests
+Task G14 (K-019 L5): complete — Greeks NOT_COMPUTED sentinel (iv=None) + computed property; implied_volatility returns None on failure, tests
+FINAL: 598 passing, all 19 review findings implemented, reviewed clean
+Remaining backlog (kanban): K-004 H3 partial-fill delta rebuild, K-008 M2 BRK- id merging, K-012 M6 scanner rate-limit, K-014 M8 pandas leak, K-016 L2 consolidation, K-018 L4 SymbolMaster sync, K-019 L5 greeks footgun
+Task G15 (pending items 1-4): complete — committed+pushed H6/H3/M6 (60855ec); FuturesCarryCosts carry/roll accrual in BacktestSimulator + futures_costs_total (feature 2); delivery-equity detection (overnight sells re-price on delivery STT/stamp + buy-leg uplift, delivery_detection opt-out) (feature 3); paper gate report per-fill commission/statutory + checklist total_charges (feature 4). Committed ead8430, 616 passing, 2 review rounds clean
+Task Group 1 (B-006/F-004): complete — live broker fills pay commission+statutory, sim parity, review clean (commits 38d5e61..bacd3f6)
+Task Group 2 (B-007/F-005): complete — backtest candles carry real OHLCV (bar-authoritative QuoteEvent ingestion, mode-gated), review clean + 1 fix round (commits c215df6..be18e1d)
+Task Group 4 (B-009/HF-001): complete — MarketEngine.on_tick broadcasts event.price (depth-kind stale-0.0 fixed), review clean (commit 954c20e)
+Task Group 3 (B-008): complete — scanners read canonical keys (rsi_14/stx_10_3/atr_14), compute_bundle emits avg_volume, 3 dead branches eliminated, review clean (commits 42cbbf5, 88572d9)
+Task Group 5 (D-017): complete — gate.py equity derives from PositionUpdatedEvent/BalanceChangedEvent, settled at balance events (no pre-fill spike), converges on RiskEngine.equity, review clean + 1 fix round (commits 8cbf69a, 7e38917, 2c2d4e3)
+Minor findings recorded (triage at final review): (a) gate docstring says "yields after each state change" but now yields on balance events + initial point — drift; (b) redundant write-then-pop for zero-quantity positions in _equity_trace; (c) pre-existing unrounded eq vs round(q*ltp,2) parity is within 0.01 not bit-exact; (d) initial_cash==0 would ZeroDivisionError (never-used default).
+FINAL: 623 passing, all 5 tasks (B-006..B-009, D-017) complete on g4-parity-complexity-batch
+Final review: 1 Important cross-task defect fixed (BreakoutScanner crashed on real stx_10_3 direction-string) + gate zero-peak guard + docstring + scanner integration test (commit a3e9f28). 624 passing. Batch ready to merge.
+Final review fix round 2: documented VolumeSpikeScanner live volume-unit mismatch (commit df9281a). Batch ready to merge — 13 commits on g4-parity-complexity-batch, 624 passing, pre-existing dhan*.py changes uncommitted.
+Task 1 (T-020): complete — removed fake streaming no-op capabilities (_market_feed/_order_update_stream module-level @capability fns), corrected vacuous test to assert registry absence, review clean (commit 20d0cc8, 625 passing)
+- Task 2 (T-012): complete — all DhanBroker data-plane reads delegate to DhanTransport; deleted dead local mapper helpers/imports; dhan_mapper.filter_history gained asof=, transport.get_depth gained now=; wired _transport into 4 test broker factories incl. test_live_execution.py (accepted deviation); fixed latent DAY_BLOCK_MAPPED_EXCHANGE attr-vs-module bug; reviewed clean (commit 7fe832, 625 passing)
+- Task 3 (T-016): complete — RateLimiter armed: rate_limiter param + per-attempt _throttled() in DhanTransport.get_ltp; broker connect() shares RateLimiter(10/s); feed start() gates stop->start restarts via RateLimiter(0.5/s); +test (commit b2f8f11, 626 passing; Minor: restart test gains ~2s wall time, accepted)
+- Task 4 (T-015): complete — DhanBroker.stop() cancels auth refresh timer; LiveRunner.stop() iterates session brokers and calls stop(); +test in test_dhan_broker.py (an inline-reviewed minimal change; commit b2cf7df, 627 passing)
+- Task 5 (T-014): complete — LiveRunner consumers for HeartbeatEvent (log), FeedDisconnectedEvent (risk halt), OrderTimeoutEvent (kernel.cancel_order); corrected plan's broken tests (no _make_runner, no bound-method rebind); +3 tests (commit 9d899a5, 630 passing)
+- Task 6 (T-018): complete — DhanFeed._on_error now publishes FeedDisconnectedEvent + _reconnect() (rate-limited via Task 3's _reconnect_limiter, stop+start fresh feed, notify_reconnect() on streams); stream.py untouched; +2 tests (commit 614075f, 632 passing; suite ~23s due to throttle wall-clock — accepted)
+- Task 7 (T-019): complete — retired speculative feed modes (_MODE_CODES,_mode_code,mode/version params), hardcoded subscription code 21 + version v2; no production callers pass mode/version; tests updated (commit 362842d, 630 passing)
+- Task 8 (T-017): complete — armed M6 scanner throttle (rate_limit_seconds=30.0 on Momentum/VolumeSpike/Breakout sawmowers; Gap/Imbalance left 0.0) and deleted Scanner.top (single test caller, divergent copy of _run ranking), rewrote ranking test through facade (commit 4c8c3e1, 631 passing)
+- Task 8 (T-013): complete — canonical Instrument.history accessor added; routed production read path (scanners/builtin.py, engines risk_engine+market_engine) through instrument.market.*; retired dead TradeCapability/OrderBuilder/ExtensionCapability + Instrument.trade/.extension; kept Stream/Analytics/Derivatives/Market capabilities (real tested APIs); +test_scanner update (commit 4aedfc7, 631 passing)
+- Task 10 (T-021): complete — trimmed StrategyRunner mutation surface (remove/enable/disable/_set_enabled deleted), kept add/release/start/stop/read-queries; production (TradingSession) only uses add/release/start/stop (verified); _risk_pause_count logic untouched; runner tests updated + minimal-surface test (commit 66f1bb7, 630 passing)
+- Review-fix batch (T-022/T-023/T-024): complete — (1) backtest LIMIT fills bar-aware by default (FillPolicy, no more optimistic limit fills), (2) EventStore._load skips torn JSONL lines instead of failing recovery, (3) LiveRunner DEACTIVATEs kill switch on RiskResumedEvent (all-or-nothing flag, failure keeps kill_switched). 4 new tests, 663 passing, review clean after 1 fix round (multi-instrument kill_switched reset). Plan: docs/superpowers/plans/2026-08-02-fix-three-review-findings.md. Report: .superpowers/sdd/briefs/task-11-report.md.
+- Broker Rate Limit Infra (T-025/T-026/B-010/B-011/T-027): planned — principal review finding registered on kanban via kanban CLI (T-025 BrokerRateGate module, T-026 transport choke _invoke(quota,fn), B-010 drop 10/s limiter + route order/status off self.tsl, B-011 never retry DH-904 + raise RateLimited, T-027 integration tests). Plan (multi-agent, 3 waves, exclusive file ownership per agent): docs/superpowers/plans/2026-08-02-broker-rate-limit-infra.md. Not started — cards all planned. Fixed pre-existing board.json type/prefix mismatch (T-022..T-024 bug→task) that blocked the kanban CLI save.
+- Broker Rate Limit follow-up sweep (T-028..T-032): planned — audited ntrade/brokers/dhan.py + capabilities.py for every uncovered broker.tsl.* call site. Result: 22 sites, all in dhan.py capability fns (lines 490-754); capabilities.py is pure registry/facade (0 tsl refs); no other tsl.* sites repo-wide. Classified: 15 ORDER (super/slice/forever/conditional orders + queries), 3 NON_TRADING (kill_switch, enable_pnl_based_exit, margin_calculator), 4 DATA (ATM/ITM/OTM strike, expired_option_data), 0 QUOTE. 5 follow-up cards registered via kanban CLI (T-028 advanced-order placement, T-029 order queries/modify/cancel, T-030 conditional-trigger lifecycle, T-031 account controls NON_TRADING, T-032 strike/expired DATA). Sweep table appended to the plan doc. Not started.
+- Pre-Deployment System Review: COMPLETE (inspection) — verdict CONDITIONAL GO. Reviewed 6 dimensions: R-1 token hygiene PASS (0o600 chmod dhan_auth.py:106/113/125, SoT cache, expiry buffer, cooldown), R-2 kill-switch PASS (ACTIVATE/DEACTIVATE symmetric, all-or-nothing, watchdog), R-3 position-sync PASS (None on error keeps state, never zeroes), R-4 crash recovery PASS (torn-line skip, causal recovery_events, open_order_deltas rebuild), R-5 gate scripts PASS (paper gate exit 1, live_read exit 1 on FAIL), R-6 broker rate limiting BLOCKER (10/s LTP-only, self.tsl bypass, DH-904 retried — T-025..T-032 planned). 3 new findings registered via kanban CLI: B-012 (auth _login_ok probes ungoverned), T-033 (unified pre-deploy gate script), T-034 (DEGRADED fail-closed decision). Plan: docs/superpowers/plans/2026-08-02-pre-deployment-system-review.md. Go-live gates on the Broker Rate Limit batch.
+- Review Findings Sweep (K-020..K-026): PLANNED — 5 parallel code-review agents swept broker/execution/kernel/domain/runner subsystems; ~20 hypotheses verified against source (falsified as already-hardened: SymbolMaster race, moneyness flip, IV solver, DH-904 retry, self.tsl order bypass, gate zero-cash guard). 7 verified findings registered via kanban CLI (all backlog): K-020 P1 bug get_executed_price/_and_time swallow RateLimited->0.0; K-021 P2 debt broker data reads swallow to empty/None (11 methods incl. get_future_script/get_lot_size); K-022 P2 task Gap/Imbalance scanner throttle asymmetry; K-023 P2 debt VolumeSpike live volume-unit mismatch; K-024 P2 debt OrderFacade defaults TradeType.MIS for equities; K-025 P2 debt resample label vs CandleEngine bucketing parity (label='right' only, keep closed='left'); K-026 P3 chore gate._equity_trace write-then-pop. Plan (multi-agent, 4 waves, exclusive file ownership; K-020+K-021 merged into one wave-1 agent on dhan.py): docs/superpowers/plans/2026-08-03-review-findings-sweep.md. Review-fix round applied (wave-table, K-021 scope, K-025 closed param). Baseline 749 passing. Not started.
+# Subagent-Driven Development Progress Ledger
+
+## Plan
+/docs/superpowers/plans/2026-08-10-zero-parity-audit-and-hardening.md
+
+## Tasks
+
+- [ ] Task 1: Fix paper test instrument type (Equity/NSE → Future/NFO)
+- [ ] Task 2: Evaluate risk breakers in backtest loop every bar
+- [ ] Task 3: Timezone-normalize session gate to IST
+- [ ] Task 4: Make order timeout configurable in BrokerExecution
+- [ ] Task 5: Create cross-mode zero-parity verification test
+- [ ] Task 6: Remove dead volume profile code from ValentiniScalper
+- [ ] Task 7: Wire risk params through BacktestSimulator to RiskEngine (merged into Task 2)
+- [ ] Verification: Run full test suite + zero-parity verification
+
+## Notes
+- CallDynamicTool cannot dispatch Task tool (prompt param serialization issue)
+- Executing tasks inline instead
+## Plan: 2026-08-10-zero-parity-fill-price-fix.md
+- [x] Task A-D: reference_price through signal->intent->execution (commit 5fcc987, 15+3 new tests, regression 133 passed)
+- [x] Critical #2: PaperBroker phantom-fill reject (commit d0a5581, test_paper_broker_reject.py 6 tests, 203 regression passed)
+- [x] Task F: SKIPPED (user decision — volume profile is actively used, not dead)
+- [x] Important #1: circuit breaker half-open recovery (commit 1ef6a31, test_breaker_recovery.py 2 tests)
+- [x] Pre-existing WIP failures: futures carry on entry notional + valentini wiring test scenarios aligned to current signal contract (commit 932cff3)
+- Remaining review findings not started: Important #2 zero-price fill, #3 SEBI conversion validation, #4 DH-904 envelope swallowing, #5-7 minor; minor findings triage
+## Plan: 2026-08-11-valentini-amt-corrections.md
+- Task 1: complete (constructor params leg_impulse_mult=2.0/accum_volume_mult=1.5 + state _atr/_step/_leg_start_idx, commit dfe8295, 24 passed, review clean; Minor: _step comment alignment)
+- Task 2: complete (ATR floor on step: atr import + per-candle _atr/_step + 3 step sites replaced, commit 641e28a, 1 new + 24 regression passed, review clean)
+- Task 3: complete (leg-anchored profile: session reset + leg-slice profile + impulse scan, commit e7a5e64, 2 leg-anchor + 3 zero-parity + 24 strategy passed, review clean; Minor: (1) comment at strategies.py:~318 says "range_size" but code uses self._step — wrong when ATR floor binds; (2) leg-anchor absolute-index drift on window eviction — by-design)
+- Task 4: complete (volume-confirmed accumulation via prior median baseline, commit cf88dd7, 3 leg-anchor + 3 zero-parity + 24 strategy passed, review clean; Minor: (1) frame rebuilt per candle in _update_phase though on_candle_closed builds one — mandated by brief; (2) "NaN/empty guard" comment — only empty guarded, NaN would block — volume always numeric in practice)
+- Task 5: complete — full verification: 33 passed (strategy+wiring+zero-parity), 39 passed (engine/risk suites), 1034 passed full suite. No fixture adjustments needed.
+- Final review: Ready to merge. 2 non-blocking follow-ups applied in commit b57b41e (comment corrected to self._step; ATR-bound-impulse test added). 4 leg-anchor + 24 strategy + 3 zero-parity pass after fix.

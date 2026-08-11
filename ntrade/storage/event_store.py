@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 
 from ntrade.events.base import Event
 from ntrade.events import lifecycle, market, order, portfolio, risk
+
+logger = logging.getLogger("ntrade.storage")
 
 _EVENT_TYPES: dict[str, type] = {}
 
@@ -107,10 +110,19 @@ class EventStore:
         with open(self.path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
-                if line:
-                    event = _decode(json.loads(line))
-                    if event is not None:
-                        self._events.append(event)
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    # A crash mid-append leaves a torn final line; skip it
+                    # rather than failing the whole store — ResilientKernel
+                    # recovery reads exactly when a crash happened.
+                    logger.warning("event store %s: skipping torn line", self.path)
+                    continue
+                event = _decode(data)
+                if event is not None:
+                    self._events.append(event)
 
     # ------------------------------------------------------------------ query
     def events(self, event_type=None, symbol: str | None = None) -> list[Event]:
@@ -203,11 +215,10 @@ class EventStore:
         # Append order is causal order (the record handler runs after the
         # effects a tick triggers), so the in-memory index IS the seq. ts-only
         # ties would invert causality; use the recorded order as the tiebreak.
-        events = [e for e in self._events if isinstance(e, types)]
-        return sorted(
-            events,
-            key=lambda e: (e.ts, self._events.index(e)),
-        )
+        # One enumerate pass + O(n log n) sort — the old list.index() key made
+        # this O(n²) and recovery unusable beyond a few thousand events (H-4).
+        indexed = [(i, e) for i, e in enumerate(self._events) if isinstance(e, types)]
+        return [e for i, e in sorted(indexed, key=lambda p: (p[1].ts, p[0]))]
 
     def replay(self):
         """Iterate recorded events in chronological order."""

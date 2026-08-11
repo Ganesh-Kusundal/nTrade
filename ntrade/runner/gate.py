@@ -25,8 +25,12 @@ def _equity_trace(kernel, *, initial_cash: float):
     yield peak, cash
     for e in kernel.bus.history:
         if isinstance(e, PositionUpdatedEvent):
-            positions[e.symbol] = (e.quantity, e.ltp)
-            if e.quantity == 0:
+            # K-026: one conditional instead of write-then-pop — a zero-qty
+            # close event must REMOVE the symbol (PortfolioEngine publishes
+            # quantity=0 on close), so a stale entry can't inflate equity.
+            if e.quantity:
+                positions[e.symbol] = (e.quantity, e.ltp)
+            else:
                 positions.pop(e.symbol, None)
             continue
         if not isinstance(e, BalanceChangedEvent):

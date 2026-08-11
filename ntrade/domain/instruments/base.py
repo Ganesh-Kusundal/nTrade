@@ -1,10 +1,9 @@
 """Instrument — the abstract root of every market entity in ntrade.
 
 Every instrument owns its own state (quote, depth, history, stream, indicators,
-metadata, session) and exposes six *capability* objects for market data, trading,
-streaming, analytics, derivatives and provider extensions.  Broker transport is
-hidden behind a BrokerAdapter; broker-specific capabilities live behind
-``instrument.extension(Cls)``.
+metadata, session) and exposes *capability* objects for market data, streaming,
+analytics and derivatives.  Broker transport is hidden behind a BrokerAdapter;
+broker-specific capabilities live behind ``instrument.broker``.
 """
 
 from __future__ import annotations
@@ -22,15 +21,12 @@ from ntrade.domain.market.stream import LiveStream
 from ntrade.domain.session import MarketState, SessionState
 
 if TYPE_CHECKING:
-    from ntrade.brokers.base import BrokerAdapter
-    from ntrade.brokers.capabilities import BrokerExtensionFacade
+    from ntrade.domain.ports import BrokerAdapter, BrokerExtensionFacade
     from ntrade.domain.instruments.capabilities import (
         AnalyticsCapability,
         DerivativesCapability,
-        ExtensionCapability,
         MarketCapability,
         StreamCapability,
-        TradeCapability,
     )
     from ntrade.domain.orders.order import OrderFacade
 
@@ -106,12 +102,8 @@ class Instrument(ABC):
     @property
     def broker(self) -> "BrokerExtensionFacade":
         """Broker-specific capabilities (e.g. nifty.broker.depth20())."""
-        from ntrade.brokers.capabilities import BrokerExtensionFacade
+        from ntrade.domain.ports import BrokerExtensionFacade
         return BrokerExtensionFacade(self)
-
-    @property
-    def extensions(self) -> "BrokerExtensionFacade":
-        return self.broker
 
     @property
     def order(self) -> "OrderFacade":
@@ -125,10 +117,10 @@ class Instrument(ABC):
         from ntrade.domain.instruments.capabilities import MarketCapability
         return MarketCapability(self)
 
-    @cached_property
-    def trade(self) -> "TradeCapability":
-        from ntrade.domain.instruments.capabilities import TradeCapability
-        return TradeCapability(self)
+    @property
+    def history(self) -> "HistoricalSeries":
+        """Canonical historical OHLCV accessor (mirrors ``market``)."""
+        return self._history
 
     @cached_property
     def stream(self) -> "StreamCapability":
@@ -144,11 +136,6 @@ class Instrument(ABC):
     def derivatives(self) -> "DerivativesCapability":
         from ntrade.domain.instruments.capabilities import DerivativesCapability
         return DerivativesCapability(self)
-
-    @cached_property
-    def extension(self) -> "ExtensionCapability":
-        from ntrade.domain.instruments.capabilities import ExtensionCapability
-        return ExtensionCapability(self)
 
     # ================================================================== quote / depth
     def apply_quote(self, quote: Quote) -> "Instrument":
@@ -177,10 +164,14 @@ class Instrument(ABC):
             self._quote = broker.get_quote(self)
         except Exception:
             pass  # keep previous quote on broker failure
+        else:
+            # Only record a refresh timestamp when the quote actually updated.
+            # Stamping on failure would make is_stale() lie and report a dead
+            # quote as fresh (state desync — a failed refresh must stay stale).
+            self._last_refresh_at = now if now is not None else datetime.now()
         depth = broker.get_depth(self)
         if depth is not None:
             self._depth = depth
-        self._last_refresh_at = now if now is not None else datetime.now()
         return self
 
     def hydrate(self) -> "Instrument":
@@ -277,9 +268,6 @@ class Instrument(ABC):
         self._market_status = state
         self._session.enter(state)
         return self
-
-    def serialize(self) -> dict:
-        return self.snapshot()
 
     def tag(self, tag: str) -> "Instrument":
         self._tags.add(tag)

@@ -95,3 +95,77 @@ def test_step_evaluates_risk_breakers_between_signals():
     assert runner.halted
     assert any(isinstance(e, RiskHaltedEvent) for e in k.bus.history)
     runner.stop()
+
+
+def test_feed_disconnected_halts_runner():
+    from ntrade.events.lifecycle import FeedDisconnectedEvent
+    from ntrade.events.risk import RiskHaltedEvent
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    runner.kernel.bus.publish(FeedDisconnectedEvent(
+        reason="ws drop", ts=runner.kernel.clock.now()))
+    assert runner.halted
+    assert any(isinstance(e, RiskHaltedEvent) for e in k.bus.history)
+
+
+def test_order_timeout_cancels_stale_order():
+    from ntrade.events.order import OrderTimeoutEvent
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    cancelled = []
+    runner.kernel.cancel_order = lambda oid: cancelled.append(oid)
+    runner.kernel.bus.publish(OrderTimeoutEvent(
+        order_id="O1", symbol="TCS", exchange="NSE", side="BUY",
+        quantity=10, age_seconds=120.0, ts=runner.kernel.clock.now()))
+    assert cancelled == ["O1"]
+
+
+def test_heartbeat_event_is_logged(caplog):
+    import logging
+    from ntrade.events.lifecycle import HeartbeatEvent
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    with caplog.at_level(logging.INFO, logger="ntrade.runner"):
+        k.bus.publish(HeartbeatEvent(tick_count=5, open_orders=2, ts=k.clock.now()))
+    assert "tick_count=5" in caplog.text and "open_orders=2" in caplog.text
+
+
+# ------------------------------------------------------------------ H-3
+def test_stop_cancels_resting_orders():
+    """Shutdown cancels every tracked open order (never leaves them live)."""
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    k.open_orders = lambda: ["O1", "O2"]
+    cancelled = []
+    k.cancel_order = lambda oid: cancelled.append(oid)
+    runner.start()
+    runner.stop()
+    assert cancelled == ["O1", "O2"]
+    assert runner.started is False
+
+
+def test_stop_cancel_failure_does_not_block_shutdown():
+    """A failing cancel logs but must not prevent the runner from stopping."""
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source())
+    k.open_orders = lambda: ["O1"]
+
+    def _boom(oid):
+        raise RuntimeError("broker unreachable")
+
+    k.cancel_order = _boom
+    runner.start()
+    runner.stop()  # must not raise
+    assert runner.started is False
+
+
+def test_stop_cancel_on_stop_false_leaves_resting_orders():
+    """Opt-out flag keeps resting orders live (deliberate, logged)."""
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    runner = LiveRunner(k, _source(), cancel_on_stop=False)
+    k.open_orders = lambda: ["O1"]
+    cancelled = []
+    k.cancel_order = lambda oid: cancelled.append(oid)
+    runner.start()
+    runner.stop()
+    assert cancelled == []

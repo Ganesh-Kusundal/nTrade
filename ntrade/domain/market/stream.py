@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Callable
 
 import pandas as pd
 
-from ntrade.domain.market.quote import Quote, Tick
+from ntrade.domain.market.quote import Tick
 
 if TYPE_CHECKING:
     from ntrade.domain.instruments.base import Instrument

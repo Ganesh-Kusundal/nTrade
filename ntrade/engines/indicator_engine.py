@@ -10,13 +10,14 @@ from __future__ import annotations
 import pandas as pd
 
 from ntrade.domain.analytics.indicators import compute_bundle
+from ntrade.domain.constants import DEFAULT_TIMEFRAME
 from ntrade.events.market import CandleClosedEvent, IndicatorUpdatedEvent
 
 _MIN_ROWS = 10
 
 
 class IndicatorEngine:
-    def __init__(self, context, timeframe: str = "1m", *, max_rows: int = 1_000, **params):
+    def __init__(self, context, timeframe: str = DEFAULT_TIMEFRAME, *, max_rows: int = 1_000, **params):
         self.ctx = context
         self.timeframe = timeframe
         self.params = params

@@ -9,15 +9,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from ntrade.domain.constants import Timeframe, DEFAULT_TIMEFRAME
 from ntrade.events.market import CandleClosedEvent, QuoteEvent, TickEvent
 
 _INTERVAL_SECONDS = {
-    "1s": 1, "5s": 5, "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400,
+    Timeframe.S1: 1, Timeframe.S5: 5, Timeframe.MIN: 60, Timeframe.T5: 300,
+    Timeframe.T15: 900, Timeframe.H1: 3600, Timeframe.D1: 86400,
 }
 
 
 class CandleEngine:
-    def __init__(self, context, timeframe: str = "1m", *, max_candles: int = 10_000):
+    def __init__(self, context, timeframe: str = DEFAULT_TIMEFRAME, *, max_candles: int = 10_000):
         if timeframe not in _INTERVAL_SECONDS:
             raise ValueError(f"Unsupported timeframe {timeframe!r}; expected one of {sorted(_INTERVAL_SECONDS)}")
         self.ctx = context

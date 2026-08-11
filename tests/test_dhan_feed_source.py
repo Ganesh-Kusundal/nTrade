@@ -180,23 +180,47 @@ def test_source_injects_feed_factory():
         return FakeFeed(subscriptions)
 
     src = DhanMarketFeedSource(k, symbols=[(1, 2885)], symbol_map=SYMBOL_MAP,
-                               feed_factory=factory, mode="full")
+                               feed_factory=factory)
     src.start()
-    assert captured["subs"] == [(1, 2885, 21)]  # Full = 21
+    assert captured["subs"] == [(1, "2885", 21)]  # Full = 21; SecurityId must be str
     assert isinstance(src._feed, FakeFeed)
     assert src._feed.started is True
 
 
-def test_source_default_mode_is_full():
-    src = DhanMarketFeedSource(symbols=[(1, 2885)])
-    assert src._mode_code() == 21
+def test_feed_always_uses_full_mode_code():
+    k = _kernel()
+    src = DhanMarketFeedSource(k, symbols=[(1, 2885)],
+                               feed_factory=lambda subs: FakeFeed(subs))
+    assert src._subscriptions() == [(1, "2885", 21)]
+    assert not hasattr(src, "version")
+    assert not hasattr(src, "mode")
 
 
-def test_source_bad_mode_raises():
-    src = DhanMarketFeedSource(symbols=[(1, 2885)])
-    with pytest.raises(ValueError, match="mode"):
-        src.mode = "bogus"
-        src._mode_code()
+def test_index_subscription_uses_quote_mode_not_full():
+    """Dhan's IDX segment silently drops Full(21) subscriptions — indices
+    must subscribe in Quote(17) mode or they never deliver ticks (verified
+    live 2026-08-06)."""
+    src = DhanMarketFeedSource(symbols=[(0, 13), (0, 25)],
+                               feed_factory=lambda subs: FakeFeed(subs))
+    assert src._subscriptions() == [(0, "13", 17), (0, "25", 17)]
+
+
+def test_mixed_segments_pick_mode_per_symbol():
+    """Equities/F&O keep Full(21); indices in the same batch use Quote(17)."""
+    src = DhanMarketFeedSource(symbols=[(0, 13), (1, 2885), (2, 49081)],
+                               feed_factory=lambda subs: FakeFeed(subs))
+    assert src._subscriptions() == [(0, "13", 17), (1, "2885", 21), (2, "49081", 21)]
+
+
+def test_subscriptions_coerce_int_security_ids_to_str():
+    """Int security IDs silently yield a connected-but-empty dhanhq feed."""
+    src = DhanMarketFeedSource(symbols=[(1, 2885), (2, 58072)],
+                               feed_factory=lambda subs: FakeFeed(subs))
+    assert src._subscriptions() == [(1, "2885", 21), (2, "58072", 21)]
+    # Already-string IDs stay strings (no double-wrap / drift).
+    src2 = DhanMarketFeedSource(symbols=[(1, "2885")],
+                                feed_factory=lambda subs: FakeFeed(subs))
+    assert src2._subscriptions() == [(1, "2885", 21)]
 
 
 def test_source_on_message_publishes_to_kernel():
@@ -229,8 +253,13 @@ def test_source_on_error_and_close_are_safe():
     k = _kernel()
     src = DhanMarketFeedSource(k, symbols=[(1, 2885)], symbol_map=SYMBOL_MAP,
                                feed_factory=lambda subs: FakeFeed(subs))
+    # M-2: error/close now trigger a reconnect (never raise) — the feed is
+    # rebuilt and running again; only a deliberate stop() leaves it down.
+    src._reconnect_limiter = type("NoWait", (), {"wait": lambda self: None})()
     src._on_error(None, RuntimeError("boom"))  # must not raise
     src._on_close(None)
+    assert src.running is True
+    src.stop()
     assert src.running is False
 
 
@@ -263,12 +292,6 @@ def test_source_requires_dhanhq_when_no_factory(monkeypatch):
         src._build_feed()
 
 
-def test_source_depth_mode_rejected_under_v2():
-    src = DhanMarketFeedSource(symbols=[(1, 2885)], version="v2", mode="depth")
-    with pytest.raises(ValueError, match="v2"):
-        src._mode_code()
-
-
 def test_source_restart_after_stop_rebuilds_feed():
     k = _kernel()
     builds = []
@@ -292,3 +315,31 @@ def test_source_non_dict_payload_does_not_crash_kernel():
     src._on_message(src._feed or FakeFeed([]), None)  # disconnect packet
     assert src.payloads_ingested == 2
     assert len(k.bus.history) == 0  # no events published, no crash
+
+
+# ------------------------------------------------------------------ reconnect
+def test_feed_reconnects_after_disconnect():
+    k = _kernel()
+    builds = []
+    src = DhanMarketFeedSource(k, symbols=[(1, 2885)], symbol_map=SYMBOL_MAP,
+                               feed_factory=lambda subs: builds.append(subs) or FakeFeed(subs))
+    src.start()
+    before = len(builds)
+    src._on_error(None, RuntimeError("ws dropped"))  # dhanhq 2-arg signature
+    assert src._reconnect_called
+    assert len(builds) > before      # the feed was actually rebuilt
+    assert src.running                # and is running again
+
+
+def test_reconnect_publishes_disconnect_and_resubscribes():
+    from ntrade.events.lifecycle import FeedDisconnectedEvent
+    from ntrade.domain.market.stream import SubscriptionState
+    k = _kernel()
+    src = DhanMarketFeedSource(k, symbols=[(1, 2885)], symbol_map=SYMBOL_MAP,
+                               feed_factory=lambda subs: FakeFeed(subs))
+    src.start()
+    inst = k.ctx.instrument("RELIANCE")
+    src._on_error(None, RuntimeError("ws closed"))
+    assert any(isinstance(e, FeedDisconnectedEvent) for e in k.bus.history)
+    assert inst._stream.state is SubscriptionState.SUBSCRIBED
+    assert inst._stream.is_subscribed is True

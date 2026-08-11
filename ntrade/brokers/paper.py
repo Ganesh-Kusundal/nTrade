@@ -6,9 +6,8 @@ identical across paper and live trading (consistent APIs principle).
 
 from __future__ import annotations
 
-import math
 import random
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pandas as pd
 
@@ -17,7 +16,7 @@ from ntrade.domain.market.candles import CandleSeries
 from ntrade.domain.market.depth import DepthLevel, MarketDepth
 from ntrade.domain.market.quote import Quote, Tick
 from ntrade.domain.orders.book import OrderBook, OrderBookEntry, TradeBook, TradeBookEntry
-from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
+from ntrade.domain.orders.order import Order, OrderStatus, OrderType
 
 
 class PaperBroker(BrokerAdapter):
@@ -64,6 +63,13 @@ class PaperBroker(BrokerAdapter):
         return self
 
     def get_quote(self, instrument) -> Quote:
+        """Return the seeded/live quote for a symbol, auto-minting a 100.0
+        placeholder when none exists.
+
+        NOTE: the auto-minted quote is for DATA READS only (history/depth/
+        chain construction and static tests). It is NOT a real market price —
+        order fills must never use it (see ``place_order``).
+        """
         q = self._quotes.get(instrument.symbol)
         if q is None:
             q = self.seed_quote(instrument.symbol, 100.0)
@@ -106,10 +112,32 @@ class PaperBroker(BrokerAdapter):
 
     # ------------------------------------------------------------- orders
     def place_order(self, order: Order) -> Order:
-        if order.order_type.value == "MARKET":
-            fill_price = self.get_quote(order.instrument).ltp
+        # Prefer the instrument's live quote (kept current by the kernel from
+        # ticks/replays) so paper fills track the market; fall back to the
+        # seeded quote dict for static tests where no live quote exists. A
+        # bar-close reference price (> 0) wins over the live LTP — zero-parity
+        # with backtest/replay, which fill at the bar close that generated the
+        # signal rather than the (possibly contaminated) next-bar LTP.
+        live = getattr(order.instrument, "_quote", None)
+        live_ltp = getattr(live, "ltp", 0.0) or 0.0
+        seeded = self._quotes.get(order.instrument.symbol)
+        if order.order_type.value != "MARKET" and order.price:
+            fill_price = order.price
+        elif order.reference_price > 0.0:
+            fill_price = order.reference_price  # bar-close reference (zero-parity)
+        elif live_ltp > 0.0:
+            fill_price = live_ltp
+        elif seeded is not None:
+            fill_price = seeded.ltp  # explicitly seeded quote (real price)
         else:
-            fill_price = order.price or self.get_quote(order.instrument).ltp
+            # Never fill against an auto-minted quote: get_quote mints a 100.0
+            # placeholder for data reads, and a MARKET fill from it would be a
+            # phantom round trip polluting paper PnL and the pre-deploy gate
+            # evidence. A MARKET order needs a real market price (live LTP,
+            # bar-close reference_price, or a deliberately seeded quote).
+            raise ValueError(
+                f"no market price available for paper MARKET order on "
+                f"{order.instrument.symbol}")
         order.order_id = f"PAPER-{len(self._orders) + 1}"
         order.status = OrderStatus.COMPLETED
         order.filled_qty = order.quantity

@@ -7,6 +7,11 @@ bars), the clock (SimulationClock) and cost models (slippage/commission).
 Each bar is published as a QuoteEvent (full market state) plus a TickEvent at
 the close, so the market/candle/indicator/strategy engines behave exactly as
 in live trading.
+
+LIMIT fills are bar-aware by default: a limit order only fills when a bar
+trades through it (FillPolicy), mirroring live behaviour — it never fills at
+its limit price against a bar that never reached it. Pass ``fill_policy`` to
+override the default policy.
 """
 
 from __future__ import annotations
@@ -14,14 +19,17 @@ from __future__ import annotations
 import pandas as pd
 
 from ntrade.backtest.fills import BarAwareExecution, FillPolicy
+from ntrade.domain.constants import DEFAULT_TIMEFRAME
 from ntrade.domain.instruments.cash import Equity
-from ntrade.events.market import QuoteEvent, TickEvent
+from ntrade.events.market import DepthEvent, QuoteEvent, TickEvent
 from ntrade.events.order import OrderFilledEvent
+from ntrade.sim.depth_simulator import (
+    DEFAULT_TICK_SIZE, bar_imbalance, depth_to_wire, synthesize_depth,
+)
 from ntrade.execution.costs import (
     CommissionModel, FuturesCarryCosts, SlippageModel, STATUTORY_DEFAULT,
 )
 from ntrade.execution.router import ExecutionRouter
-from ntrade.execution.simulator import SimulatedExecution
 from ntrade.kernel.clock import SimulationClock
 from ntrade.kernel.session import TradingKernel
 
@@ -57,7 +65,7 @@ class BacktestResult:
 
 class BacktestSimulator:
     def __init__(self, *, symbol: str = "NIFTY", exchange: str = "NSE",
-                 timeframe: str = "1m", initial_cash: float = 100_000.0,
+                 timeframe: str = DEFAULT_TIMEFRAME, initial_cash: float = 100_000.0,
                  slippage: SlippageModel | None = None,
                  commission: CommissionModel | None = None,
                  statutory=STATUTORY_DEFAULT,
@@ -66,7 +74,11 @@ class BacktestSimulator:
                  clock: SimulationClock | None = None,
                  kernel: TradingKernel | None = None,
                  instrument=None,
-                 delivery_detection: bool = True):
+                 delivery_detection: bool = True,
+                 depth_levels: int = 0, depth_imbalance: float = 0.0,
+                 depth_imbalance_mode: str = "constant",
+                 depth_seed: int = 0, depth_tick_size: float = DEFAULT_TICK_SIZE,
+                 risk_kwargs: dict | None = None):
         self.symbol = symbol
         self.exchange = exchange
         self.timeframe = timeframe
@@ -76,7 +88,18 @@ class BacktestSimulator:
         self.statutory = statutory
         self.futures_costs = futures_costs
         self.delivery_detection = delivery_detection
-        self.fill_policy = fill_policy
+        # Opt-in simulated order book (Valentini depth filter): >0 levels
+        # publish one DepthEvent per bar. Default 0 keeps the book empty ->
+        # zero-parity with the pre-depth simulation behaviour.
+        self.depth_levels = max(0, int(depth_levels))
+        self.depth_imbalance = depth_imbalance
+        self.depth_imbalance_mode = depth_imbalance_mode
+        self.depth_seed = depth_seed
+        self.depth_tick_size = depth_tick_size
+        self.depth_events_published = 0
+        # Effective policy: None means the default bar-aware FillPolicy.
+        self.fill_policy = fill_policy or FillPolicy()
+        self.risk_kwargs = risk_kwargs or {}
         self.clock = clock or SimulationClock()
         self._curve_rows: list[tuple] = []
         self._current_bar = None
@@ -90,22 +113,24 @@ class BacktestSimulator:
             )
             kernel.register(instrument or Equity(symbol, exchange=exchange))
             router = ExecutionRouter(kernel.ctx)
-            if fill_policy is not None:
-                execution = BarAwareExecution(
-                    kernel.ctx, policy=fill_policy,
-                    bar_provider=lambda: self._current_bar,
-                    slippage=slippage, commission=commission, statutory=statutory,
-                    delivery_detection=delivery_detection,
-                )
-            else:
-                execution = SimulatedExecution(
-                    kernel.ctx, slippage=slippage, commission=commission,
-                    statutory=statutory, delivery_detection=delivery_detection,
-                )
+            # Bar-aware LIMIT fills are the default (a limit only fills when a
+            # bar trades through it); pass fill_policy for a custom policy.
+            execution = BarAwareExecution(
+                kernel.ctx, policy=self.fill_policy,
+                bar_provider=lambda: self._current_bar,
+                slippage=slippage, commission=commission, statutory=statutory,
+                delivery_detection=delivery_detection,
+            )
             router.add("default", execution)
             router.default("default")
             kernel.router = router
             kernel.order_engine.router = router
+        # Apply risk limits to the kernel's RiskEngine (ponytail: the kernel
+        # creates a default RiskEngine with no limits; backtest callers must
+        # inject caps so breakers are evaluated during the run loop).
+        for key, val in self.risk_kwargs.items():
+            if hasattr(kernel.risk_engine, key):
+                setattr(kernel.risk_engine, key, val)
         self.kernel = kernel
 
     def register_strategy(self, strategy) -> "BacktestSimulator":
@@ -135,9 +160,40 @@ class BacktestSimulator:
                 symbol=self.symbol, exchange=self.exchange, price=close,
                 quantity=int(row.get("volume", 0) or 0), ts=ts,
             ))
+            if self.depth_levels > 0:
+                imbalance = self.depth_imbalance
+                if self.depth_imbalance_mode == "bar":
+                    imbalance = bar_imbalance(
+                        float(row.get("open", close)), close,
+                        scale=abs(imbalance) or 0.5)
+                bids, asks = synthesize_depth(
+                    close, tick_size=self.depth_tick_size,
+                    levels=self.depth_levels, imbalance=imbalance,
+                    seed=self.depth_seed,
+                )
+                wbids, wasks = depth_to_wire(bids, asks)
+                self.kernel.bus.publish(DepthEvent(
+                    symbol=self.symbol, exchange=self.exchange,
+                    bids=wbids, asks=wasks, ts=ts,
+                ))
+                self.depth_events_published += 1
+            # Close the candle for this bar NOW (before the next bar's
+            # QuoteEvent overwrites the instrument's _quote.ltp). In live and
+            # replay, the CandleClosed fires when the first tick of the NEXT
+            # bar arrives — the market still shows the current bar's last
+            # price at that moment. Backtest must mirror this: flush the
+            # candle so the strategy's MARKET fill reads ltp = bar close
+            # (the tick set it), not the next bar's close. Without this,
+            # backtest fills at the NEXT bar's close while replay fills at
+            # the current bar's close — a zero-parity violation.
+            self.kernel.candle_engine.flush(self.symbol)
             # Futures holding-period costs accrue after the bar's state is in
             # place (positions updated by the fills this bar published).
             self._apply_futures_costs(ts)
+            # Evaluate risk circuit breakers every bar — without LiveRunner,
+            # the breakers would only update on signal arrival, missing
+            # price-driven losses on bars with no signal (zero-parity gap).
+            self.kernel.risk_engine.check()
             self._curve_rows.append((ts, self._mark_to_market(close)))
         self.kernel.stop(reason="backtest complete")
         return self.results()
@@ -163,7 +219,7 @@ class BacktestSimulator:
             inst = self.kernel.ctx.instrument(pos.symbol)
             if inst is None or not isinstance(inst, Future):
                 continue
-            notional = (pos.ltp or pos.avg_price) * abs(pos.quantity)
+            notional = (pos.avg_price or pos.ltp) * abs(pos.quantity)
             # 1. expiry rollover slippage — once per contract, when held past expiry
             if inst.expiry is not None and today > inst.expiry and pos.symbol not in self._rolled:
                 self._rolled.add(pos.symbol)
@@ -187,6 +243,8 @@ class BacktestSimulator:
 
     def _mark_to_market(self, close: float) -> float:
         position = self.kernel.ctx.portfolio.position(self.symbol)
+        if position is not None:
+            position.ltp = close  # sync ltp so RiskEngine.equity() sees MTM
         position_value = position.quantity * close if position else 0.0
         return round(self.kernel.ctx.account.balance + position_value, 2)
 

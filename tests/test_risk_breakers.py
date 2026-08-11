@@ -1,6 +1,4 @@
 """RiskEngine circuit breakers (G2-C1)."""
-import pytest
-
 from ntrade.domain.instruments.cash import Equity
 from ntrade.domain.portfolio import Position
 from ntrade.events.market import TickEvent
@@ -108,3 +106,32 @@ def test_price_deviation_rejects_unverifiable_price():
     assert "unverifiable" in rejects[0].reason
     assert approves == []
     assert not k.risk_engine.halted  # a rejected signal is not a halt
+
+
+def test_market_signal_notional_uses_live_ltp():
+    """A MARKET signal (price=0) must not bypass max_notional — the cap
+    estimates notional from the instrument's live LTP."""
+    k = _kernel(max_notional=50_000.0)
+    k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=100.0, ts=k.clock.now()))
+    # price=0 (market): 0 * 600 would be 0 -> previously passed the cap
+    k.risk_engine.on_signal(_signal(k, price=0.0, qty=600))
+    rejects = [e for e in k.bus.history if e.__class__.__name__ == "SignalRejectedEvent"]
+    approves = [e for e in k.bus.history if e.__class__.__name__ == "SignalApprovedEvent"]
+    assert len(rejects) == 1
+    assert "notional 60000.00 exceeds max 50000.0" in rejects[0].reason
+    assert approves == []
+
+    # same engine: a small market order is approved (notional 100*100)
+    k.risk_engine.on_signal(_signal(k, price=0.0, qty=100))
+    approves = [e for e in k.bus.history if e.__class__.__name__ == "SignalApprovedEvent"]
+    assert len(approves) == 1
+
+
+def test_market_signal_notional_falls_back_to_prev_close():
+    """Without a live tick, the notional estimate falls back to prev_close."""
+    k = _kernel(max_notional=50_000.0)
+    k.ctx.instrument("NIFTY")._quote = k.ctx.instrument("NIFTY")._quote.with_update(prev_close=250.0)
+    k.risk_engine.on_signal(_signal(k, price=0.0, qty=300))  # 250*300 = 75_000
+    rejects = [e for e in k.bus.history if e.__class__.__name__ == "SignalRejectedEvent"]
+    assert len(rejects) == 1
+    assert "notional 75000.00 exceeds max 50000.0" in rejects[0].reason

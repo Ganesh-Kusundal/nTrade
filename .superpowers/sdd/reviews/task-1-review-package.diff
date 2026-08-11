@@ -1,0 +1,75 @@
+20d0cc8 T-020 remove fake streaming no-op capabilities
+=== STAT ===
+ ntrade/brokers/dhan.py    | 18 ------------------
+ tests/test_dhan_broker.py | 11 +++++++++++
+ 2 files changed, 11 insertions(+), 18 deletions(-)
+=== DIFF ===
+diff --git a/ntrade/brokers/dhan.py b/ntrade/brokers/dhan.py
+index 6f9ee89..88f7edb 100644
+--- a/ntrade/brokers/dhan.py
++++ b/ntrade/brokers/dhan.py
+@@ -873,38 +873,20 @@ def _depth20(instrument, levels: int = 20) -> MarketDepth:
+     if depth is None:
+         raise RuntimeError("Could not fetch depth")
+     return MarketDepth(
+         symbol=depth.symbol,
+         bids=tuple(depth.bids[:levels]),
+         asks=tuple(depth.asks[:levels]),
+         timestamp=depth.timestamp,
+     )
+ 
+ 
+-@capability("market_feed", brokers=("dhan",))
+-def _market_feed(instrument):
+-    """Subscribe to the Dhan market feed for this instrument (multiplexed)."""
+-    broker = instrument.broker_adapter
+-    broker.subscribe(instrument)
+-    return instrument.stream
+-
+-
+-@capability("order_update_stream", brokers=("dhan",))
+-def _order_update_stream(instrument):
+-    """Hook into the Dhan order-update stream for this instrument's orders."""
+-    broker = instrument.broker_adapter
+-    broker.subscribe(instrument)
+-    # The library pushes order updates over the same websocket session; expose
+-    # the instrument stream so users can on_tick/on_quote against order updates.
+-    return instrument.stream
+-
+-
+ @capability("margin_calculator", brokers=("dhan",))
+ def _margin_calculator(instrument, quantity: int, transaction_type: str, trade_type: str = "MIS",
+                        price: float = 0, trigger_price: float = 0, exchange: str | None = None):
+     """Estimate margin required for a potential order on this instrument."""
+     broker = instrument.broker_adapter
+     return broker.tsl.margin_calculator(
+         tradingsymbol=dhan_symbol(instrument),
+         exchange=exchange or instrument.exchange,
+         transaction_type=transaction_type.upper(),
+         quantity=quantity, trade_type=trade_type.upper(),
+diff --git a/tests/test_dhan_broker.py b/tests/test_dhan_broker.py
+index d00fc91..4750f12 100644
+--- a/tests/test_dhan_broker.py
++++ b/tests/test_dhan_broker.py
+@@ -474,10 +474,21 @@ def test_position_quantity_buy_sell_fallback():
+     """Regression: rows without netQty must derive quantity as buyQty - sellQty."""
+     df = pd.DataFrame([
+         {"tradingSymbol": "TCS", "buyQty": 10, "sellQty": 5},
+         {"tradingSymbol": "INFY", "netQty": 3},
+     ])
+     broker = make_broker(get_positions=lambda: df)
+     positions = broker.get_positions()
+     by_symbol = {p.symbol: p.quantity for p in positions}
+     assert by_symbol["TCS"] == 5   # 10 - 5, the restored fallback
+     assert by_symbol["INFY"] == 3  # explicit netQty wins
++
++
++def test_no_fake_streaming_capabilities():
++    import ntrade.brokers.dhan as dhan_mod
++    from ntrade.brokers.capabilities import registered_capabilities
++
++    assert not hasattr(dhan_mod, "_market_feed")
++    assert not hasattr(dhan_mod, "_order_update_stream")
++    caps = registered_capabilities()
++    assert "market_feed" not in caps
++    assert "order_update_stream" not in caps

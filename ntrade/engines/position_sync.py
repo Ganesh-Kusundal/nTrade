@@ -16,6 +16,7 @@ positions on a network hiccup would corrupt the read models.
 from __future__ import annotations
 
 from ntrade.domain.portfolio import Position
+from ntrade.domain.constants import Exchange
 from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
 
 
@@ -41,7 +42,7 @@ class PositionSyncEngine:
                 local = Position(
                     symbol=symbol, quantity=0, avg_price=0.0,
                     ltp=bp.ltp, product=bp.product or "MIS",
-                    exchange=bp.exchange or "NSE",
+                    exchange=bp.exchange or Exchange.CASH,
                     metadata=self._strategy_meta(bp),
                 )
                 portfolio.positions.append(local)

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 
 from ntrade.events.base import Event
 
@@ -18,6 +17,7 @@ class OrderIntentEvent(Event):
     quantity: int
     order_type: str = "LIMIT"
     price: float = 0.0
+    reference_price: float = 0.0  # bar close from CandleClosedEvent; 0.0 = use live LTP
     strategy: str = ""
 
 

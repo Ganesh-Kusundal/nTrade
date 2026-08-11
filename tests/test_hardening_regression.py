@@ -50,6 +50,33 @@ def test_eventstore_recovery_market_before_fill_across_ts():
     assert isinstance(recovered[1], OrderFilledEvent)
 
 
+def test_eventstore_recovery_is_not_quadratic():
+    """H-4: the old list.index() tie-break made recovery_events O(n²) —
+    100k events took minutes. The enumerate+sort rewrite must stay fast
+    while keeping the same-ts causality invariant."""
+    import time
+    store = EventStore()
+    n = 100_000
+    for i in range(n):
+        ts = datetime(2026, 8, 1, 9, 15, 0, i)  # strictly increasing ts
+        store.append(TickEvent(symbol="SYM", exchange="NSE",
+                               price=100.0 + i, ts=ts))
+        if i == 5:
+            # fill shares its causing tick's ts -> causal tie-break exercised
+            store.append(OrderFilledEvent(
+                order_id="O1", symbol="SYM", exchange="NSE", side="BUY",
+                quantity=5, fill_price=100.0, ts=ts))
+    t0 = time.perf_counter()
+    recovered = store.recovery_events()
+    elapsed = time.perf_counter() - t0
+    assert len(recovered) == n + 1
+    assert elapsed < 10.0  # O(n²) would take minutes at this size
+    # causality at the tie: the tick at the fill's ts precedes the fill
+    tied = [e for e in recovered if e.ts.microsecond == 5]
+    assert isinstance(tied[0], TickEvent)
+    assert isinstance(tied[1], OrderFilledEvent)
+
+
 # ------------------------------------------------------------------ M4
 def test_unregister_all_reenables_default_brokers():
     from ntrade.registry import BrokerRegistry
@@ -102,14 +129,23 @@ def test_stale_feed_publishes_risk_halt():
             self.running = False
 
     feed = _QuietFeed(k)
-    runner = LiveRunner(k, feed, poll_interval=0.01, sync_interval=0.01)
-    runner._timer = lambda: 0.0  # time never advances -> watchdog counts up
+    runner = LiveRunner(k, feed, poll_interval=0.01, sync_interval=0.01,
+                        watchdog_timeout=30.0)
+    t = [0.0]
+    runner._timer = lambda: t[0]  # injectable clock: advance manually
     runner.start()
-    for _ in range(runner._watchdog_max_missed + 1):
-        runner._check_feed_watchdog()
+    runner._check_feed_watchdog()  # baseline at t=0: nothing stalled yet
+    t[0] = runner.watchdog_timeout + 1.0
+    runner._check_feed_watchdog()  # stalled past the timeout -> halt
     halts = [e for e in k.bus.history if isinstance(e, RiskHaltedEvent)]
     assert halts, "frozen feed must publish RiskHaltedEvent"
     assert "frozen feed" in halts[0].reason
+    # one-shot: repeated checks must not re-publish the halt
+    t[0] += runner.watchdog_timeout + 1.0
+    runner._check_feed_watchdog()
+    assert len([e for e in k.bus.history if isinstance(e, RiskHaltedEvent)]) == 1
+    # the halt routes through the RiskEngine: pipeline rejects new signals
+    assert k.risk_engine.halted is True
     runner.stop()
 
 

@@ -5,6 +5,11 @@ Provides:
   - RateLimiter: thread-safe token-bucket rate limiter
 
 Both are stdlib-only and designed for the hot path (broker API calls).
+
+The broker rate-limit gate (BrokerRateGate / Quota / RateLimited) lives in
+``ntrade.execution.rate_limit`` and is re-exported here for convenience — a
+``RetryPolicy`` never retries a rate-limit failure (DH-904) by default, since
+retrying a throttled call only amplifies the quota exhaustion.
 """
 
 from __future__ import annotations
@@ -12,8 +17,15 @@ from __future__ import annotations
 import random
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Generator
+
+from ntrade.execution.rate_limit import BrokerRateGate, Quota, RateLimited, is_rate_limited
+
+__all__ = [
+    "RetryPolicy", "RateLimiter",
+    "BrokerRateGate", "Quota", "RateLimited", "is_rate_limited",
+]
 
 
 @dataclass(frozen=True)
@@ -25,9 +37,15 @@ class RetryPolicy:
         policy = RetryPolicy(max_retries=3, base_delay=0.2)
         result = policy.execute(some_flaky_call)
 
-    The *execute* method retries *fn* on any exception.  Between attempts it
-    sleeps for an exponentially increasing delay (capped at *max_delay*) with
-    a small random jitter to de-synchronise concurrent callers.
+    The *execute* method retries *fn* on any exception **except** rate-limit
+    failures (:class:`RateLimited` / anything ``is_rate_limited`` matches),
+    which are re-raised immediately — retrying a DH-904 only burns more quota.
+    Between attempts it sleeps for an exponentially increasing delay (capped at
+    *max_delay*) with a small random jitter to de-synchronise concurrent
+    callers.
+
+    *no_retry_on* overrides the default rate-limit guard with a custom
+    predicate; returning True for an exception re-raises it immediately.
     """
 
     max_retries: int = 3
@@ -35,6 +53,9 @@ class RetryPolicy:
     max_delay: float = 5.0        # cap on exponential backoff
     multiplier: float = 2.0       # backoff multiplier
     jitter: float = 0.1           # random jitter range (+-jitter/2)
+    no_retry_on: Callable[[Exception], bool] | None = field(
+        default=None, repr=False, compare=False,
+    )
 
     # -- core API -----------------------------------------------------------
 
@@ -42,7 +63,8 @@ class RetryPolicy:
         """Execute *fn* with retry on failure.
 
         Returns *fn*'s result on success.  If all attempts raise, the last
-        exception is re-raised.
+        exception is re-raised.  Rate-limit failures are never retried — they
+        are re-raised on the first attempt (B-011).
         """
         delay_iter = iter(self.delays())
         last_exc: BaseException | None = None
@@ -50,10 +72,18 @@ class RetryPolicy:
             try:
                 return fn(*args, **kwargs)
             except Exception as exc:
+                if self._is_no_retry(exc):
+                    raise
                 last_exc = exc
                 if attempt < self.max_retries - 1:
                     time.sleep(next(delay_iter))
         raise last_exc  # type: ignore[misc]
+
+    def _is_no_retry(self, exc: Exception) -> bool:
+        """True when this exception must be re-raised immediately (never retried)."""
+        if self.no_retry_on is not None:
+            return bool(self.no_retry_on(exc))
+        return is_rate_limited(exc)
 
     def delays(self) -> Generator[float, None, None]:
         """Yield delay values for each retry attempt.

@@ -115,7 +115,9 @@ class ValentiniScalper(Strategy):
                  session_end: str | None = None, max_window: int = 600,
                  fade_extended: bool = True,
                  depth_imbalance_min: float | None = None,
-                 require_cvd: bool = True, cvd_confirm_bars: int = 3):
+                 require_cvd: bool = True, cvd_confirm_bars: int = 3,
+                 leg_impulse_mult: float = 2.0,
+                 accum_volume_mult: float = 1.5):
         super().__init__()
         self.symbol = symbol
         self.exchange = exchange
@@ -153,6 +155,8 @@ class ValentiniScalper(Strategy):
         self.depth_imbalance_min = depth_imbalance_min
         self.require_cvd = require_cvd
         self.cvd_confirm_bars = max(1, int(cvd_confirm_bars))
+        self.leg_impulse_mult = max(1.0, float(leg_impulse_mult))
+        self.accum_volume_mult = max(0.0, float(accum_volume_mult))
 
         # ponytail: session-keyed profile + prior POC. Profile is the guide's
         # "location" — built from TODAY's rows (not tail(30)) so POC/VAH/VAL
@@ -173,6 +177,9 @@ class ValentiniScalper(Strategy):
         self._active: dict | None = None   # {side, entry, sl, tp, qty}
         self._pending: dict | None = None  # entry awaiting its fill (live: async)
         self._pending_age: int = 0         # candles since the entry was staged
+        self._atr: float = 0.0            # current ATR, recomputed per candle
+        self._step: float = 1.0           # step = max(range_size, ATR) — ATR floor
+        self._leg_start_idx: int = 0      # row index where the current impulse leg began
 
     # ------------------------------------------------------------------ hooks
     @property

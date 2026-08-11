@@ -15,7 +15,8 @@ import pandas as pd
 
 from ntrade.domain.analytics.indicators import atr, vwap, vwap_bands
 from ntrade.domain.analytics.order_flow import detect_absorptions, cvd_from_ohlcv
-from ntrade.domain.analytics.range_bars import calc_auto_range, build_range_bars
+from ntrade.domain.analytics.range_bars import (
+    build_range_bars, calc_auto_range, swing_bias)
 from ntrade.domain.analytics.volume_profile import build_volume_profile
 from ntrade.engines.strategy_engine import Strategy
 
@@ -117,7 +118,11 @@ class ValentiniScalper(Strategy):
                  depth_imbalance_min: float | None = None,
                  require_cvd: bool = True, cvd_confirm_bars: int = 3,
                  leg_impulse_mult: float = 2.0,
-                 accum_volume_mult: float = 1.5):
+                 accum_volume_mult: float = 1.5,
+                 direction_volume_mult: float = 1.0,
+                 trail_arm_mult: float = 1.0,
+                 divergence_volume_mult: float = 0.6,
+                 reverse_extension_mult: float = 2.0):
         super().__init__()
         self.symbol = symbol
         self.exchange = exchange
@@ -157,6 +162,10 @@ class ValentiniScalper(Strategy):
         self.cvd_confirm_bars = max(1, int(cvd_confirm_bars))
         self.leg_impulse_mult = max(1.0, float(leg_impulse_mult))
         self.accum_volume_mult = max(0.0, float(accum_volume_mult))
+        self.direction_volume_mult = max(0.0, float(direction_volume_mult))
+        self.trail_arm_mult = max(0.0, float(trail_arm_mult))
+        self.divergence_volume_mult = max(0.0, float(divergence_volume_mult))
+        self.reverse_extension_mult = max(1.0, float(reverse_extension_mult))
 
         # ponytail: session-keyed profile + prior POC. Profile is the guide's
         # "location" — built from TODAY's rows (not tail(30)) so POC/VAH/VAL
@@ -252,6 +261,39 @@ class ValentiniScalper(Strategy):
         if pd.isna(self._cvd):
             return False
         return self._cvd >= 0 if side == "BUY" else self._cvd <= 0
+
+    def _volume_supports(self) -> bool:
+        """Direction-gate volume vote: the current impulse leg's volume must
+        clear direction_volume_mult x the prior median per-bar volume."""
+        frame = pd.DataFrame(self._rows)
+        if frame.empty or "volume" not in frame:
+            return False
+        leg = frame.iloc[self._leg_start_idx:]
+        if leg.empty:
+            return False
+        prior = frame.iloc[:self._leg_start_idx]["volume"].astype(float)
+        base = float(prior.median()) if len(prior) else 0.0
+        if base <= 0:
+            return True
+        return float(leg["volume"].sum()) >= self.direction_volume_mult * base
+
+    def _direction(self, close: float) -> str | None:
+        """Gate 0: who controls the auction.
+
+        Three votes must agree (structure + volume + VWAP). Structure has no
+        vote when < 2 completed range bars exist -> the VWAP side alone
+        decides (volume still required). All-else-None = no trade.
+        """
+        if not self._volume_supports():
+            return None
+        vwap_side = ("BUY" if close > self._vwap
+                     else ("SELL" if close < self._vwap else None))
+        if vwap_side is None:
+            return None
+        struct = swing_bias(self._range_bars)
+        if struct is None:
+            return vwap_side
+        return vwap_side if struct == vwap_side else None
 
     def on_candle_closed(self, event) -> None:
         if self.symbol is not None and event.symbol != self.symbol:

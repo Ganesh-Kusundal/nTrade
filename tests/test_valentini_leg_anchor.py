@@ -193,3 +193,56 @@ def test_swing_bias_indeterminate():
                           "close": [99.5, 101.5],
                           "is_complete": [True, False]})
     assert swing_bias(bars2) is None
+
+
+# ------------------------------------------------------------------ direction gate
+
+def test_direction_bullish_when_structure_volume_vwap_agree(monkeypatch):
+    from ntrade.domain.analytics.range_bars import swing_bias
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15)
+    k.register_strategy(strat)
+    monkeypatch.setattr("ntrade.engines.strategies.swing_bias",
+                        lambda bars: "BUY")
+    _uptrend_bars(k, 30)
+    strat._vwap = 110.0
+    assert strat._direction(close=122.0) == "BUY"
+
+
+def test_direction_none_when_volume_does_not_support():
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15,
+                             direction_volume_mult=100.0)
+    k.register_strategy(strat)
+    _uptrend_bars(k, 30, volume=100)          # 30 bars of vol 100
+    # White-box: anchor the leg at bar 20 so there IS prior history for the
+    # volume gate to compare against (without an impulse leg, _leg_start_idx
+    # stays 0, prior is empty, and _volume_supports short-circuits True).
+    strat._leg_start_idx = 20
+    strat._vwap = 110.0
+    assert strat._direction(close=122.0) is None
+
+
+def test_direction_none_when_structure_vwap_disagree(monkeypatch):
+    from ntrade.domain.analytics.range_bars import swing_bias
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15)
+    k.register_strategy(strat)
+    monkeypatch.setattr("ntrade.engines.strategies.swing_bias",
+                        lambda bars: "SELL")
+    _uptrend_bars(k, 30)
+    strat._vwap = 110.0
+    # structure says SELL, VWAP says BUY -> no trade
+    assert strat._direction(close=122.0) is None
+
+
+def test_direction_falls_back_to_vwap_without_structure_vote(monkeypatch):
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15)
+    k.register_strategy(strat)
+    monkeypatch.setattr("ntrade.engines.strategies.swing_bias",
+                        lambda bars: None)
+    _uptrend_bars(k, 30)
+    strat._vwap = 110.0
+    assert strat._direction(close=122.0) == "BUY"
+    assert strat._direction(close=105.0) == "SELL"

@@ -391,15 +391,17 @@ Expected: FAIL — after bars 31/32, phase is `"accumulating"` (price-only check
 
 - [ ] **Step 3: Gate accumulation on recent volume**
 
-Replace the accumulation check at `strategies.py:347`:
+Replace the accumulation check at `strategies.py:347` (baseline is the **prior median** volume — the architecture sentence's wording; the mean would be inflated by the absorption spike and break the existing strategy suite):
 
 ```python
             recent_vol = float(frame["volume"].iloc[-2:].sum())
             prior_vol = frame["volume"].iloc[:-2]
-            avg_vol = float(prior_vol.mean()) if len(prior_vol) else 0.0
+            avg_vol = float(prior_vol.median()) if len(prior_vol) else 0.0
             # Volume confirmation: the move back to the POC must carry real
             # participation (guide §4.1), not a dead drift. NaN/empty guard:
-            # no prior history means no volume test to fail.
+            # no prior history means no volume test to fail. Median baseline
+            # (not mean) — the absorption spike would otherwise inflate the
+            # average and reject normal follow-through volume.
             vol_ok = (avg_vol <= 0
                       or recent_vol >= self.accum_volume_mult * avg_vol)
             if (elapsed >= 2 and abs(close - poc) <= 2 * step and vol_ok):
@@ -420,7 +422,7 @@ Expected: PASS — 3 passed.
 - [ ] **Step 5: Verify zero-parity still passes**
 
 Run: `python -m pytest tests/test_zero_parity_across_modes.py -q`
-Expected: `3 passed`. In the synthetic frame, bars 30-31 volume is 3000+1000=4000 and prior mean ≈1000 → 4000 ≥ 1.5×1000 → accumulation still confirms; entry at `111.0` unchanged.
+Expected: `3 passed`. In the synthetic frame, bars 30-31 volume is 3000+1000=4000 and prior median ≈1000 → 4000 ≥ 1.5×1000 → accumulation still confirms; entry at `111.0` unchanged.
 
 - [ ] **Step 6: Commit**
 

@@ -70,7 +70,7 @@ code and fills remain MARKET at `reference_price`.
   frame = pd.DataFrame(self._rows)   # local in _update_phase
   recent_vol = float(frame["volume"].iloc[-2:].sum())
   prior_vol = frame["volume"].iloc[:-2]
-  avg_vol = float(prior_vol.mean()) if len(prior_vol) else 0.0
+  avg_vol = float(prior_vol.median()) if len(prior_vol) else 0.0
   vol_ok = (avg_vol <= 0
             or recent_vol >= self.accum_volume_mult * avg_vol)
   if (elapsed >= 2 and abs(close - poc) <= 2 * step and vol_ok):
@@ -78,7 +78,9 @@ code and fills remain MARKET at `reference_price`.
   ```
 
 - Guard `avg_vol <= 0` (no history) → treat volume test as passed rather than
-  blocking cold-start accumulation.
+  blocking cold-start accumulation. Baseline is the **median** prior volume
+  (not the mean): the absorption spike would inflate the mean and reject normal
+  follow-through volume, breaking the existing strategy suite.
 
 ## Test impact
 

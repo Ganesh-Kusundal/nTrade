@@ -363,6 +363,7 @@ class ValentiniScalper(Strategy):
     def _update_phase(self, event) -> None:
         """Advance the Triple-A state machine on the latest bar."""
         close = float(event.close)
+        frame = pd.DataFrame(self._rows)
         window_len = len(self._rows)
         recent = [a for a in self._absorptions
                   if a.bar_index >= window_len - self.abs_lookback]
@@ -383,7 +384,17 @@ class ValentiniScalper(Strategy):
             # Accumulation is "price near the session POC" (guide §4.1), not
             # near the absorption price.
             poc = self._profile.poc if self._profile else close
-            if (elapsed >= 2 and abs(close - poc) <= 2 * step):
+            recent_vol = float(frame["volume"].iloc[-2:].sum())
+            prior_vol = frame["volume"].iloc[:-2]
+            avg_vol = float(prior_vol.median()) if len(prior_vol) else 0.0
+            # Volume confirmation: the move back to the POC must carry real
+            # participation (guide §4.1), not a dead drift. NaN/empty guard:
+            # no prior history means no volume test to fail. Median baseline
+            # (not mean) — the absorption spike would otherwise inflate the
+            # average and reject normal follow-through volume.
+            vol_ok = (avg_vol <= 0
+                      or recent_vol >= self.accum_volume_mult * avg_vol)
+            if (elapsed >= 2 and abs(close - poc) <= 2 * step and vol_ok):
                 self._phase = "accumulating"
             elif elapsed > self.abs_lookback * 3:
                 # Setup died: price ran away from value and never came back

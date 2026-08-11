@@ -109,3 +109,23 @@ def test_impulse_candle_reanchors_leg():
     assert strat._leg_start_idx == 30
     _impulse_bar(k, 32, at=118.0)        # another impulse -> leg re-anchors
     assert strat._leg_start_idx == 32
+
+
+# ------------------------------------------------------------------ volume accumulation
+
+def test_accumulation_requires_recent_volume(monkeypatch):
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15)
+    k.register_strategy(strat)
+    _fixed_profile(monkeypatch, val=110.0, poc=118.0, vah=126.0)
+    _uptrend_bars(k, 30)                       # base 100-volume bars
+    _absorption_bar(k, 30, at=110.0, volume=1500)  # absorbing at VAL
+    assert strat.phase == "absorbing"
+    # Bars 31,32 drift back to the POC on LOW volume (well below 1.5x the
+    # prior median 100): accumulation must NOT confirm on a dead retrace.
+    _candle(k, 31, close=118.0, volume=30)
+    _candle(k, 32, close=118.0, volume=30)
+    assert strat.phase == "absorbing"
+    # A high-volume test of the POC confirms the move -> accumulating.
+    _candle(k, 33, close=118.0, volume=300)
+    assert strat.phase == "accumulating"

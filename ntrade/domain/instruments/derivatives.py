@@ -251,6 +251,3 @@ class SyntheticInstrument(Instrument):
 
     def payoff(self, spot: float) -> float:
         return round(sum(leg.payoff(spot) for leg in self.legs), 2)
-
-    def decompose(self) -> list[Instrument]:
-        return list(self.legs)

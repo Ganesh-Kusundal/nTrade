@@ -135,7 +135,7 @@ class ParquetStorage:
         # Ensure numeric types
         for col in ("open", "high", "low", "close", "volume"):
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        df["volume"] = df["volume"].fillna(0).astype("int64")
+        df["volume"] = df["volume"].fillna(0).astype("Int64")
         return df
 
     # ------------------------------------------------------------------ read

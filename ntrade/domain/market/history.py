@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import pandas as pd
+
+from ntrade.domain.constants import HISTORY_MAX_AGE_MIN
 
 if TYPE_CHECKING:
     from ntrade.domain.instruments.base import Instrument
@@ -49,7 +51,7 @@ class HistoricalSeries:
     def last_fetched_at(self) -> datetime | None:
         return self._last_fetched_at
 
-    def is_fresh(self, max_age_minutes: float = 5.0) -> bool:
+    def is_fresh(self, max_age_minutes: float = HISTORY_MAX_AGE_MIN) -> bool:
         if self._last_fetched_at is None:
             return False
         return (self.clock() - self._last_fetched_at).total_seconds() < max_age_minutes * 60

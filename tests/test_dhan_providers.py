@@ -55,6 +55,20 @@ class TestDhanMapperSymbol:
         assert "83.2" in result
         assert "CALL" in result
 
+    def test_future_maps_to_custom_symbol(self):
+        """Futures must map to Dhan's SEM_CUSTOM_SYMBOL form ('NIFTY AUG FUT')
+        — the domain symbol 'NIFTY 25Aug26' matches neither the trading nor
+        the custom form, so history/LTP/orders would fail instrument lookup."""
+        inst = MagicMock()
+        inst.KIND = "future"
+        inst.expiry = date(2026, 8, 25)
+        inst.underlying_symbol = "NIFTY"
+        assert DhanMapper.to_trading_symbol(inst) == "NIFTY AUG FUT"
+
+        # expiry-less future degrades to underlying-only custom form
+        inst.expiry = None
+        assert DhanMapper.to_trading_symbol(inst) == "NIFTY FUT"
+
 
 class TestDhanMapperTimeframe:
     def test_standard_timeframes(self):
@@ -91,6 +105,23 @@ class TestDhanMapperHistory:
                            "Low": [90], "Close": [105], "Volume": [1000]})
         result = DhanMapper.normalize_history(df)
         assert list(result.columns) == ["timestamp", "open", "high", "low", "close", "volume"]
+
+    def test_date_only_end_keeps_intraday_bars_on_to_date(self):
+        """Dhan to_date is a calendar day. Midnight comparison would drop
+        today's session (09:15–15:30) and the live UI would miss today."""
+        df = pd.DataFrame({
+            "timestamp": [
+                "2026-08-10 15:30:00",
+                "2026-08-11 09:15:00",
+                "2026-08-11 15:30:00",
+                "2026-08-12 09:15:00",
+            ],
+            "open": [1, 2, 3, 4], "high": [1, 2, 3, 4],
+            "low": [1, 2, 3, 4], "close": [1, 2, 3, 4], "volume": [1, 1, 1, 1],
+        })
+        out = DhanMapper.filter_history(df, start="2026-08-10", end="2026-08-11")
+        times = list(pd.to_datetime(out["timestamp"]).dt.strftime("%Y-%m-%d %H:%M"))
+        assert times == ["2026-08-10 15:30", "2026-08-11 09:15", "2026-08-11 15:30"]
 
 
 class TestDhanMapperOrderBook:

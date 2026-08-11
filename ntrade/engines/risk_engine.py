@@ -89,7 +89,10 @@ class RiskEngine:
             return f"symbol {event.symbol!r} not in allowlist"
         if self.max_quantity is not None and event.quantity > self.max_quantity:
             return f"quantity {event.quantity} exceeds max {self.max_quantity}"
-        notional = event.price * event.quantity
+        px = event.price or 0.0
+        if px <= 0.0:
+            px = self._reference_price(event)  # MARKET signals carry price=0
+        notional = px * event.quantity
         if self.max_notional is not None and notional > self.max_notional:
             return f"notional {notional:.2f} exceeds max {self.max_notional}"
         if self.max_positions is not None:
@@ -97,10 +100,7 @@ class RiskEngine:
             if count >= self.max_positions:
                 return f"max positions {self.max_positions} reached"
         if self.price_deviation_pct is not None:
-            instrument = self.ctx.instrument(event.symbol)
-            ref = instrument.market.ltp() or None
-            if not ref:
-                ref = instrument.market.prev_close() or None
+            ref = self._reference_price(event)
             if not ref:
                 return (f"price {event.price:.2f} unverifiable: no market price "
                         f"for {event.symbol}")
@@ -109,6 +109,16 @@ class RiskEngine:
                 return (f"price {event.price:.2f} deviates {dev:.1f}% "
                         f"from ref {ref:.2f} (> {self.price_deviation_pct}%)")
         return None
+
+    def _reference_price(self, event) -> float:
+        """Best-known market price for a signal's symbol: live LTP, else
+        prev_close, else 0.0. Used to estimate MARKET-signal notional and to
+        anchor the price-deviation guard. ``ctx.instrument`` can return None
+        for an unregistered symbol — treat as "no price known"."""
+        instrument = self.ctx.instrument(event.symbol)
+        if instrument is None:
+            return 0.0
+        return instrument.market.ltp() or instrument.market.prev_close() or 0.0
 
     def _update_breakers(self) -> None:
         if self.halted:

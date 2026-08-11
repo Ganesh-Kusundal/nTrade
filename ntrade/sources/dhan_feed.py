@@ -20,6 +20,19 @@ from ntrade.sources.market_feed import MarketFeedSource
 from ntrade.events.lifecycle import FeedDisconnectedEvent
 from ntrade.execution.retry import RateLimiter
 
+# Guarded import for the wire constants only — dhanhq ships with
+# Dhan-Tradehull, but the module must stay importable without it (the feed
+# itself is still built lazily in ``_build_feed``). Falls back to the stable
+# documented values when the package is absent.
+try:
+    from dhanhq import MarketFeed as _MarketFeed
+except ImportError:  # pragma: no cover - dhanhq ships with Dhan-Tradehull
+    _MarketFeed = None
+
+_IDX_SEGMENT = int(getattr(_MarketFeed, "IDX", 0))
+_FULL_MODE = int(getattr(_MarketFeed, "Full", 21))
+_QUOTE_MODE = int(getattr(_MarketFeed, "Quote", 17))
+
 _logger = logging.getLogger("ntrade.feed.dhan")
 
 
@@ -139,9 +152,21 @@ class DhanMarketFeedSource(MarketFeedSource):
 
     # ------------------------------------------------------------------ wiring
     def _subscriptions(self) -> list:
-        # dhanhq v2 JSON requires SecurityId as a string — int IDs connect
-        # but deliver zero ticks with no error (silent empty feed).
-        return [(exch, str(sec), 21) for exch, sec in self.symbols]
+        """Wire subscription tuples: ``(exchange_segment, security_id, mode)``.
+
+        dhanhq v2 JSON requires SecurityId as a string — int IDs connect
+        but deliver zero ticks with no error (silent empty feed).
+
+        Mode is picked per segment: Dhan's IDX (index) segment silently
+        drops Full(21) subscriptions — it accepts them but never delivers
+        data (verified live 2026-08-06). Equities/F&O/others stream fine on
+        Full(21) (quote+tick+depth); indices use Quote(17) (quote+tick),
+        which the server does serve and maps through ``dhan_payload_to_events``.
+        """
+        return [
+            (exch, str(sec), _QUOTE_MODE if exch == _IDX_SEGMENT else _FULL_MODE)
+            for exch, sec in self.symbols
+        ]
 
     def _build_feed(self):
         if self._feed is not None:
@@ -150,7 +175,7 @@ class DhanMarketFeedSource(MarketFeedSource):
             self._feed = self.feed_factory(self._subscriptions())
             return self._feed
         try:
-            from dhanhq import DhanContext, MarketFeed
+            from dhanhq import MarketFeed
         except ImportError as exc:  # pragma: no cover - dhanhq ships with Dhan-Tradehull
             raise ImportError(
                 "DhanMarketFeedSource requires dhanhq (installed with Dhan-Tradehull)"

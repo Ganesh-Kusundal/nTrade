@@ -15,9 +15,11 @@ import pandas as pd
 from ntrade.domain.market.depth import DepthLevel, MarketDepth
 from ntrade.domain.market.quote import Quote
 from ntrade.domain.orders.book import OrderBook, OrderBookEntry, TradeBook, TradeBookEntry
+from ntrade.domain.constants import Exchange
 
 if TYPE_CHECKING:
     from ntrade.domain.instruments.base import Instrument
+    from ntrade.domain.instruments.chain import OptionChain
 
 
 # Timeframe mapping: user-facing → Dhan native interval string.
@@ -41,7 +43,11 @@ _RESAMPLE_TIMEFRAMES = {
 
 # Mirrors Dhan-Tradehull's instrument_exchange mapping: NFO/BFO derivatives
 # are filed under the cash exchange id, CUR under NSE.
-DAY_BLOCK_MAPPED_EXCHANGE = {"NFO": "NSE", "BFO": "BSE", "CUR": "NSE"}
+DAY_BLOCK_MAPPED_EXCHANGE = {
+    Exchange.DERIVATIVES: Exchange.CASH,       # NFO → NSE cash segment
+    Exchange.BFO: Exchange.BSE,                 # BFO → BSE cash segment
+    Exchange.CURRENCY: Exchange.CASH,           # CUR → NSE cash segment
+}
 
 
 class DhanMapper:
@@ -58,6 +64,12 @@ class DhanMapper:
           - SEM_CUSTOM_SYMBOL:    'NIFTY 04 AUG 24400 CALL'  (spaced)
         The library's helpers (ATM/ITM/OTM, LTP, order placement) use the
         CUSTOM format, so we emit the spaced variant.
+
+        Futures follow the same rule: Dhan's instrument file lists index/stock
+        futures as e.g. ``NIFTY-Aug2026-FUT`` (trading) / ``NIFTY AUG FUT``
+        (custom). The domain symbol (``NIFTY 25Aug26``) matches neither and
+        fails Dhan's instrument-file lookup — history, LTP and orders all
+        need the CUSTOM form (B-016: front-month future resolution).
         """
         if instrument.KIND == "option":
             leg = "CALL" if instrument.option_type == "CE" else "PUT"
@@ -68,6 +80,12 @@ class DhanMapper:
                 else instrument.strike
             )
             return f"{instrument.underlying_symbol} {date_part} {strike_label} {leg}"
+        if instrument.KIND == "future":
+            # Dhan's SEM_CUSTOM_SYMBOL: 'NIFTY AUG FUT'. The security-ID
+            # resolution is Dhan-internal (instrument-file lookup) — we only
+            # need to hand over the recognized trading symbol.
+            month = instrument.expiry.strftime("%b").upper() if instrument.expiry else ""
+            return " ".join(p for p in (instrument.underlying_symbol, month, "FUT") if p).upper()
         return instrument.symbol
 
     # ---- timeframe ---------------------------------------------------------
@@ -210,7 +228,13 @@ class DhanMapper:
         if start is not None:
             mask &= ts >= _cutoff(start)
         if end is not None:
-            mask &= ts <= _cutoff(end)
+            cut = _cutoff(end)
+            # Date-only to_date (YYYY-MM-DD / midnight) is inclusive of that
+            # session. `ts <= midnight` drops every intraday bar on the end day.
+            if cut.hour == 0 and cut.minute == 0 and cut.second == 0 and cut.microsecond == 0:
+                mask &= ts < cut + pd.Timedelta(days=1)
+            else:
+                mask &= ts <= cut
         if days is not None:
             anchor = asof if asof is not None else datetime.now()
             mask &= ts >= _cutoff(anchor - timedelta(days=days))
@@ -272,7 +296,7 @@ class DhanMapper:
                 avg_price=_first_float(r, "avgTradingPrice", "avgPrice"),
                 ltp=_first_float(r, "ltp"),
                 product=_first_str(r, "productType") or "MIS",
-                exchange=_first_str(r, "exchangeSegment") or "NSE",
+                exchange=_first_str(r, "exchangeSegment") or Exchange.CASH,
             ))
         return out
 
@@ -371,7 +395,7 @@ def chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float,
                 continue
             opt = Option(
                 symbol=f"{underlying.symbol} {strike_label} {leg}",
-                exchange="NFO",
+                exchange=Exchange.DERIVATIVES,
                 strike=strike,
                 expiry=expiry or (asof or datetime.now()).date(),
                 option_type=otype,

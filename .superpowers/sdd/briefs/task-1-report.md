@@ -1,47 +1,25 @@
-# Task 1 Report (T-020) — Remove fake streaming no-ops from the capability surface
+# Task 1 Report: Constructor params + state for the three phases
 
-**Status:** DONE_WITH_CONCERNS
+- **Status:** DONE
+- **Commit:** `dfe82958c94e30b3b27ba7612205ef46bcba8b82`
+- **Test result:** `24 passed in 11.58s`
 
-## What changed
+## What was done
 
-- `ntrade/brokers/dhan.py` — deleted the `_market_feed` and `_order_update_stream`
-  module-level functions (formerly lines 883-898) together with their
-  `@capability("market_feed", ...)` / `@capability("order_update_stream", ...)`
-  decorators. Verified via `grep -rn` that `subscribe`/`LiveStream`/`market_feed`/
-  `order_update_stream` are now entirely unreferenced in `dhan.py`; no imports
-  needed removal (the `subscribe(...)` calls were method calls on the base
-  `BrokerAdapter`, not imports).
-- `tests/test_dhan_broker.py` — appended `test_no_fake_streaming_capabilities`
-  exactly as specified in the brief.
+Modified `ntrade/engines/strategies.py` only:
 
-## Test commands and output
+1. Added `leg_impulse_mult: float = 2.0` and `accum_volume_mult: float = 1.5`
+   params to `ValentiniScalper.__init__` after `cvd_confirm_bars: int = 3`.
+2. Assigned them after `self.cvd_confirm_bars`:
+   `self.leg_impulse_mult = max(1.0, float(leg_impulse_mult))` and
+   `self.accum_volume_mult = max(0.0, float(accum_volume_mult))`.
+3. Added state attrs `self._atr: float = 0.0`, `self._step: float = 1.0`,
+   `self._leg_start_idx: int = 0` after `self._pending_age`.
 
-1. Failing-test step (`./.venv/bin/python -m pytest tests/test_dhan_broker.py::test_no_fake_streaming_capabilities -q`):
-   `1 passed in 0.37s` — **PASS on first run, before deletion** (see concerns).
-2. Post-deletion verification (same command): `1 passed in 0.36s`.
-3. Full suite (`./.venv/bin/python -m pytest -q`): **625 passed in 6.12s**
-   (baseline 624 + the new test; no failures).
-
-## Commit
-
-`d0908dc` — `T-020 remove fake streaming no-op capabilities`
-
-Note: the commit also carried the pre-staged `check_connection.py` deletion that
-was already in the index from the prior batch (3 files in commit); I staged only
-the two brief-listed files via explicit `git add ntrade/brokers/dhan.py
-tests/test_dhan_broker.py`.
+Verified commit contains exactly `ntrade/engines/strategies.py`
+(1 file changed, 8 insertions(+), 1 deletion(-)); the unrelated uncommitted
+working-tree changes were not staged or touched.
 
 ## Concerns
 
-- **The brief's "failing test" expectation was incorrect.** The two fake streaming
-  functions are **module-level** `@capability`-decorated functions, not `DhanBroker`
-  class attributes, so `hasattr(DhanBroker, "_market_feed")` is False both before
-  and after deletion. The test as specified in the brief is therefore vacuous —
-  it passed on first run and never actually guarded the deletion. The deletion is
-  still verified by the repo-wide grep (zero references remain) and the full suite,
-  but the test will not catch a regression. A meaningful test would assert the
-  capability names are absent from `registered_capabilities()` (or that
-  `instrument.broker.available()` excludes them). I did not alter the test beyond
-  the brief's verbatim text per the "don't modify beyond the brief" rule.
-- `check_connection.py` (pre-staged deletion) rode along into the commit because it
-  was already in the index when this task started.
+None. All new attrs are inert until Tasks 2-4 consume them.

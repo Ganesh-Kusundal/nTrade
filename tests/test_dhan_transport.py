@@ -243,3 +243,98 @@ class TestNoLimiterLegacy:
         from ntrade.brokers.dhan_transport import DhanTransport
         with pytest.raises(TypeError):
             DhanTransport(MagicMock(), rate_limiter=MagicMock())
+
+
+class TestQuietLibraryPrints:
+    """Tradehull prints 'Exception at calling ltp/Quote/OHLC as {...}' to stdout
+    on a transient failure and swallows it into an empty dict. The transport
+    must suppress that raw print (nTrade's own retry + envelope detection
+    already handles the failure) while still returning the parsed value.
+    """
+
+    def test_get_ltp_suppresses_library_print_and_returns_ltp(self, capsys):
+        tsl = MagicMock()
+
+        def _noisy_ltp(names):
+            print("Exception at calling ltp as {'status': 'failure'}")
+            return {"TCS": 100.0}
+
+        tsl.get_ltp_data.side_effect = _noisy_ltp
+        transport, _, _ = _transport_with_gate(tsl)
+        assert transport.get_ltp("TCS") == 100.0
+        captured = capsys.readouterr()
+        assert "Exception at calling ltp" not in captured.out
+        assert "Exception at calling ltp" not in captured.err
+
+    def test_get_ltp_retry_still_quiet_on_transient_failure(self, capsys):
+        """The real-world case: first call fails (library prints + returns
+        failure envelope), retry succeeds. Both must stay quiet and the LTP
+        must come back."""
+        tsl = MagicMock()
+
+        def _flaky_ltp(names):
+            print("Exception at calling ltp as {'status': 'failure', 'data': ''}")
+            return {"status": "failure", "remarks": {}, "data": ""}
+
+        calls = {"n": 0}
+
+        def _ltp(names):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _flaky_ltp(names)
+            return {"TCS": 100.0}
+
+        tsl.get_ltp_data.side_effect = _ltp
+        transport, _, _ = _transport_with_gate(tsl)
+        from ntrade.execution.retry import RetryPolicy
+        transport._retry_policy = RetryPolicy(max_retries=2, base_delay=0.0, jitter=0.0)
+        assert transport.get_ltp("TCS") == 100.0
+        assert calls["n"] == 2
+        captured = capsys.readouterr()
+        assert "Exception at calling ltp" not in captured.out
+        assert "Exception at calling ltp" not in captured.err
+
+    def test_get_quote_suppresses_library_print_and_enriches(self, capsys):
+        tsl = MagicMock()
+
+        def _noisy_ltp(names):
+            return {"TCS": 100.0}
+
+        def _noisy_quote(names):
+            print("Exception at calling Quote as {'status': 'failure'}")
+            return {"TCS": {"high": 105.0, "low": 99.0}}
+
+        tsl.get_ltp_data.side_effect = _noisy_ltp
+        tsl.get_quote_data.side_effect = _noisy_quote
+        transport, _, _ = _transport_with_gate(tsl)
+        quote = transport.get_quote("TCS")
+        assert quote.ltp == 100.0
+        assert quote.high == 105.0 and quote.low == 99.0
+        captured = capsys.readouterr()
+        assert "Exception at calling" not in captured.out
+        assert "Exception at calling" not in captured.err
+
+    def test_get_ohlc_suppresses_library_print_and_returns_dict(self, capsys):
+        tsl = MagicMock()
+
+        def _noisy_ohlc(names):
+            print("Exception at calling OHLC as {'status': 'failure'}")
+            return {"TCS": {"high": 105.0}}
+
+        tsl.get_ohlc_data.side_effect = _noisy_ohlc
+        transport, _, _ = _transport_with_gate(tsl)
+        assert transport.get_ohlc("TCS") == {"high": 105.0}
+        captured = capsys.readouterr()
+        assert "Exception at calling" not in captured.out
+        assert "Exception at calling" not in captured.err
+
+    def test_quiet_scope_restores_stdout_after_call(self, capsys):
+        """The redirect must not leak beyond the library call: a print made
+        by the CALLER after get_ltp still reaches the terminal."""
+        tsl = MagicMock()
+        tsl.get_ltp_data.return_value = {"TCS": 100.0}
+        transport, _, _ = _transport_with_gate(tsl)
+        transport.get_ltp("TCS")
+        print("caller's own log line")
+        captured = capsys.readouterr()
+        assert "caller's own log line" in captured.out

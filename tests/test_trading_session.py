@@ -93,6 +93,15 @@ class TestTradingSessionInstruments:
         nifty = session.index("NIFTY")
         fut = session.future(nifty, date(2026, 8, 28))
         assert isinstance(fut, Future)
+        assert fut.exchange == "NFO"
+
+    def test_future_mcx_from_commodity(self):
+        session = TradingSession.paper()
+        crude = session.commodity("CRUDEOIL")
+        fut = session.future(crude, date(2026, 8, 19))
+        assert isinstance(fut, Future)
+        assert fut.exchange == "MCX"
+        assert fut.underlying_symbol == "CRUDEOIL"
 
     def test_option(self):
         session = TradingSession.paper()

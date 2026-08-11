@@ -13,6 +13,7 @@ from ntrade.events.market import (
     QuoteEvent,
     QuoteUpdatedEvent,
     TickEvent,
+    WatchlistReady,
 )
 from ntrade.events.order import (
     OrderAcceptedEvent,
@@ -36,6 +37,7 @@ __all__ = [
     "Event",
     "TickEvent", "QuoteEvent", "DepthEvent", "CandleClosedEvent",
     "QuoteUpdatedEvent", "IndicatorUpdatedEvent",
+    "WatchlistReady",
     "OrderIntentEvent", "OrderAcceptedEvent", "OrderRejectedEvent", "OrderFilledEvent",
     "PositionUpdatedEvent", "BalanceChangedEvent",
     "SignalGeneratedEvent", "SignalApprovedEvent", "SignalRejectedEvent",

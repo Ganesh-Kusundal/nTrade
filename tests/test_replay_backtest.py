@@ -141,11 +141,13 @@ def test_backtest_simulator_produces_equity_curve():
     assert result.trades[0]["side"] == "BUY"
     assert result.trades[1]["side"] == "SELL"
     assert len(result.equity_curve) == 20
-    # candle i closes during bar i+1: buy at candle-2 close (103), sell at
-    # candle-7 close (108) → profit 10 * 5
-    assert result.trades[0]["fill_price"] == 103.0
+    # With flush-driven candle close: candle i closes during bar i (not bar i+1).
+    # Buy fires on candle-2 close (count==3): LIMIT fills at min(103, bar2.open=102) = 102.
+    # Sell fires on candle-7 close (count==8): LIMIT fills at max(108, bar7.open=107) = 108.
+    # → profit = (108 - 102) * 10 = 60
+    assert result.trades[0]["fill_price"] == 102.0
     assert result.trades[1]["fill_price"] == 108.0
-    assert result.final_equity == pytest.approx(100_000.0 + 10 * 5.0)
+    assert result.final_equity == pytest.approx(100_000.0 + 10 * 6.0)
 
 
 def test_backtest_fill_policy():
@@ -174,11 +176,11 @@ def test_backtest_commissions_and_drawdown():
                             commission=PercentageCommission(pct=0.01))
     sim.register_strategy(BuySellOnCandles())
     result = sim.run(_ohlcv())
-    # buy 10@103 + sell 10@108 → notional 1030 + 1080, 1% each
-    assert result.commissions_total == pytest.approx(10.30 + 10.80)
+    # buy 10@102 + sell 10@108 → notional 1020 + 1080, 1% each
+    assert result.commissions_total == pytest.approx(10.20 + 10.80)
     assert result.max_drawdown_pct >= 0.0
     assert result.n_trades == 2
-    assert result.final_equity == pytest.approx(100_000.0 + 50.0 - result.commissions_total)
+    assert result.final_equity == pytest.approx(100_000.0 + 60.0 - result.commissions_total)
 
 
 def test_backtest_limit_fills_bar_aware():
@@ -236,8 +238,8 @@ def test_backtest_market_orders_ignore_policy():
     sim.register_strategy(MarketBuy())
     result = sim.run(_ohlcv())
     assert result.n_trades == 1
-    # MARKET fills at the bar-1 close (102) when the first candle closes
-    assert result.trades[0]["fill_price"] == pytest.approx(102.0)
+    # MARKET fills at the bar-0 close (101) when the first candle closes
+    assert result.trades[0]["fill_price"] == pytest.approx(101.0)
 
 
 def test_event_store_tolerates_torn_final_line(tmp_path):
@@ -289,6 +291,35 @@ def test_backtest_limit_fills_bar_aware_by_default():
     assert result2.trades[0]["fill_price"] == 100.0  # min(100, open 100)
 
 
+def test_backtest_publishes_depth_events_when_enabled():
+    """Opt-in depth simulation: BacktestSimulator emits one DepthEvent per bar."""
+    from ntrade.backtest.simulator import BacktestSimulator
+    from ntrade.events.market import DepthEvent
+
+    sim = BacktestSimulator(timeframe="5m", depth_levels=5, depth_imbalance=0.4,
+                            depth_seed=3)
+    result = sim.run(_ohlcv(6))
+    depth_events = [e for e in sim.kernel.bus.history if isinstance(e, DepthEvent)]
+    assert len(depth_events) == 6
+    assert sim.depth_events_published == 6
+    # book lands in the read-model with the requested buy pressure
+    inst = sim.kernel.ctx.instrument(sim.symbol)
+    assert len(inst.market.depth().bids) == 5
+    assert inst.market.depth().bid_ask_imbalance() > 0.3
+    assert result.n_trades == 0  # no strategy registered — plumbing only
+
+
+def test_backtest_no_depth_by_default():
+    """Zero-parity: without depth_levels the backtest stays depth-free."""
+    from ntrade.backtest.simulator import BacktestSimulator
+    from ntrade.events.market import DepthEvent
+
+    sim = BacktestSimulator(timeframe="5m")
+    sim.run(_ohlcv(4))
+    assert not [e for e in sim.kernel.bus.history if isinstance(e, DepthEvent)]
+    assert sim.depth_events_published == 0
+
+
 def test_event_store_skips_unknown_event_types(tmp_path):
     """A JSONL file with an unknown __type__ must not crash _load."""
     import json
@@ -302,7 +333,6 @@ def test_event_store_skips_unknown_event_types(tmp_path):
 
 
 def test_event_store_persistent_file_handle(tmp_path):
-    import json
     path = tmp_path / "persist.jsonl"
     store = EventStore(path=str(path))
     from ntrade.events.market import TickEvent
@@ -311,5 +341,5 @@ def test_event_store_persistent_file_handle(tmp_path):
         store.append(TickEvent(ts=datetime(2026, 1, 1, 9, i, 0), symbol="X", exchange="NSE", price=float(i)))
     store.close()
     # Verify all 10 events were written
-    lines = [l for l in path.read_text().splitlines() if l.strip()]
+    lines = [line for line in path.read_text().splitlines() if line.strip()]
     assert len(lines) == 10

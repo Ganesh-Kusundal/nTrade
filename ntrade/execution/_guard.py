@@ -72,13 +72,6 @@ class MemoryIdempotencyGuard:
         with self._lock:
             self._reserved.discard(key)
 
-    def release_reservation(self, correlation_id) -> None:
-        """Explicitly release a reservation after manual reconciliation."""
-        key = correlation_id.value if hasattr(correlation_id, "value") else correlation_id
-        with self._lock:
-            self._reserved.discard(key)
-            self._completed.pop(key, None)
-
     def _evict_if_over_cap(self) -> None:
         while len(self._insertion_order) > self._max_entries:
             oldest = self._insertion_order.pop(0)
@@ -99,10 +92,6 @@ class CircuitBreakerConfig:
     failure_threshold: int = 5
     cooldown_seconds: float = 30.0
     half_open_max: int = 1
-
-
-class CircuitBreakerOpenError(RuntimeError):
-    """Raised when the breaker is OPEN and a request fails fast."""
 
 
 class CircuitBreaker:
@@ -274,14 +263,6 @@ class TotpCooldownGuard:
         self._last_success_at: float | None = None
         self._load_state()
 
-    @classmethod
-    def for_broker(cls, broker: str) -> "TotpCooldownGuard":
-        key = broker.lower()
-        with cls._class_lock:
-            if key not in cls._instances:
-                cls._instances[key] = cls(key)
-            return cls._instances[key]
-
     def _load_state(self) -> None:
         self._last_attempt_at = None
         self._last_success_at = None
@@ -323,11 +304,6 @@ class TotpCooldownGuard:
         elapsed = time.time() - self._last_attempt_at
         return max(0.0, self._cooldown_seconds - elapsed)
 
-    def remaining_cooldown_seconds(self) -> float:
-        with _process_lock(str(self._lock_path)), _exclusive_file_lock(self._lock_path):
-            self._load_state()
-            return self._remaining_unlocked()
-
     def check_allowed(self) -> None:
         with _process_lock(str(self._lock_path)), _exclusive_file_lock(self._lock_path):
             self._load_state()
@@ -353,15 +329,6 @@ class TotpCooldownGuard:
             self._persist_state()
             return reserved_at
 
-    def release_attempt(self, reserved_at: float) -> None:
-        """Release one failed reservation without clearing newer state."""
-        with _process_lock(str(self._lock_path)), _exclusive_file_lock(self._lock_path):
-            self._load_state()
-            if self._last_attempt_at != reserved_at:
-                return
-            self._last_attempt_at = self._last_success_at
-            self._persist_state()
-
     def record_success(self) -> None:
         with _process_lock(str(self._lock_path)), _exclusive_file_lock(self._lock_path):
             self._load_state()
@@ -370,24 +337,10 @@ class TotpCooldownGuard:
             self._last_success_at = now
             self._persist_state()
 
-    def record_rate_limited(self) -> None:
-        """Record a broker rate limit without overwriting a newer success."""
-        with _process_lock(str(self._lock_path)), _exclusive_file_lock(self._lock_path):
-            self._load_state()
-            if (
-                self._last_success_at is not None
-                and self._last_attempt_at is not None
-                and self._last_success_at >= self._last_attempt_at
-            ):
-                return
-            self._last_attempt_at = time.time()
-            self._persist_state()
-
 
 __all__ = [
     "CircuitBreaker",
     "CircuitBreakerConfig",
-    "CircuitBreakerOpenError",
     "CircuitState",
     "CorrelationId",
     "IdempotencyDuplicate",

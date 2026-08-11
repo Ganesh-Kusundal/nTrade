@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 
@@ -41,8 +41,8 @@ class MarketDepth:
 
     def bid_ask_imbalance(self) -> float:
         """(bid qty - ask qty) / (bid qty + ask qty); positive = buy pressure."""
-        bid_qty = sum(l.quantity for l in self.bids)
-        ask_qty = sum(l.quantity for l in self.asks)
+        bid_qty = sum(level.quantity for level in self.bids)
+        ask_qty = sum(level.quantity for level in self.asks)
         if bid_qty + ask_qty == 0:
             return 0.0
         return round((bid_qty - ask_qty) / (bid_qty + ask_qty), 4)

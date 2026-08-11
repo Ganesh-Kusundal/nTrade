@@ -822,13 +822,14 @@ def test_lot_size_propagates_rate_limited():
         broker.get_lot_size(opt)
 
 
-def test_orderbook_still_degrades_on_other_errors():
-    """Non-rate failures keep the documented empty-book degrade."""
+def test_orderbook_propagates_other_errors():
+    """Non-rate transport errors propagate (H-5): returning an empty book
+    would mask a dead broker during post-boot reconciliation and orphan orders
+    would never be adopted."""
     from ntrade.domain.orders.book import OrderBook
     broker = make_broker(get_orderbook=lambda debug="NO": (_ for _ in ()).throw(ConnectionError("down")))
-    ob = broker.get_orderbook()
-    assert isinstance(ob, OrderBook)
-    assert len(ob) == 0
+    with pytest.raises(RuntimeError, match="orderbook fetch failed"):
+        broker.get_orderbook()
 
 
 def test_expiry_date_still_degrades_on_other_errors():

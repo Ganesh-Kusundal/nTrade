@@ -196,6 +196,22 @@ def test_feed_always_uses_full_mode_code():
     assert not hasattr(src, "mode")
 
 
+def test_index_subscription_uses_quote_mode_not_full():
+    """Dhan's IDX segment silently drops Full(21) subscriptions — indices
+    must subscribe in Quote(17) mode or they never deliver ticks (verified
+    live 2026-08-06)."""
+    src = DhanMarketFeedSource(symbols=[(0, 13), (0, 25)],
+                               feed_factory=lambda subs: FakeFeed(subs))
+    assert src._subscriptions() == [(0, "13", 17), (0, "25", 17)]
+
+
+def test_mixed_segments_pick_mode_per_symbol():
+    """Equities/F&O keep Full(21); indices in the same batch use Quote(17)."""
+    src = DhanMarketFeedSource(symbols=[(0, 13), (1, 2885), (2, 49081)],
+                               feed_factory=lambda subs: FakeFeed(subs))
+    assert src._subscriptions() == [(0, "13", 17), (1, "2885", 21), (2, "49081", 21)]
+
+
 def test_subscriptions_coerce_int_security_ids_to_str():
     """Int security IDs silently yield a connected-but-empty dhanhq feed."""
     src = DhanMarketFeedSource(symbols=[(1, 2885), (2, 58072)],

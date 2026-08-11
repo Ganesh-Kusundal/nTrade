@@ -42,7 +42,12 @@ if TYPE_CHECKING:
     from ntrade.domain.instruments.base import Instrument
 
 
-_SEBI_FNO_EXCHANGES = {"NFO", "BFO"}
+from ntrade.domain.constants import (
+    Exchange,
+    SEBI_BAND_PCT,
+    SEBI_FNO_EXCHANGES,
+    SEBI_MAX_QUOTE_AGE_S,
+)
 
 # Re-export for backward compatibility (capabilities reference dhan_symbol)
 dhan_symbol = DhanMapper.to_trading_symbol
@@ -53,7 +58,7 @@ class DhanBroker(BrokerAdapter):
 
     def __init__(self, env_path: str = ".env", env: dict | None = None,
                  connect: bool = True, clock=None,
-                 sebi_max_quote_age: float = 10.0, sebi_band_pct: float = 2.0):
+                 sebi_max_quote_age: float = SEBI_MAX_QUOTE_AGE_S, sebi_band_pct: float = SEBI_BAND_PCT):
         super().__init__(clock=clock)
         self.env_path = env_path
         self.env = env
@@ -180,7 +185,7 @@ class DhanBroker(BrokerAdapter):
         self._ensure_tsl()
         if DhanMapper.map_timeframe(timeframe) == "DAY" and self._dhan_blocks_day(instrument):
             return self._historical_day_contract(instrument, days=days, start=start, end=end)
-        exchange = "INDEX" if instrument.KIND == "index" else instrument.exchange
+        exchange = Exchange.INDEX if instrument.KIND == "index" else instrument.exchange
         start_s = start.strftime("%Y-%m-%d") if hasattr(start, "strftime") else start
         end_s = end.strftime("%Y-%m-%d") if hasattr(end, "strftime") else end
         return self._get_transport().get_historical(
@@ -208,8 +213,7 @@ class DhanBroker(BrokerAdapter):
         (out-of-range attempts clamp to Dhan's last available expiry), and
         `chain.target_expiry` may be a placeholder — never assume the requested index.
         """
-        from ntrade.domain.instruments.chain import OptionChain
-        exchange = "INDEX" if underlying.KIND == "index" else "NFO"
+        exchange = Exchange.INDEX if underlying.KIND == "index" else Exchange.DERIVATIVES
         last_error: Exception | None = None
         for attempt in (expiry, expiry + 1, expiry + 2):
             try:
@@ -251,7 +255,7 @@ class DhanBroker(BrokerAdapter):
     def place_order(self, order: Order) -> Order:
         self._ensure_tsl()  # Ensure token is fresh before order placement
         # SEBI (Apr 2026): MARKET orders banned for F&O — force LIMIT.
-        if order.instrument.exchange in _SEBI_FNO_EXCHANGES and order.order_type.value == "MARKET":
+        if order.instrument.exchange in SEBI_FNO_EXCHANGES and order.order_type.value == "MARKET":
             order.order_type = order.order_type.__class__("LIMIT")
             quote = order.instrument._quote
             ltp = quote.ltp
@@ -263,7 +267,7 @@ class DhanBroker(BrokerAdapter):
             # Never band against a stale price (H-2): the ±band LIMIT is the
             # only price protection this conversion gets, so the reference LTP
             # must be fresh. Untimestamped quotes are treated as stale.
-            max_age = getattr(self, "_sebi_max_quote_age", 10.0)
+            max_age = getattr(self, "_sebi_max_quote_age", SEBI_MAX_QUOTE_AGE_S)
             quote_ts = getattr(quote, "timestamp", None)
             age = (self._ts() - quote_ts).total_seconds() if quote_ts is not None else None
             if age is None or age > max_age:
@@ -393,15 +397,19 @@ class DhanBroker(BrokerAdapter):
     def get_order_detail(self, order_id: str) -> dict:
         """Return normalized order detail dict from Dhan.
 
-        A rate-limit rejection (RateLimited) propagates rather than degrading
-        to an empty dict (finding: no silent swallow on DH-904).
+        Transport failures propagate — never masked as an empty dict. A
+        silent empty detail would feed stale fill qty / avg_price into
+        get_order_status and could miss a partial fill (H-5: a dead broker
+        must surface, not look like "no info").
         """
         try:
             raw = self._get_transport().get_order_detail(order_id) or {}
         except RateLimited:
             raise
-        except Exception:
-            return {}
+        except Exception as exc:
+            raise RuntimeError(
+                f"Dhan order detail fetch failed for {order_id}: {exc}"
+            ) from exc
         return {
             "order_id": str(raw.get("orderId") or raw.get("OrderID") or order_id),
             "status": _first_str(raw, "orderStatus", "OrderStatus", "status"),
@@ -412,13 +420,20 @@ class DhanBroker(BrokerAdapter):
         }
 
     def get_executed_price(self, order: Order) -> float:
-        """Average execution price of a completed order."""
+        """Average execution price of a completed order.
+
+        Transport failures propagate — a silent fallback to the order's current
+        avg_price would mask a dead broker and feed stale/wrong prices into
+        PnL (B-005).
+        """
         try:
             return self._get_transport().get_executed_price(order.order_id)
         except RateLimited:
             raise
-        except Exception:
-            return float(order.avg_price or 0.0)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Dhan executed price fetch failed for {order.order_id}: {exc}"
+            ) from exc
 
     def get_executed_price_and_time(self, order: Order):
         """(price, exchange_time) for a completed order."""
@@ -427,14 +442,19 @@ class DhanBroker(BrokerAdapter):
             return float(price), str(ts)
         except RateLimited:
             raise
-        except Exception:
-            return float(order.avg_price or 0.0), ""
+        except Exception as exc:
+            raise RuntimeError(
+                f"Dhan executed price/time fetch failed for {order.order_id}: {exc}"
+            ) from exc
 
     def get_orderbook(self, *, now: datetime | None = None) -> OrderBook:
         """Order book as a typed OrderBook domain object.
 
         A rate-limit rejection (RateLimited) propagates — never masked as an
-        empty book (K-021: DH-904 looks like 'no orders').
+        empty book (K-021: DH-904 looks like 'no orders'). Transport failures
+        also propagate (H-5): returning an empty book would hide a dead broker
+        during post-boot reconciliation and orphan orders would never be
+        adopted — silently leaving real-money positions untracked.
         """
         try:
             return DhanMapper.normalize_orderbook(
@@ -442,14 +462,18 @@ class DhanBroker(BrokerAdapter):
             )
         except RateLimited:
             raise
-        except Exception:
-            return OrderBook()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Dhan orderbook fetch failed: {exc}"
+            ) from exc
 
     def get_trade_book(self, *, now: datetime | None = None) -> TradeBook:
         """Trade book as a typed TradeBook domain object.
 
         A rate-limit rejection (RateLimited) propagates — never masked as an
-        empty book (K-021: DH-904 looks like 'no trades').
+        empty book (K-021: DH-904 looks like 'no trades'). Transport failures
+        also propagate (H-5): returning an empty trade book would hide a dead
+        broker during reconciliation and real fills could be missed.
         """
         try:
             return DhanMapper.normalize_tradebook(
@@ -457,8 +481,10 @@ class DhanBroker(BrokerAdapter):
             )
         except RateLimited:
             raise
-        except Exception:
-            return TradeBook()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Dhan trade book fetch failed: {exc}"
+            ) from exc
 
     def order_report(self):
         """Order report normalized to a dict of row-dict lists."""
@@ -500,7 +526,7 @@ class DhanBroker(BrokerAdapter):
         A rate-limit rejection (RateLimited) propagates — never masked as
         'no expiries' (K-021 / ERROR-016 class).
         """
-        exchange = "INDEX" if instrument.KIND == "index" else "NFO"
+        exchange = Exchange.INDEX if instrument.KIND == "index" else Exchange.DERIVATIVES
         try:
             return self._get_transport().get_expiry_list(instrument.symbol, exchange)
         except RateLimited:
@@ -551,7 +577,7 @@ class DhanBroker(BrokerAdapter):
     def get_long_term_historical(self, instrument, timeframe="1d", from_date=None, to_date=None) -> pd.DataFrame:
         """Longer-dated history via Dhan's dedicated endpoint (dates required)."""
         self._ensure_tsl()
-        exchange = "INDEX" if instrument.KIND == "index" else instrument.exchange
+        exchange = Exchange.INDEX if instrument.KIND == "index" else instrument.exchange
         from_s = from_date.strftime("%Y-%m-%d") if hasattr(from_date, "strftime") else from_date
         to_s = to_date.strftime("%Y-%m-%d") if hasattr(to_date, "strftime") else to_date
         return self._get_transport().get_long_term_historical(

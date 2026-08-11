@@ -485,12 +485,10 @@ def test_executed_price_and_time_propagates_rate_limited():
         order.executed_price_and_time()
 
 
-def test_executed_price_degrades_on_other_errors():
-    """Non-rate errors keep the documented degrade contract: fall back to the
-    order's recorded avg_price instead of raising (D-016 stale-order contract).
-    The broker-level fallback fires when the *transport* raises a non-rate
-    error (the transport itself swallows network errors into 0.0, so this
-    exercises the broker boundary directly)."""
+def test_executed_price_propagates_other_errors():
+    """Non-rate transport errors propagate (H-5): a silent fallback to the
+    order's recorded avg_price would mask a dead broker and feed stale prices
+    into PnL (B-005). Only RateLimited is treated as quota backoff."""
     from unittest.mock import MagicMock
     broker = make_broker()
     broker._transport = MagicMock()
@@ -500,12 +498,13 @@ def test_executed_price_degrades_on_other_errors():
     order = Order(instrument=rel, side=OrderSide.BUY, quantity=75,
                   order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=100.0,
                   order_id="ORD-1", status=OrderStatus.PENDING, avg_price=99.5)
-    assert order.executed_price() == 99.5
+    with pytest.raises(RuntimeError, match="executed price fetch failed"):
+        order.executed_price()
 
 
-def test_executed_price_and_time_degrades_on_other_errors():
-    """Same degrade contract for the price+time pair: (avg_price, "") on a
-    non-rate transport failure."""
+def test_executed_price_and_time_propagates_other_errors():
+    """Same no-swallow contract for the price+time pair: propagate the error
+    rather than returning (avg_price, "")."""
     from unittest.mock import MagicMock
     broker = make_broker()
     broker._transport = MagicMock()
@@ -515,9 +514,8 @@ def test_executed_price_and_time_degrades_on_other_errors():
     order = Order(instrument=rel, side=OrderSide.BUY, quantity=75,
                   order_type=OrderType.LIMIT, trade_type=TradeType.MIS, price=100.0,
                   order_id="ORD-1", status=OrderStatus.PENDING, avg_price=99.5)
-    price, ts = order.executed_price_and_time()
-    assert price == 99.5
-    assert ts == ""
+    with pytest.raises(RuntimeError, match="executed price/time fetch failed"):
+        order.executed_price_and_time()
 
 
 def test_super_order_management_capabilities():

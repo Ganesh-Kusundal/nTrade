@@ -6,7 +6,7 @@ Instruments are created via SymbolMaster so repeated lookups share instances.
 from __future__ import annotations
 
 from datetime import date
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ntrade.domain.instruments.base import Instrument
 from ntrade.domain.instruments.cash import Commodity, Currency, Equity, ETF, Index, Spot
@@ -55,8 +55,12 @@ class InstrumentFactory:
 
     def future(self, underlying: Instrument, expiry: date, **kw) -> Future:
         symbol = kw.pop("symbol", None) or f"{underlying.symbol} {expiry:%d%b%y}"
+        # Commodity underlyings live on MCX; index/stock futures stay on NFO.
+        exchange = kw.pop("exchange", None) or (
+            "MCX" if getattr(underlying, "exchange", None) == "MCX" else "NFO"
+        )
         fut = Future(
-            symbol, exchange="NFO", underlying=underlying.symbol, expiry=expiry,
+            symbol, exchange=exchange, underlying=underlying.symbol, expiry=expiry,
             **_broker_kw(self.broker), **kw,
         )
         fut.set_underlying(underlying)

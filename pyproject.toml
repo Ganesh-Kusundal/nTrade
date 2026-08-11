@@ -21,6 +21,7 @@ dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.2",   # M-4: a hung websocket/retry can never wedge CI
     "pytest-cov>=5.0",       # M-4: coverage floor on ntrade/
+    "httpx2>=0.27",          # starlette TestClient (api/ endpoint + WS tests)
 ]
 ui = [
     "fastapi>=0.110",

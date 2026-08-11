@@ -1,27 +1,80 @@
-# Task 4 (T-015) Report — wire DhanAuthProvider.stop() into shutdown
+# Task 4 Report: Volume-confirmed accumulation
 
-**Commit:** `b2cf7dfe876fde2068ed115c08afdb0eb19856c3`
+## Status: DONE
 
-## `git show --stat HEAD`
+## Commit
+
+`cf88dd7d41c72c057be540ff2fa10b680d7c6856` — `feat: volume-confirmed valentini accumulation`
+
+Exactly two files in the commit:
+- `ntrade/engines/strategies.py` (+13/-1)
+- `tests/test_valentini_leg_anchor.py` (+20)
+
+`tests/test_valentini_strategy.py` was NOT touched and remains unstaged with its pre-existing uncommitted WIP intact.
+
+## Test results
+
+Step 2 (new test, pre-fix, expected FAIL):
 ```
-commit b2cf7dfe876fde2068ed115c08fd0eb19856c3
- ntrade/brokers/dhan.py       | 6 ++++++   (add DhanBroker.stop())
- ntrade/runner/live_runner.py | 4 ++++    (stop brokers in LiveRunner.stop())
- tests/test_dhan_broker.py    | 9 ++++++++ (new test)
- 3 files changed, 19 insertions(+)
+FAILED tests/test_valentini_leg_anchor.py::test_accumulation_requires_recent_volume
+AssertionError: assert 'accumulating' == 'absorbing'
+1 failed in 0.86s
 ```
 
-## Changes
-- `ntrade/brokers/dhan.py:97` — added `DhanBroker.stop()` beside `connect()`/`set_clock()`; it calls `auth.stop()` on `_auth` when present, cancelling the DhanAuthProvider proactive refresh timer (`dhan_auth_provider.py:76`).
-- `ntrade/runner/live_runner.py:140` — in `stop()`, after `kernel.stop(reason=reason)`, iterate `kernel.ctx.instruments_snapshot()` (same pattern as `_on_risk_halted`) and call `broker.stop()` on any `broker_adapter` exposing it.
+Step 4 (leg-anchor suite, post-fix):
+```
+... [100%]
+3 passed in 1.51s
+```
 
-## Test file choice
+Step 5 (zero-parity, ~84s):
+```
+... [100%]
+3 passed in 83.80s (0:01:23)
+```
 
-Added `test_broker_stop_cancels_auth_timer` to **`tests/test_dhan_broker.py`**, not `tests/test_dhan_auth_unit.py`. That file's docstring says it covers the lower-level `dhan_auth` helpers (module-level `dhan_auth` imports, monkeypatched Tradehull), so a broker-level test doesn't belong there. `tests/test_dhan_broker.py` already imports `DhanBroker` and has no network requirement.
+Step 6 (strategy suite, median baseline keeps these green):
+```
+........................ [100%]
+24 passed in 5.94s
+```
 
-## Verification
+## Changes made
 
-- Offline construction confirmed: `DhanBroker(connect=False)` (from `ntrade.brokers.dhan`) succeeds; the test stubs `_auth` with a `Mock` and asserts `stop.assert_called_once()`.
-- Note: `from ntrade.brokers import DhanBroker` does **not** work — `ntrade/brokers/__init__.py` does not re-export it — so the test uses `DhanBroker` already imported in the file (`from ntrade.brokers.dhan import DhanBroker`), matching the brief's allowed alternative.
+`ntrade/engines/strategies.py` `_update_phase`:
+- Added `frame = pd.DataFrame(self._rows)` after `close = float(event.close)`.
+- Replaced the price-only accumulation check with the median-gated version:
+  `recent_vol` = sum of the last 2 bars' volume; `prior_vol` = all bars before
+  those; `avg_vol` = `prior_vol.median()` (empty guard -> 0.0); `vol_ok` =
+  `avg_vol <= 0 or recent_vol >= self.accum_volume_mult * avg_vol`; accumulation
+  requires `elapsed >= 2`, POC proximity (`abs(close - poc) <= 2*step`), AND `vol_ok`.
 
-**Full-suite count:** `627 passed` (baseline 626 + 1 new).
+`tests/test_valentini_leg_anchor.py`: appended `test_accumulation_requires_recent_volume`
+verbatim from the brief.
+
+## Concerns
+
+- None blocking. Verified median (not mean) is used, matching the design note:
+  a mean baseline would have been inflated by the 1500-volume absorption bar and
+  rejected the 300-volume confirmation bar, but median keeps 300 >= 1.5*100 true.
+- The zero-parity path (3000+1000=4000 vs prior median ~1000) still confirms, so
+  entry at `111.0` is unchanged — 3 passed confirms no behavioural drift.
+
+## Fix subagent: review follow-ups (comment + ATR-bound test)
+
+- `ntrade/engines/strategies.py`: profile-build comment now reads
+  `>= leg_impulse_mult * self._step` (the ATR-floored step) instead of the
+  stale `range_size`, keeping the `ponytail:` note intact.
+- `tests/test_valentini_leg_anchor.py`: added
+  `test_impulse_reanchors_leg_when_atr_floor_binds` — `range_size=1.0` with
+  wide volatile bars (high-low 5.0, ATR ~5.0) proves `_step > range_size`
+  (ATR floor binds) then a 14.0-span impulse re-anchors the leg to row 30.
+  Note: initial span 12.0 failed (warmup bars had span 7.0 → ATR 7.0 → thr 14.0);
+  switched warmup to span 5.0 (ATR ~5.0, thr ~10.0) and impulse to span 14.0.
+
+Test results:
+- `python -m pytest tests/test_valentini_leg_anchor.py -q` → `4 passed`
+- `python -m pytest tests/test_valentini_strategy.py -q` → `24 passed`
+- `python -m pytest tests/test_zero_parity_across_modes.py -q` → `3 passed`
+
+Commit: `b57b41ee0c0e6533571bed18a940c59ada23ce7e`

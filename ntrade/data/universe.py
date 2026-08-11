@@ -8,7 +8,6 @@ via :class:`ntrade.factories.InstrumentFactory`.
 from __future__ import annotations
 
 import csv
-from datetime import date
 from pathlib import Path
 
 from ntrade.factories import InstrumentFactory

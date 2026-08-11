@@ -87,6 +87,8 @@ def test_round_trip_fetch_upsert_read(tmp_path, broker):
     # normalize before comparing so the test is dtype-robust across pandas.
     a = df.copy()
     a["timestamp"] = pd.to_datetime(a["timestamp"])
+    # Normalize volume to nullable Int64 to match storage dtype
+    a["volume"] = a["volume"].astype("Int64")
     a = a.sort_values("timestamp")[cols].reset_index(drop=True)
     b = back.sort_values("timestamp")[cols].reset_index(drop=True)
     pd.testing.assert_frame_equal(a, b)

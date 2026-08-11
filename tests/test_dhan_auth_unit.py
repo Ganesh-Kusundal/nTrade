@@ -359,7 +359,7 @@ def test_dead_totp_mint_arms_cooldown(monkeypatch, tmp_path):
         "DHAN_TOTP_SECRET": "AAAA",
     }
     monkeypatch.setattr(dhan_auth, "Tradehull", DeadPinTotp)
-    with pytest.raises(ConnectionError, match="PIN\+TOTP login failed"):
+    with pytest.raises(ConnectionError, match=r"PIN\+TOTP login failed"):
         dhan_auth.get_tradehull(env=env, env_path=str(tmp_path / "nope.env"))
     assert cooldown.exists()
     assert dhan_auth._cooldown_active(str(cooldown))

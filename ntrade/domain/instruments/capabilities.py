@@ -14,8 +14,9 @@ mutable state lives on the Instrument itself.
 
 from __future__ import annotations
 
-from functools import cached_property
 from typing import TYPE_CHECKING, Any
+
+from ntrade.domain.constants import QUOTE_MAX_AGE_S
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -83,7 +84,7 @@ class MarketCapability:
     def mid_price(self) -> float:
         return self._inst._quote.mid_price()
 
-    def is_stale(self, max_age_seconds: float = 5.0, *, now=None) -> bool:
+    def is_stale(self, max_age_seconds: float = QUOTE_MAX_AGE_S, *, now=None) -> bool:
         return self._inst._quote.is_stale(max_age_seconds, now=now)
 
     # ---- lifecycle ----------------------------------------------------------
@@ -139,9 +140,6 @@ class StreamCapability:
 
     def ticks(self, limit: int | None = None) -> list:
         return self._inst._stream.ticks(limit=limit)
-
-    def candle_stream(self) -> "pd.DataFrame":
-        return self._inst._stream.live_ticks_df
 
     @property
     def is_live(self) -> bool:
@@ -220,13 +218,6 @@ class AnalyticsCapability:
 
     def detect_imbalance(self) -> float:
         return self._inst._depth.bid_ask_imbalance()
-
-    def detect_absorption(self, threshold: float = 2.0) -> bool:
-        bb, ba = self._inst._depth.best_bid(), self._inst._depth.best_ask()
-        if bb is None or ba is None or self._inst._quote.volume <= 0:
-            return False
-        top_qty = bb.quantity + ba.quantity
-        return top_qty >= threshold * self._inst._quote.volume
 
     # ---- accessors ----------------------------------------------------------
     @property

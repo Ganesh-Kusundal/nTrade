@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ntrade.execution.rate_limit import Quota
+from ntrade.execution._guard import TotpCooldownGuard, TotpRateLimitError
 
 TOTP_ATTEMPT_COOLDOWN_S = 90
 # Proactive expiry buffer: refresh token if it expires within this window
@@ -84,11 +85,39 @@ def _token_from_shared_store(token_path: str) -> str | None:
         return None
 
 
-def _cooldown_active(cooldown_path: str) -> bool:
+def _totp_guard(cooldown_path: str) -> TotpCooldownGuard | None:
+    """Build a v3 TotpCooldownGuard bound to the same state file nTrade uses.
+
+    Falls back to None when no cooldown_path is configured so PaperBroker /
+    test callers keep working without a state file on disk.
+    """
+    if not cooldown_path:
+        return None
     try:
-        data = json.loads(Path(cooldown_path).read_text())
-        last_attempt = float(data.get("last_attempt_at", 0))
-        return int(time.time()) - last_attempt < TOTP_ATTEMPT_COOLDOWN_S
+        return TotpCooldownGuard(broker="dhan", cooldown_seconds=TOTP_ATTEMPT_COOLDOWN_S,
+                                 state_path=Path(cooldown_path))
+    except Exception:
+        return None
+
+
+def _cooldown_active(cooldown_path: str) -> bool:
+    """Check if TOTP mint is rate-limited by a prior attempt.
+
+    Delegates to v3's cross-process TotpCooldownGuard (file-locked state)
+    instead of an in-process-only timestamp read. Returns True when the
+    cooldown is active (no mint attempt allowed).
+    """
+    guard = _totp_guard(cooldown_path)
+    if guard is None:
+        return False
+    try:
+        guard.check_allowed()
+        return False
+    except TotpRateLimitError:
+        return True
+    except OSError:
+        # Path doesn't exist / can't create lock file — no cooldown active.
+        return False
     except Exception:
         return False
 
@@ -99,9 +128,22 @@ def _arm_cooldown(cooldown_path: str) -> None:
     M-5: failed mint attempts must arm the cooldown too — previously only a
     successful mint persisted it, so a wrong PIN/TOTP could be hammered in a
     tight retry loop and trip Dhan's anti-brute-force lockout.
+
+    Delegates to v3's TotpCooldownGuard for cross-process atomicity. When the
+    guard is unavailable (no state path), degrades to the legacy file write.
     """
     if not cooldown_path:
         return
+    guard = _totp_guard(cooldown_path)
+    if guard is not None:
+        try:
+            guard.acquire_attempt()
+            return
+        except TotpRateLimitError:
+            # Already in cooldown from another process — that's fine; the
+            # lock is held by the other attempt. Return without arming.
+            return
+    # Fallback: legacy plain-file write (no cross-process locking)
     try:
         last_success = 0.0
         try:
@@ -131,7 +173,17 @@ def _persist_shared(token_path: str, cooldown_path: str, token: str, *, source: 
             Path(token_path).parent.mkdir(parents=True, exist_ok=True)
             Path(token_path).write_text(json.dumps(state))
             os.chmod(token_path, 0o600)
-        if cooldown_path:
+        # Record the successful login on the v3 TOTP cooldown guard so the
+        # cooldown reflects a valid mint (not a failed attempt). This prevents
+        # a wrong-PIN retry loop from being gated by its own failure.
+        guard = _totp_guard(cooldown_path)
+        if guard is not None:
+            try:
+                guard.record_success()
+            except Exception:
+                pass
+        elif cooldown_path:
+            # Fallback: legacy plain-file write (no cross-process locking)
             now = time.time()
             Path(cooldown_path).parent.mkdir(parents=True, exist_ok=True)
             Path(cooldown_path).write_text(

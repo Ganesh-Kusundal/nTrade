@@ -23,6 +23,7 @@ from ntrade.factories import InstrumentFactory
 from ntrade.kernel.runner import StrategyRunner
 from ntrade.kernel.session import TradingKernel
 from ntrade.registry import BrokerRegistry
+from ntrade.domain.constants import DEFAULT_TIMEFRAME
 
 if TYPE_CHECKING:
     from ntrade.domain.ports import BrokerAdapter
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from ntrade.domain.instruments.derivatives import Future, Option
     from ntrade.domain.portfolio import Account, Portfolio
     from ntrade.domain.scanner import ScannerFacade
+    from ntrade.domain.screener import ScreenerFacade
     from ntrade.engines.strategy_engine import Strategy
 
 
@@ -51,7 +53,7 @@ class TradingSession:
         mode: str = "live",
         session_id: str = "",
         initial_cash: float = 100_000.0,
-        timeframe: str = "1m",
+        timeframe: str = DEFAULT_TIMEFRAME,
         **kernel_kw: Any,
     ):
         self._broker = broker
@@ -67,6 +69,11 @@ class TradingSession:
         self._factory = InstrumentFactory(broker)
         self._runner = StrategyRunner(self._kernel)
         self._scanner: "ScannerFacade | None" = None
+        self._screener: "ScreenerFacade | None" = None
+        # Back-reference so strategies (which hold ctx, not session) can access
+        # scanners/screeners via self.ctx.session.screener(). Circular but
+        # short-lived — cleared on stop().
+        self._kernel.ctx.session = self
 
     # ============================================================ constructors
 
@@ -79,7 +86,7 @@ class TradingSession:
         env: dict | None = None,
         session_id: str = "",
         initial_cash: float = 100_000.0,
-        timeframe: str = "1m",
+        timeframe: str = DEFAULT_TIMEFRAME,
         **kw: Any,
     ) -> "TradingSession":
         """Create a live session with a named broker adapter."""
@@ -99,7 +106,7 @@ class TradingSession:
         *,
         session_id: str = "paper",
         initial_cash: float = 100_000.0,
-        timeframe: str = "1m",
+        timeframe: str = DEFAULT_TIMEFRAME,
         **kw: Any,
     ) -> "TradingSession":
         """Create a paper-trading session (deterministic, offline)."""
@@ -123,7 +130,7 @@ class TradingSession:
         broker: "BrokerAdapter | None" = None,
         session_id: str = "replay",
         initial_cash: float = 100_000.0,
-        timeframe: str = "1m",
+        timeframe: str = DEFAULT_TIMEFRAME,
         **kw: Any,
     ) -> "TradingSession":
         """Create a replay session that replays *events* through the kernel."""
@@ -246,6 +253,7 @@ class TradingSession:
 
     def stop(self, reason: str = "") -> "TradingSession":
         self._kernel.stop(reason=reason)
+        self._kernel.ctx.session = None  # break back-reference cycle
         return self
 
     # ============================================================ scanner
@@ -256,6 +264,18 @@ class TradingSession:
             from ntrade.domain.scanner import ScannerFacade
             self._scanner = ScannerFacade(self)
         return self._scanner
+
+    def screener(self) -> "ScreenerFacade":
+        """Return the screener facade (lazily created).
+
+        The screener composes multiple scanners into a weighted, ranked
+        watchlist.  It is intentionally separate from ``scanner()`` to
+        preserve scanner/strategy orthogonality.
+        """
+        if self._screener is None:
+            from ntrade.domain.screener import ScreenerFacade
+            self._screener = ScreenerFacade(self)
+        return self._screener
 
     # ============================================================ accessors
 

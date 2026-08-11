@@ -16,6 +16,8 @@ The transport holds a reference to the authenticated Tradehull instance
 
 from __future__ import annotations
 
+import contextlib
+import io
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -34,14 +36,13 @@ from ntrade.brokers.dhan_mapper import (
     _first_int,
     _first_str,
 )
+from ntrade.domain.constants import DERIVATIVE_EXCHANGES
 from ntrade.domain.market.candles import CandleSeries
 from ntrade.domain.market.depth import MarketDepth
 from ntrade.domain.market.quote import Quote
-from ntrade.domain.orders.book import OrderBook, TradeBook
 
 if TYPE_CHECKING:
-    from ntrade.domain.instruments.base import Instrument
-    from ntrade.domain.orders.order import Order
+    pass
 
 
 class BrokerDataError(RuntimeError):
@@ -50,6 +51,25 @@ class BrokerDataError(RuntimeError):
     Raised (never collapsed to a silent zero) so a dead broker or a zero LTP
     cannot feed corrupt prices into PnL / risk computation (B-005 contract).
     """
+
+
+@contextlib.contextmanager
+def _quiet_tsl_prints():
+    """Suppress Tradehull's raw ``print()`` noise on transient failures.
+
+    On a failed fetch the library does ``print(f"Exception at calling
+    ltp/Quote/OHLC as {e}")`` to stdout and swallows the failure into an empty
+    dict. nTrade's own error handling (retry + failure-envelope detection in
+    ``get_ltp``) already covers that path, so the prints are pure terminal
+    noise. The library's ``logger.exception`` calls are NOT suppressed — they
+    go to its own log file (``basicConfig(filename=...)``), untouched.
+
+    Note: ``redirect_stdout`` swaps the process-global ``sys.stdout``, so this
+    is only safe for short, single-threaded windows (each use is one brief
+    library call) — same tradeoff ``dhan_auth`` already accepts.
+    """
+    with contextlib.redirect_stdout(io.StringIO()):
+        yield
 
 
 class DhanTransport:
@@ -128,9 +148,10 @@ class DhanTransport:
         names = [symbol]
 
         def _try_ltp() -> float:
-            data = self._invoke(
-                Quota.QUOTE, lambda: self._tsl.get_ltp_data(names=names),
-            )
+            with _quiet_tsl_prints():
+                data = self._invoke(
+                    Quota.QUOTE, lambda: self._tsl.get_ltp_data(names=names),
+                )
             # The Tradehull SDK does NOT raise on a failed fetch — it prints
             # "Exception at calling ltp as {...}" and returns a failure envelope
             # like {'status': 'failure', 'remarks': {...}, 'data': ''}. Treat any
@@ -166,9 +187,10 @@ class DhanTransport:
         ltp = self.get_ltp(symbol)
         quote = DhanMapper.normalize_quote(ltp, now=self._ts())
         try:
-            qd = self._invoke(
-                Quota.QUOTE, lambda: self._tsl.get_quote_data(names=[symbol]),
-            ).get(symbol, {})
+            with _quiet_tsl_prints():
+                qd = self._invoke(
+                    Quota.QUOTE, lambda: self._tsl.get_quote_data(names=[symbol]),
+                ).get(symbol, {})
             quote = quote.with_update(
                 high=_f(qd.get("high")), low=_f(qd.get("low")),
                 open=_f(qd.get("open")), prev_close=_f(qd.get("close_price")),
@@ -400,9 +422,10 @@ class DhanTransport:
 
     def get_ohlc(self, symbol: str) -> dict:
         try:
-            data = self._invoke(
-                Quota.QUOTE, lambda: self._tsl.get_ohlc_data(names=[symbol]),
-            )
+            with _quiet_tsl_prints():
+                data = self._invoke(
+                    Quota.QUOTE, lambda: self._tsl.get_ohlc_data(names=[symbol]),
+                )
             return dict(data.get(symbol, {}) or {})
         except RateLimited:
             raise
@@ -606,16 +629,16 @@ class DhanTransport:
         try:
             idf = self.instrument_df
             if idf is None:
-                return exchange in ("MCX", "NFO", "BFO")
+                return exchange in DERIVATIVE_EXCHANGES
             exch = DAY_BLOCK_MAPPED_EXCHANGE.get(exchange, exchange)
             df = idf[
                 ((idf["SEM_TRADING_SYMBOL"] == symbol) | (idf["SEM_CUSTOM_SYMBOL"] == symbol))
                 & (idf["SEM_EXM_EXCH_ID"] == exch)
             ]
             if df.empty:
-                return exchange in ("MCX", "NFO", "BFO")
+                return exchange in DERIVATIVE_EXCHANGES
             return "FUT" in str(df.iloc[-1]["SEM_INSTRUMENT_NAME"])
         except RateLimited:
             raise
         except Exception:
-            return exchange in ("MCX", "NFO", "BFO")
+            return exchange in DERIVATIVE_EXCHANGES

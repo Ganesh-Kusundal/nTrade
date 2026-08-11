@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Iterator
 
 import pandas as pd
 
@@ -12,7 +12,6 @@ from ntrade.domain.instruments.derivatives import Option
 from ntrade.domain.instruments.expiry import Expiry, OptionPair
 
 if TYPE_CHECKING:
-    from ntrade.domain.analytics.greeks import Greeks
     from ntrade.domain.instruments.base import Instrument
 
 

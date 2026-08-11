@@ -11,7 +11,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from ntrade.domain.constants import SCAN_THROTTLE_S
 from ntrade.domain.scanner import Scanner, ScannerResult
+
+# Scanner default thresholds — extracted so tests + strategies share one source
+# of truth (previously scattered as magic numbers in each scan() signature).
+DEFAULT_MIN_GAP_PCT: float = 1.0
+DEFAULT_SPIKE_MULTIPLIER: float = 2.0
+DEFAULT_RSI_THRESHOLD: float = 60.0
+DEFAULT_MIN_CHANGE_PCT: float = 1.0
+DEFAULT_IMBALANCE_RATIO: float = 2.0
 
 if TYPE_CHECKING:
     from ntrade.kernel.trading_session import TradingSession
@@ -44,13 +53,13 @@ class GapScanner(Scanner):
 
     A gap is measured as the percentage difference between the current open
     (or LTP if open is unavailable) and the previous close.  The scanner
-    flags gaps exceeding ``min_gap_pct`` (default 1.0%).
+    flags gaps exceeding ``min_gap_pct`` (default 1.0%, see DEFAULT_MIN_GAP_PCT).
     """
 
     name = "gap"
-    rate_limit_seconds = 30.0   # K-022/M6: don't rescan the full universe every tick
+    rate_limit_seconds = SCAN_THROTTLE_S   # K-022/M6: don't rescan the full universe every tick
 
-    def scan(self, session: "TradingSession", *, min_gap_pct: float = 1.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
+    def scan(self, session: "TradingSession", *, min_gap_pct: float = DEFAULT_MIN_GAP_PCT, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
         results: list[ScannerResult] = []
         for inst in _instruments(session):
             ltp = _safe_ltp(inst)
@@ -88,11 +97,10 @@ class VolumeSpikeScanner(Scanner):
     """
 
     name = "volume_spike"
-    rate_limit_seconds = 30.0   # M6: don't rescan the full universe every tick
+    rate_limit_seconds = SCAN_THROTTLE_S   # M6: don't rescan the full universe every tick
 
     def scan(self, session: "TradingSession", *, min_volume: int = 100_000,
-             spike_multiplier: float = 2.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
-        # K-023: ``quote.volume`` is day-cumulative in live mode while
+             spike_multiplier: float = DEFAULT_SPIKE_MULTIPLIER, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:        # K-023: ``quote.volume`` is day-cumulative in live mode while
         # ``avg_volume`` is a per-candle mean — the spike ratio is meaningless
         # live, so live mode relies on the absolute ``min_volume`` fallback
         # only. Backtest/replay bars are per-candle, so the ratio path stays.
@@ -133,10 +141,10 @@ class MomentumScanner(Scanner):
     """
 
     name = "momentum"
-    rate_limit_seconds = 30.0   # M6: don't rescan the full universe every tick
+    rate_limit_seconds = SCAN_THROTTLE_S   # M6: don't rescan the full universe every tick
 
-    def scan(self, session: "TradingSession", *, rsi_threshold: float = 60.0,
-             min_change_pct: float = 1.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
+    def scan(self, session: "TradingSession", *, rsi_threshold: float = DEFAULT_RSI_THRESHOLD,
+             min_change_pct: float = DEFAULT_MIN_CHANGE_PCT, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
         results: list[ScannerResult] = []
         for inst in _instruments(session):
             ltp = _safe_ltp(inst)
@@ -181,7 +189,7 @@ class BreakoutScanner(Scanner):
     """
 
     name = "breakout"
-    rate_limit_seconds = 30.0   # M6: don't rescan the full universe every tick
+    rate_limit_seconds = SCAN_THROTTLE_S   # M6: don't rescan the full universe every tick
 
     def scan(self, session: "TradingSession", *, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
         results: list[ScannerResult] = []
@@ -243,16 +251,16 @@ class ImbalanceScanner(Scanner):
     """
 
     name = "imbalance"
-    rate_limit_seconds = 30.0   # K-022/M6: don't rescan the full universe every tick
+    rate_limit_seconds = SCAN_THROTTLE_S   # K-022/M6: don't rescan the full universe every tick
 
-    def scan(self, session: "TradingSession", *, imbalance_ratio: float = 2.0, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
+    def scan(self, session: "TradingSession", *, imbalance_ratio: float = DEFAULT_IMBALANCE_RATIO, now: datetime | None = None, **kw: Any) -> list[ScannerResult]:
         results: list[ScannerResult] = []
         for inst in _instruments(session):
             depth = inst._depth
             if depth is None or not depth.bids or not depth.asks:
                 continue
-            bid_qty = sum(l.quantity for l in depth.bids)
-            ask_qty = sum(l.quantity for l in depth.asks)
+            bid_qty = sum(level.quantity for level in depth.bids)
+            ask_qty = sum(level.quantity for level in depth.asks)
             if ask_qty == 0:
                 continue
             ratio = bid_qty / ask_qty

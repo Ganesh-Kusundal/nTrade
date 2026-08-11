@@ -106,10 +106,6 @@ class Instrument(ABC):
         return BrokerExtensionFacade(self)
 
     @property
-    def extensions(self) -> "BrokerExtensionFacade":
-        return self.broker
-
-    @property
     def order(self) -> "OrderFacade":
         """Order entry that reads naturally: stock.order.buy(75)."""
         from ntrade.domain.orders.order import OrderFacade
@@ -272,9 +268,6 @@ class Instrument(ABC):
         self._market_status = state
         self._session.enter(state)
         return self
-
-    def serialize(self) -> dict:
-        return self.snapshot()
 
     def tag(self, tag: str) -> "Instrument":
         self._tags.add(tag)

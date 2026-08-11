@@ -79,9 +79,10 @@ describe('valentini state machine', () => {
     const t = r.trades[0]
     expect(t.side).toBe('BUY')
     expect(t.entryIndex).toBe(22)
-    // SL = VAL - step = 108 - 4; TP = 2R from entry (no prior POC in one day).
+    // SL = VAL - step = 108 - 4; no prior-day POC in a single session, so the
+    // entry is a runner (tp null) gated by the R-multiple R:R (2.0 >= minRr).
     expect(t.sl).toBeCloseTo(108.0 - 4.0, 6)
-    expect(t.tp).toBeCloseTo(t.entry + (t.entry - t.sl) * 2.0, 6)
+    expect(t.tp).toBeNull()
     expect(t.rr).toBeCloseTo(2.0, 6)
   })
 
@@ -258,9 +259,10 @@ describe('valentini state machine', () => {
     expect(r.trades).toHaveLength(1)
   })
 
-  it('uses the R-multiple fallback when the prior POC is not a valid target', () => {
+  it('runs with no fixed target when the prior POC is not a valid target', () => {
     // Day 1 builds a profile with POC=112; day 2's BUY entry (~120) is above
-    // the prior POC, so the prior POC cannot be the target -> R-multiple used.
+    // the prior POC, so the prior POC cannot be the target -> the entry is a
+    // runner (tp null), still gated by the R-multiple R:R.
     const day1 = [
       ...Array.from({ length: 10 }, (_, k) => bar(k, 112, { volume: 500, ts: T0 + k * 60 })),
       ...Array.from({ length: 3 }, (_, k) => bar(10 + k, 108, { ts: T0 + (10 + k) * 60 })),
@@ -277,7 +279,7 @@ describe('valentini state machine', () => {
     const r = runValentini([...day1, ...day2], OPTS)
     const t = r.trades[0]
     expect(t.side).toBe('BUY')
-    expect(t.tp).toBeCloseTo(t.entry + (t.entry - t.sl) * 2.0, 6)
+    expect(t.tp).toBeNull()
   })
 })
 
@@ -320,5 +322,29 @@ describe('direction gate', () => {
     ]
     const res = runValentini(cs, { ...OPTS, fadeExtended: false })
     expect(buys(res)).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('auction trail', () => {
+  it('enters a runner (tp null) when no prior-day POC clears minRr', () => {
+    // TS mirror computes the profile from real bars (POC 112, VAL 108), so the
+    // trigger close must sit within 2*step of the POC and carry volume — plain
+    // `candle()` (vol 100, close 122) would fail both the accumulation and the
+    // volume gates and never reach the signal phase.
+    const cs = [...baseSession(), absorptionBar(20, 108), candle(21, { close: 118, volume: 1000 }), candle(22, { close: 120, volume: 1000 })]
+    const res = runValentini(cs, { ...OPTS })
+    const t = res.trades.find((t) => t.side === 'BUY')
+    expect(t).toBeDefined()
+    expect(t!.tp).toBeNull()
+  })
+  it('session close wins over structure break', () => {
+    const cs = [
+      ...baseSession(), absorptionBar(20, 108), candle(21, { close: 118, volume: 1000 }), candle(22, { close: 120, volume: 1000 }),
+      // post-session candle that would also read as a structure break
+      candle(23, { close: 116, open: 122, high: 123, low: 115, ts: OUTSIDE }),
+    ]
+    const res = runValentini(cs, { ...OPTS, sessionEnd: '15:25' })
+    const t = res.trades.find((t) => t.side === 'BUY')
+    expect(t?.reason).toBe('session_close')
   })
 })

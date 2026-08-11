@@ -33,7 +33,7 @@ import { buildVolumeProfile, detectAbsorptions, type Absorption } from './indica
 
 export type ValentiniPhase = 'waiting' | 'absorbing' | 'accumulating' | 'signal'
 
-export type ExitReason = 'stop' | 'target' | 'session_close'
+export type ExitReason = 'stop' | 'target' | 'divergence' | 'structure_break' | 'session_close'
 
 export interface ValentiniTrade {
   side: 'BUY' | 'SELL'
@@ -41,7 +41,8 @@ export interface ValentiniTrade {
   entryIndex: number
   entry: number
   sl: number
-  tp: number
+  /** Target — null for a runner (auction-following trail, no fixed target). */
+  tp: number | null
   rr: number
   /** Exit bar index / price / reason — null while the trade is open. */
   exitIndex: number | null
@@ -201,7 +202,7 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
   let phase: ValentiniPhase = 'waiting'
   let lastAbsorption: Absorption | null = null
   let absorptionWindowIdx = 0
-  let active: { side: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; rr: number } | null = null
+  let active: { side: 'BUY' | 'SELL'; entry: number; sl: number; tp: number | null; rr: number; impulseVolume: number } | null = null
 
   const inSession = (i: number): boolean => {
     const m = istMinuteOfDay(candles[i].time)
@@ -264,6 +265,34 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
     if (struct === null) return vwapSide
     return struct === vwapSide ? vwapSide : null
   }
+  const doneRangeBars = () => rangeBars.filter((b) => b.isComplete)
+  const lastSwingLow = (): number | null => {
+    const d = doneRangeBars()
+    if (d.length < 2) return null
+    return d[d.length - 1].low > d[d.length - 2].low ? d[d.length - 1].low : null
+  }
+  const lastSwingHigh = (): number | null => {
+    const d = doneRangeBars()
+    if (d.length < 2) return null
+    return d[d.length - 1].high < d[d.length - 2].high ? d[d.length - 1].high : null
+  }
+  const divergenceExit = (side: 'BUY' | 'SELL'): boolean => {
+    const d = doneRangeBars()
+    if (d.length < 2) return false
+    const p = d[d.length - 2]
+    const c2 = d[d.length - 1]
+    const impVol = active?.impulseVolume ?? 0
+    if (impVol <= 0) return false
+    if ((c2.volume || 0) >= (opts.divergenceVolumeMult ?? 0.6) * impVol) return false
+    return side === 'BUY' ? c2.high > p.high : c2.low < p.low
+  }
+  const structureBroken = (side: 'BUY' | 'SELL'): boolean => {
+    const d = doneRangeBars()
+    if (d.length < 2) return false
+    const p = d[d.length - 2]
+    const c2 = d[d.length - 1]
+    return side === 'BUY' ? c2.close < p.low : c2.close > p.high
+  }
 
   let dayKey = ''
   for (let i = 0; i < candles.length; i++) {
@@ -320,32 +349,47 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
     if (active) {
       const low = c.low
       const high = c.high
+      // Hard session close FIRST: the gate is absolute and wins over the
+      // conditional auction exits (mirror of strategies.py _manage_exit).
+      if (!inSession(i)) {
+        trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'session_close' }
+        active = null
+        continue
+      }
       if (active.side === 'BUY') {
         if (low <= active.sl) {
           trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: active.sl, reason: 'stop' }
           active = null
-        } else if (high >= active.tp) {
+        } else if (active.tp !== null && high >= active.tp) {
           trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: active.tp, reason: 'target' }
           active = null
-        } else {
-          const half = active.entry + 0.5 * (active.tp - active.entry)
-          if (high >= half && active.sl < active.entry) active.sl = active.entry // trail to breakeven
+        } else if (divergenceExit('BUY')) {
+          trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'divergence' }
+          active = null
+        } else if (structureBroken('BUY')) {
+          trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'structure_break' }
+          active = null
+        } else if (high >= active.entry + (opts.trailArmMult ?? 1.0) * Math.abs(active.entry - active.sl)) {
+          const pivot = lastSwingLow()
+          if (pivot !== null && pivot > active.sl) active.sl = pivot
         }
       } else {
         if (high >= active.sl) {
           trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: active.sl, reason: 'stop' }
           active = null
-        } else if (low <= active.tp) {
+        } else if (active.tp !== null && low <= active.tp) {
           trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: active.tp, reason: 'target' }
           active = null
-        } else {
-          const half = active.entry - 0.5 * (active.entry - active.tp)
-          if (low <= half && active.sl > active.entry) active.sl = active.entry // trail to breakeven
+        } else if (divergenceExit('SELL')) {
+          trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'divergence' }
+          active = null
+        } else if (structureBroken('SELL')) {
+          trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'structure_break' }
+          active = null
+        } else if (low <= active.entry - (opts.trailArmMult ?? 1.0) * Math.abs(active.entry - active.sl)) {
+          const pivot = lastSwingHigh()
+          if (pivot !== null && pivot < active.sl) active.sl = pivot
         }
-      }
-      if (active && !inSession(i)) {
-        trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'session_close' }
-        active = null
       }
       continue
     }
@@ -416,31 +460,27 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
         phase = 'signal'
       }
       if (phase === 'signal') {
-        // Stop: VAL − step (long) / VAH + step (short). Target: prefer the
-        // prior session's POC when its R:R clears minRr, else R-multiple.
+        // Stop: VAL − step (long) / VAH + step (short). Entry is a runner
+        // (tp null) unless the prior session's POC clears minRr.
         const entry = close(i)
         const sl = side === 'BUY'
           ? (sessionVah > sessionVal ? sessionVal - step : lastAbsorption.price - step)
           : (sessionVah > sessionVal ? sessionVah + step : lastAbsorption.price + step)
-        let tp = side === 'BUY'
-          ? entry + (entry - sl) * tpMultiplier
-          : entry - (sl - entry) * tpMultiplier
-        let rr = side === 'BUY'
-          ? (entry > sl ? (tp - entry) / (entry - sl) : 0)
-          : (sl > entry ? (entry - tp) / (sl - entry) : 0)
+        const rrFb = side === 'BUY'
+          ? (entry > sl ? ((entry + (entry - sl) * tpMultiplier) - entry) / (entry - sl) : 0)
+          : (sl > entry ? (entry - ((sl - entry) * tpMultiplier)) / (sl - entry) : 0)
+        let tp: number | null = null
+        let rr = rrFb
         if (priorPoc !== null) {
-          const tpPoc = priorPoc
           const rrPoc = side === 'BUY'
-            ? (entry > sl && tpPoc > entry ? (tpPoc - entry) / (entry - sl) : 0)
-            : (sl > entry && tpPoc < entry ? (entry - tpPoc) / (sl - entry) : 0)
-          if (rrPoc >= minRr) {
-            tp = tpPoc
-            rr = rrPoc
-          }
+            ? (entry > sl && priorPoc > entry ? (priorPoc - entry) / (entry - sl) : 0)
+            : (sl > entry && priorPoc < entry ? (entry - priorPoc) / (sl - entry) : 0)
+          if (rrPoc >= minRr) { tp = priorPoc; rr = rrPoc }
         }
         if (rr >= minRr) {
+          const impulseVolume = dayBars.slice(legStartIdx).reduce((a, b) => a + (b.volume || 0), 0)
           trades.push({ side, entryIndex: i, entry, sl, tp, rr, exitIndex: null, exit: null, reason: null })
-          active = { side, entry, sl, tp, rr }
+          active = { side, entry, sl, tp, rr, impulseVolume }
         }
         phase = 'waiting' // one signal per setup
       }

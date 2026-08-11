@@ -376,7 +376,11 @@ def test_mixed_kind_store_concat_cleanly(tmp_path, broker):
 def test_universe_loader_loads_nifty50():
     """load_universe reads the Nifty 50 CSV and maps symbols to Equity."""
     from ntrade.data import load_universe, available_universes
-    assert "nifty50" in available_universes()
+    # Dependencies/ is gitignored (vendor CSVs) — a fresh clone lacks it.
+    universes = available_universes()
+    if not universes:
+        pytest.skip("universe CSVs not present (Dependencies/ is gitignored)")
+    assert "nifty50" in universes
     universe = load_universe("nifty50")
     assert len(universe) > 0
     assert all(inst.KIND == "equity" for inst in universe)

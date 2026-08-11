@@ -29,10 +29,11 @@ code and fills remain MARKET at `reference_price`.
 
 - New constructor param `leg_impulse_mult: float = 2.0`.
 - Track `self._leg_start_idx` (index into `self._rows`).
-- When a **completed** range bar (`is_complete == True`, excluding the trailing
-  partial) has span `high - low >= leg_impulse_mult * range_size` (an impulse),
-  the leg restarts at that bar's source-row index. Non-impulse bars keep the
-  previous leg.
+- When the last 1m candle has span `high - low >= leg_impulse_mult * range_size`
+  (an impulse), the leg restarts at that candle's row index. Non-impulse
+  candles keep the previous leg. **Detected on 1m candle span, not range-bar
+  span** — a range bar closes the moment its span reaches `range_size`
+  (`range_bars.py:97`), so a completed range bar can never reach `2 × range_size`.
 - `self._leg_start_idx` is clamped to `[0, len(_rows))` — `_rows` is trimmed to
   `max_window` and the index must survive that trim. Out of range → fall back
   to the full frame.
@@ -66,10 +67,14 @@ code and fills remain MARKET at `reference_price`.
   `volume` column:
 
   ```python
+  frame = pd.DataFrame(self._rows)   # local in _update_phase
   recent_vol = float(frame["volume"].iloc[-2:].sum())
-  avg_vol = float(frame["volume"].iloc[:-2].mean())
-  if (elapsed >= 2 and abs(close - poc) <= 2 * step
-          and recent_vol >= self.accum_volume_mult * avg_vol):
+  prior_vol = frame["volume"].iloc[:-2]
+  avg_vol = float(prior_vol.mean()) if len(prior_vol) else 0.0
+  vol_ok = (avg_vol <= 0
+            or recent_vol >= self.accum_volume_mult * avg_vol)
+  if (elapsed >= 2 and abs(close - poc) <= 2 * step and vol_ok):
+      self._phase = "accumulating"
   ```
 
 - Guard `avg_vol <= 0` (no history) → treat volume test as passed rather than

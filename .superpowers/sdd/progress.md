@@ -45,3 +45,31 @@ Task 1 (T-020): complete — removed fake streaming no-op capabilities (_market_
 - Broker Rate Limit follow-up sweep (T-028..T-032): planned — audited ntrade/brokers/dhan.py + capabilities.py for every uncovered broker.tsl.* call site. Result: 22 sites, all in dhan.py capability fns (lines 490-754); capabilities.py is pure registry/facade (0 tsl refs); no other tsl.* sites repo-wide. Classified: 15 ORDER (super/slice/forever/conditional orders + queries), 3 NON_TRADING (kill_switch, enable_pnl_based_exit, margin_calculator), 4 DATA (ATM/ITM/OTM strike, expired_option_data), 0 QUOTE. 5 follow-up cards registered via kanban CLI (T-028 advanced-order placement, T-029 order queries/modify/cancel, T-030 conditional-trigger lifecycle, T-031 account controls NON_TRADING, T-032 strike/expired DATA). Sweep table appended to the plan doc. Not started.
 - Pre-Deployment System Review: COMPLETE (inspection) — verdict CONDITIONAL GO. Reviewed 6 dimensions: R-1 token hygiene PASS (0o600 chmod dhan_auth.py:106/113/125, SoT cache, expiry buffer, cooldown), R-2 kill-switch PASS (ACTIVATE/DEACTIVATE symmetric, all-or-nothing, watchdog), R-3 position-sync PASS (None on error keeps state, never zeroes), R-4 crash recovery PASS (torn-line skip, causal recovery_events, open_order_deltas rebuild), R-5 gate scripts PASS (paper gate exit 1, live_read exit 1 on FAIL), R-6 broker rate limiting BLOCKER (10/s LTP-only, self.tsl bypass, DH-904 retried — T-025..T-032 planned). 3 new findings registered via kanban CLI: B-012 (auth _login_ok probes ungoverned), T-033 (unified pre-deploy gate script), T-034 (DEGRADED fail-closed decision). Plan: docs/superpowers/plans/2026-08-02-pre-deployment-system-review.md. Go-live gates on the Broker Rate Limit batch.
 - Review Findings Sweep (K-020..K-026): PLANNED — 5 parallel code-review agents swept broker/execution/kernel/domain/runner subsystems; ~20 hypotheses verified against source (falsified as already-hardened: SymbolMaster race, moneyness flip, IV solver, DH-904 retry, self.tsl order bypass, gate zero-cash guard). 7 verified findings registered via kanban CLI (all backlog): K-020 P1 bug get_executed_price/_and_time swallow RateLimited->0.0; K-021 P2 debt broker data reads swallow to empty/None (11 methods incl. get_future_script/get_lot_size); K-022 P2 task Gap/Imbalance scanner throttle asymmetry; K-023 P2 debt VolumeSpike live volume-unit mismatch; K-024 P2 debt OrderFacade defaults TradeType.MIS for equities; K-025 P2 debt resample label vs CandleEngine bucketing parity (label='right' only, keep closed='left'); K-026 P3 chore gate._equity_trace write-then-pop. Plan (multi-agent, 4 waves, exclusive file ownership; K-020+K-021 merged into one wave-1 agent on dhan.py): docs/superpowers/plans/2026-08-03-review-findings-sweep.md. Review-fix round applied (wave-table, K-021 scope, K-025 closed param). Baseline 749 passing. Not started.
+# Subagent-Driven Development Progress Ledger
+
+## Plan
+/docs/superpowers/plans/2026-08-10-zero-parity-audit-and-hardening.md
+
+## Tasks
+
+- [ ] Task 1: Fix paper test instrument type (Equity/NSE → Future/NFO)
+- [ ] Task 2: Evaluate risk breakers in backtest loop every bar
+- [ ] Task 3: Timezone-normalize session gate to IST
+- [ ] Task 4: Make order timeout configurable in BrokerExecution
+- [ ] Task 5: Create cross-mode zero-parity verification test
+- [ ] Task 6: Remove dead volume profile code from ValentiniScalper
+- [ ] Task 7: Wire risk params through BacktestSimulator to RiskEngine (merged into Task 2)
+- [ ] Verification: Run full test suite + zero-parity verification
+
+## Notes
+- CallDynamicTool cannot dispatch Task tool (prompt param serialization issue)
+- Executing tasks inline instead
+## Plan: 2026-08-10-zero-parity-fill-price-fix.md
+- [x] Task A-D: reference_price through signal->intent->execution (commit 5fcc987, 15+3 new tests, regression 133 passed)
+- [x] Critical #2: PaperBroker phantom-fill reject (commit d0a5581, test_paper_broker_reject.py 6 tests, 203 regression passed)
+- [x] Task F: SKIPPED (user decision — volume profile is actively used, not dead)
+- [x] Important #1: circuit breaker half-open recovery (commit 1ef6a31, test_breaker_recovery.py 2 tests)
+- [x] Pre-existing WIP failures: futures carry on entry notional + valentini wiring test scenarios aligned to current signal contract (commit 932cff3)
+- Remaining review findings not started: Important #2 zero-price fill, #3 SEBI conversion validation, #4 DH-904 envelope swallowing, #5-7 minor; minor findings triage
+## Plan: 2026-08-11-valentini-amt-corrections.md
+- Task 1: complete (constructor params leg_impulse_mult=2.0/accum_volume_mult=1.5 + state _atr/_step/_leg_start_idx, commit dfe8295, 24 passed, review clean; Minor: _step comment alignment)

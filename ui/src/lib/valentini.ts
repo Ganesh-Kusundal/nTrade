@@ -28,7 +28,7 @@
 
 import type { Candle } from '../types/market'
 import { istDateKey } from './istTime'
-import { calcAutoRange, atrSeries } from './rangeBars'
+import { calcAutoRange, atrSeries, buildRangeBars, swingBias, type RangeBar } from './rangeBars'
 import { buildVolumeProfile, detectAbsorptions, type Absorption } from './indicators'
 
 export type ValentiniPhase = 'waiting' | 'absorbing' | 'accumulating' | 'signal'
@@ -99,6 +99,13 @@ const toMinutes = (hhmm: string): number => {
 function istMinuteOfDay(epochSeconds: number): number {
   const shifted = ((epochSeconds + 19800) % 86400 + 86400) % 86400
   return Math.floor(shifted / 60)
+}
+
+function median(xs: number[]): number {
+  if (xs.length === 0) return 0
+  const s = [...xs].sort((a, b) => a - b)
+  const m = s.length >> 1
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
 }
 
 /** Per-bar session VWAP + ±2σ volume-weighted bands (IST session = trading day). */
@@ -207,6 +214,8 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
   let priorPoc: number | null = null
   let dayBars: Candle[] = []
   let legStartIdx = 0
+  let sessionVwap = 0
+  let rangeBars: RangeBar[] = []
   let profileReady = false
   let sessionPoc = 0
   let sessionVal = 0
@@ -234,6 +243,26 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
       sum += d > 0 ? (cc.volume || 0) : d < 0 ? -(cc.volume || 0) : 0
     }
     return side === 'BUY' ? sum >= 0 : sum <= 0
+  }
+  const volumeSupports = (): boolean => {
+    if (dayBars.length === 0) return false
+    const leg = dayBars.slice(legStartIdx)
+    if (leg.length === 0) return false
+    const prior = dayBars.slice(0, legStartIdx).map((b) => b.volume || 0)
+    const base = prior.length ? median(prior) : 0
+    if (base <= 0) return true
+    const legVol = leg.reduce((a, b) => a + (b.volume || 0), 0)
+    return legVol >= (opts.directionVolumeMult ?? 1.0) * base
+  }
+  const direction = (closePrice: number): 'BUY' | 'SELL' | null => {
+    if (!volumeSupports()) return null
+    const vwapSide = closePrice > sessionVwap
+      ? 'BUY' as const
+      : closePrice < sessionVwap ? 'SELL' as const : null
+    if (vwapSide === null) return null
+    const struct = swingBias(rangeBars)
+    if (struct === null) return vwapSide
+    return struct === vwapSide ? vwapSide : null
   }
 
   let dayKey = ''
@@ -265,6 +294,8 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
       absorptionWindowIdx = 0
       dayBars = []
       legStartIdx = 0
+      sessionVwap = 0
+      rangeBars = []
     }
     // Rebuild today's location profile from the bars seen so far this session.
     dayBars.push(c)
@@ -280,6 +311,8 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
     sessionPoc = prof.poc
     sessionVal = prof.val
     sessionVah = prof.vah
+    sessionVwap = vwap[i]?.vwap ?? 0
+    rangeBars = buildRangeBars(dayBars, rangeSize, { atrPeriod: opts.atrPeriod ?? 14, tickSize: opts.tickSize })
     profileReady = true
 
     // Trade management first — an open position exits on SL/TP/breakeven/
@@ -346,9 +379,15 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
 
     if (phase === 'absorbing' && lastAbsorption) {
       const elapsed = Math.max(i - absorptionWindowIdx, 0)
-      // Accumulation = price near the session POC (guide §4.1).
+      // Accumulation = price near the session POC (guide §4.1), confirmed by
+      // recent-2-bar volume vs the prior-median (guide §4.2).
       if (elapsed >= 2 && Math.abs(close(i) - sessionPoc) <= 2 * step) {
-        phase = 'accumulating'
+        const vols = dayBars.map((b) => b.volume || 0)
+        const recentVol = vols.slice(-2).reduce((a, b) => a + b, 0)
+        const prior = vols.slice(0, -2)
+        const avgVol = prior.length ? median(prior) : 0
+        const volOk = avgVol <= 0 || recentVol >= (opts.accumVolumeMult ?? 1.5) * avgVol
+        if (volOk) phase = 'accumulating'
       } else if (elapsed > absLookback * 3) {
         phase = 'waiting' // setup died — price ran away, expire it
         continue
@@ -366,11 +405,12 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
       if (!v) continue
       // Aggression: VWAP bias + CVD proxy agreement; skip mid-value balance.
       if (inBalance(close(i))) continue
-      if (side === 'BUY' && close(i) > v.vwap) {
+      const dirn = direction(close(i))
+      if (side === 'BUY' && dirn === 'BUY') {
         if (fadeExtended && close(i) > v.upper) continue // extended — wait for pullback
         if (!cvdAgrees('BUY', i)) continue
         phase = 'signal'
-      } else if (side === 'SELL' && close(i) < v.vwap) {
+      } else if (side === 'SELL' && dirn === 'SELL') {
         if (fadeExtended && close(i) < v.lower) continue // extended — wait for pullback
         if (!cvdAgrees('SELL', i)) continue
         phase = 'signal'

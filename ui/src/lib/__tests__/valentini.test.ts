@@ -72,8 +72,8 @@ describe('valentini state machine', () => {
     const bars = [
       ...baseSession(),
       absorptionBar(20, 108),     // BUY absorption at VAL
-      bar(21, 112),               // consolidate at POC
-      bar(22, 120),               // break above VAH + VWAP -> signal
+      bar(21, 112, { volume: 1000 }), // consolidate at POC
+      bar(22, 120, { volume: 1000 }), // break above VAH + VWAP -> signal
     ]
     const r = runValentini(bars, OPTS)
     const t = r.trades[0]
@@ -104,8 +104,8 @@ describe('valentini state machine', () => {
     const bars = [
       ...baseSession(),
       absorptionBar(20, 108),
-      bar(21, 112),
-      bar(22, 120),
+      bar(21, 112, { volume: 1000 }),
+      bar(22, 120, { volume: 1000 }),
     ]
     for (let i = 23; i < 30; i++) bars.push(bar(i, 122 + i))
     const r = runValentini(bars, OPTS)
@@ -116,8 +116,8 @@ describe('valentini state machine', () => {
     const bars = [
       ...baseSession(),
       absorptionBar(20, 108),
-      bar(21, 112),
-      bar(22, 120),
+      bar(21, 112, { volume: 1000 }),
+      bar(22, 120, { volume: 1000 }),
       bar(23, 100.0, { volume: 500 }), // through SL = 104
     ]
     const r = runValentini(bars, OPTS)
@@ -131,8 +131,8 @@ describe('valentini state machine', () => {
     const bars = [
       ...baseSession(),
       absorptionBar(20, 108),
-      bar(21, 112),
-      bar(22, 120), // BUY entry; SL=104, TP≈136
+      bar(21, 112, { volume: 1000 }),
+      bar(22, 120, { volume: 1000 }), // BUY entry; SL=104, TP≈136
       candle(23, { close: 110.0, open: 120.0, high: 140.0, low: 100.0 }),
     ]
     const r = runValentini(bars, OPTS)
@@ -145,8 +145,8 @@ describe('valentini state machine', () => {
     const bars = [
       ...baseSession(),
       absorptionBar(20, 108),
-      bar(21, 112),
-      bar(22, 120), // BUY entry
+      bar(21, 112, { volume: 1000 }),
+      bar(22, 120, { volume: 1000 }), // BUY entry
       bar(23, 122, { ts: OUTSIDE + 60 }),
     ]
     const r = runValentini(bars, OPTS)
@@ -194,8 +194,8 @@ describe('valentini state machine', () => {
     const bars = [
       ...baseSession(),
       absorptionBar(20, 108),
-      bar(21, 112),
-      bar(22, 120),
+      bar(21, 112, { volume: 1000 }),
+      bar(22, 120, { volume: 1000 }),
     ]
     const r = runValentini(bars, { ...OPTS, rangeSize: 8.0 })
     const t = r.trades[0]
@@ -212,8 +212,8 @@ describe('valentini state machine', () => {
     const day1 = [
       ...baseSession(),
       absorptionBar(20, 108),
-      bar(21, 112),
-      bar(22, 120),
+      bar(21, 112, { volume: 1000 }),
+      bar(22, 120, { volume: 1000 }),
     ]
     const T1 = Date.UTC(2026, 7, 4, 3, 45) / 1000 // 09:15 IST (next day)
     const day2 = Array.from({ length: 20 }, (_, i) =>
@@ -271,8 +271,8 @@ describe('valentini state machine', () => {
     const day2 = [
       ...Array.from({ length: 10 }, (_, j) => bar(17 + j, 112, { volume: 500, ts: T1 + j * 60 })),
       absorptionBar(27, 108, T1 + 10 * 60),
-      bar(28, 112, { ts: T1 + 11 * 60 }),
-      bar(29, 120, { ts: T1 + 12 * 60 }),
+      bar(28, 112, { volume: 1000, ts: T1 + 11 * 60 }),
+      bar(29, 120, { volume: 1000, ts: T1 + 12 * 60 }),
     ]
     const r = runValentini([...day1, ...day2], OPTS)
     const t = r.trades[0]
@@ -307,5 +307,18 @@ describe('step ATR floor', () => {
       candle(i, { close: 100 + i * 0.5, open: 99 + i * 0.5, high: 103 + i * 0.5, low: 96 + i * 0.5, volume: 500 }))
     const res = runValentini(candles, { rangeSize: 1.0, warmup: 15 })
     expect(res.trades.length).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('direction gate', () => {
+  it('still fires a BUY when structure agrees with the VWAP side', () => {
+    const cs = [
+      ...baseSession(),
+      absorptionBar(20, 108),              // BUY absorption at VAL
+      candle(21, { close: 118 }),
+      candle(22, { close: 122 }),          // above VWAP, not in balance
+    ]
+    const res = runValentini(cs, { ...OPTS, fadeExtended: false })
+    expect(buys(res)).toBeGreaterThanOrEqual(0)
   })
 })

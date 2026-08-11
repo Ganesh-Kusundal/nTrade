@@ -10,7 +10,8 @@
 
 ## Global Constraints
 
-- Only modify `ntrade/engines/strategies.py` (implementation) and `tests/test_valentini_strategy.py` / `tests/test_valentini_leg_anchor.py` (new tests). No other source file changes.
+- Only modify `ntrade/engines/strategies.py` (implementation) and `tests/test_valentini_leg_anchor.py` (all new tests). No other source file changes.
+- `tests/test_valentini_strategy.py` has uncommitted WIP (202 lines) that must NOT be staged or committed. All plan tests live in the new self-contained `tests/test_valentini_leg_anchor.py`, which redefines its own minimal helpers (kernel/candle/absorption/fixed-profile) — no imports from the WIP file.
 - Existing constructor params must keep their defaults and semantics (`range_size`, `atr_period`, `warmup`, `abs_lookback`, etc.).
 - Zero-parity: `tests/test_zero_parity_across_modes.py` must keep passing (`3 passed`) — fills remain MARKET at `reference_price`, the strategy emits the same signals for the same OHLCV.
 - Existing `tests/test_valentini_strategy.py` must keep passing (`24 passed`) — the 24 current tests mock `build_volume_profile` or use data that does not trigger an impulse, so they are insensitive to the leg anchor. Do not change those tests.
@@ -62,7 +63,6 @@ In the internal-state block (after `self._pending_age: int = 0` at `strategies.p
 
 Run: `python -m pytest tests/test_valentini_strategy.py -q`
 Expected: `24 passed` (new attrs are inert until Tasks 2-4 use them).
-
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -83,9 +83,82 @@ git commit -m "feat: valentini leg-anchor/ATR/volume knobs and state"
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `tests/test_valentini_strategy.py` (new section, after the `_signals` helper):
+Create `tests/test_valentini_leg_anchor.py` with self-contained helpers and the first test:
 
 ```python
+"""ValentiniScalper AMT-correction tests (leg anchor / ATR step / volume accumulation).
+
+Self-contained: redefines its own kernel/candle helpers so it does not import
+from tests/test_valentini_strategy.py (which carries unrelated uncommitted WIP).
+"""
+
+from datetime import datetime, timedelta
+
+from ntrade.domain.instruments.cash import Equity
+from ntrade.engines.strategies import ValentiniScalper
+from ntrade.events.market import CandleClosedEvent, QuoteEvent
+from ntrade.kernel.clock import ReplayClock
+from ntrade.kernel.session import TradingKernel
+
+_TS = datetime(2026, 8, 3, 10, 0)   # within session 09:15-15:25
+_NIFTY = "NIFTY"
+
+
+def _kernel():
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m",
+                      initial_cash=1_000_000.0)
+    k.register(Equity(_NIFTY))
+    return k
+
+
+def _candle(k, i, *, close=None, open_=None, high=None, low=None, volume=100,
+            ts=None):
+    """Publish one 1m closed candle; OHLC default to a small bullish bar."""
+    c = close if close is not None else 100.0 + i * 0.5
+    o = open_ if open_ is not None else c - 0.5
+    h = high if high is not None else max(c, o) + 0.5
+    lo = low if low is not None else min(c, o) - 0.5
+    ts = ts or (_TS + timedelta(minutes=i))
+    k.bus.publish(QuoteEvent(
+        symbol=_NIFTY, exchange="NSE", ltp=c, bid=0.0, ask=0.0,
+        open=o, high=h, low=lo, volume=volume, ts=ts,
+    ))
+    k.bus.publish(CandleClosedEvent(
+        symbol=_NIFTY, exchange="NSE", timeframe="1m",
+        open=o, high=h, low=lo, close=c, volume=volume, ts=ts,
+    ))
+
+
+def _uptrend_bars(k, n=40, start=100.0, step=0.5, volume=100):
+    """Publish n rising candles to build warmup + range bars + profile."""
+    for i in range(n):
+        _candle(k, i, close=start + i * step, volume=volume)
+
+
+def _absorption_bar(k, i, at, volume=1500, span=0.05, ts=None):
+    """Publish a high-volume compressed candle at price ``at`` (absorption)."""
+    _candle(k, i, close=at, open_=at - 0.02, high=at + span,
+            low=at - span, volume=volume, ts=ts)
+
+
+def _fixed_profile(monkeypatch, val, poc, vah, step=4.0):
+    """Force the strategy's volume-profile analysis to a known POC/VAH/VAL
+    (white-box) so the Triple-A location/SL/TP/balance rules are tested in
+    isolation from profile construction."""
+    from ntrade.domain.analytics.volume_profile import VolumeProfile, VPLevel
+    prof = VolumeProfile(
+        levels=tuple(
+            VPLevel(price=p, volume=1.0) for p in (val, poc, vah)
+        ),
+        poc=poc, vah=vah, val=val, step=step,
+    )
+    monkeypatch.setattr(
+        "ntrade.engines.strategies.build_volume_profile",
+        lambda *a, **kw: prof,
+    )
+    return prof
+
+
 # ------------------------------------------------------------------ step (ATR floor)
 
 def test_step_floored_to_atr_when_range_below_atr():
@@ -105,7 +178,7 @@ def test_step_floored_to_atr_when_range_below_atr():
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `python -m pytest tests/test_valentini_strategy.py::test_step_floored_to_atr_when_range_below_atr -q`
+Run: `python -m pytest tests/test_valentini_leg_anchor.py::test_step_floored_to_atr_when_range_below_atr -q`
 Expected: FAIL — `strat._atr` is `0.0` (attr does not exist) → AttributeError.
 
 - [ ] **Step 3: Import `atr`**
@@ -151,13 +224,13 @@ Line 430 (`step = self._range_size or 1.0` in `_emit_entry`) → `step = self._s
 
 - [ ] **Step 6: Run the new test to verify it passes**
 
-Run: `python -m pytest tests/test_valentini_strategy.py -q`
-Expected: PASS — 25 passed (24 existing + 1 new).
+Run: `python -m pytest tests/test_valentini_leg_anchor.py -q`
+Expected: PASS — 1 passed (the single ATR test).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add ntrade/engines/strategies.py tests/test_valentini_strategy.py
+git add ntrade/engines/strategies.py tests/test_valentini_leg_anchor.py
 git commit -m "feat: floor valentini step at 1x ATR (sub-ATR stop guard)"
 ```
 
@@ -179,7 +252,7 @@ it can never reach `2 × range_size`. An impulse must therefore be detected on
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `tests/test_valentini_strategy.py`:
+Append to `tests/test_valentini_leg_anchor.py`:
 
 ```python
 # ------------------------------------------------------------------ leg-anchored profile
@@ -207,7 +280,7 @@ def test_impulse_candle_reanchors_leg():
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `python -m pytest tests/test_valentini_strategy.py::test_impulse_candle_reanchors_leg -q`
+Run: `python -m pytest tests/test_valentini_leg_anchor.py::test_impulse_candle_reanchors_leg -q`
 Expected: FAIL — `strat._leg_start_idx` is `0` (attr exists from Task 1, never updated).
 
 - [ ] **Step 3: Reset leg index on session change**
@@ -260,8 +333,8 @@ In `on_candle_closed`, after `self._range_bars = build_range_bars(...)` (current
 
 - [ ] **Step 6: Run the new test to verify it passes**
 
-Run: `python -m pytest tests/test_valentini_strategy.py -q`
-Expected: PASS — 26 passed. The 24 pre-existing tests still pass because they mock `build_volume_profile` or never produce an impulse.
+Run: `python -m pytest tests/test_valentini_leg_anchor.py -q`
+Expected: PASS — 2 passed (ATR + leg anchor). The 24 pre-existing `test_valentini_strategy.py` tests still pass because they mock `build_volume_profile` or never produce an impulse.
 
 - [ ] **Step 7: Run zero-parity to confirm no regression**
 
@@ -271,7 +344,7 @@ Expected: `3 passed`. The synthetic frame's absorption bar (bar 30) has span 0.1
 - [ ] **Step 8: Commit**
 
 ```bash
-git add ntrade/engines/strategies.py tests/test_valentini_strategy.py
+git add ntrade/engines/strategies.py tests/test_valentini_leg_anchor.py
 git commit -m "feat: leg-anchored volume profile for valentini location"
 ```
 
@@ -288,7 +361,7 @@ git commit -m "feat: leg-anchored volume profile for valentini location"
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `tests/test_valentini_strategy.py`:
+Append to `tests/test_valentini_leg_anchor.py`:
 
 ```python
 # ------------------------------------------------------------------ volume accumulation
@@ -302,7 +375,7 @@ def test_accumulation_requires_recent_volume(monkeypatch):
     _absorption_bar(k, 30, at=110.0, volume=1500)  # absorbing at VAL
     assert strat.phase == "absorbing"
     # Bars 31,32 drift back to the POC on LOW volume (well below 1.5x the
-    # prior median ~100): accumulation must NOT confirm on a dead retrace.
+    # prior mean ~100): accumulation must NOT confirm on a dead retrace.
     _candle(k, 31, close=118.0, volume=30)
     _candle(k, 32, close=118.0, volume=30)
     assert strat.phase == "absorbing"
@@ -313,7 +386,7 @@ def test_accumulation_requires_recent_volume(monkeypatch):
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `python -m pytest tests/test_valentini_strategy.py::test_accumulation_requires_recent_volume -q`
+Run: `python -m pytest tests/test_valentini_leg_anchor.py::test_accumulation_requires_recent_volume -q`
 Expected: FAIL — after bars 31/32, phase is `"accumulating"` (price-only check passes today).
 
 - [ ] **Step 3: Gate accumulation on recent volume**
@@ -341,8 +414,8 @@ Note: `frame` is not currently a local in `_update_phase`. Add at the top of `_u
 
 - [ ] **Step 4: Run the new test to verify it passes**
 
-Run: `python -m pytest tests/test_valentini_strategy.py -q`
-Expected: PASS — 27 passed.
+Run: `python -m pytest tests/test_valentini_leg_anchor.py -q`
+Expected: PASS — 3 passed.
 
 - [ ] **Step 5: Verify zero-parity still passes**
 
@@ -352,7 +425,7 @@ Expected: `3 passed`. In the synthetic frame, bars 30-31 volume is 3000+1000=400
 - [ ] **Step 6: Commit**
 
 ```bash
-git add ntrade/engines/strategies.py tests/test_valentini_strategy.py
+git add ntrade/engines/strategies.py tests/test_valentini_leg_anchor.py
 git commit -m "feat: volume-confirmed valentini accumulation"
 ```
 
@@ -382,8 +455,7 @@ git commit -m "test: tune wiring fixtures for leg-anchored profile"
 
 ## Self-review notes
 
-- **Spec coverage:** Phase 3 (leg profile) = Task 3; Phase 5 (ATR floor) = Task 2; Phase 6 (volume accumulation) = Task 4. Phase 1 (test data fix) and Phase 2 (risk gate) were already complete before this plan and are out of scope. ✔
-- **Placeholder scan:** no TBDs; every code step carries the full block. ✔
+- **Spec coverage:** Phase 3 (leg profile) = Task 3; Phase 5 (ATR floor) = Task 2; Phase 6 (volume accumulation) = Task 4. Phase 1 (test data fix) and Phase 2 (risk gate) were already complete before this plan and are out of scope. ✔- **Placeholder scan:** no TBDs; every code step carries the full block. ✔
 - **Type consistency:** `_atr`, `_step`, `_leg_start_idx` are defined in Task 1, computed in Tasks 2-3, consumed in Tasks 3-4 — same names throughout. `leg_impulse_mult`/`accum_volume_mult` defined in Task 1, used in Tasks 3/4. ✔
 - **ATR floor is lazy:** `calc_auto_range` already returns ≈1× ATR; the floor only clamps an explicit `range_size` below ATR, which is exactly the IL&O-contract case the review targeted. ✔
 - **Leg anchor is lazy:** single-candle span heuristic on 1m candles (range-bar spans can't reach 2× by construction). Multi-candle momentum detection deferred — `ponytail:` comment documents the ceiling. ✔

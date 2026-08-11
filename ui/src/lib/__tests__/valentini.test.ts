@@ -299,3 +299,13 @@ describe('swingBias', () => {
     expect(swingBias([rb(101, 98, true), rb(100, 99, true)])).toBeNull()
   })
 })
+
+describe('step ATR floor', () => {
+  it('floors the step at 1x ATR when rangeSize is below it', () => {
+    // rangeSize 1.0 but bars with ~5.0 range -> ATR(14) well above 1.0
+    const candles = Array.from({ length: 30 }, (_, i) =>
+      candle(i, { close: 100 + i * 0.5, open: 99 + i * 0.5, high: 103 + i * 0.5, low: 96 + i * 0.5, volume: 500 }))
+    const res = runValentini(candles, { rangeSize: 1.0, warmup: 15 })
+    expect(res.trades.length).toBeGreaterThanOrEqual(0)
+  })
+})

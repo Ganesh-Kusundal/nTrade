@@ -6,6 +6,8 @@ from tests/test_valentini_strategy.py (which carries unrelated uncommitted WIP).
 
 from datetime import datetime, timedelta
 
+import pandas as pd
+
 from ntrade.domain.instruments.cash import Equity
 from ntrade.engines.strategies import ValentiniScalper
 from ntrade.events.market import CandleClosedEvent, QuoteEvent
@@ -148,3 +150,46 @@ def test_accumulation_requires_recent_volume(monkeypatch):
     # A high-volume test of the POC confirms the move -> accumulating.
     _candle(k, 33, close=118.0, volume=300)
     assert strat.phase == "accumulating"
+
+
+def _fills(k):
+    from ntrade.events.order import OrderFilledEvent
+    return [e for e in k.bus.history if isinstance(e, OrderFilledEvent)]
+
+
+def _signals(k):
+    from ntrade.events.risk import SignalGeneratedEvent
+    return [e for e in k.bus.history if isinstance(e, SignalGeneratedEvent)]
+
+
+# ------------------------------------------------------------------ swing bias
+
+def test_swing_bias_bullish_on_higher_high_and_low():
+    from ntrade.domain.analytics.range_bars import swing_bias
+    bars = pd.DataFrame({
+        "high": [100.0, 101.0], "low": [99.0, 100.0],
+        "close": [100.5, 100.8], "is_complete": [True, True],
+    })
+    assert swing_bias(bars) == "BUY"
+
+
+def test_swing_bias_bearish_on_lower_high_and_low():
+    from ntrade.domain.analytics.range_bars import swing_bias
+    bars = pd.DataFrame({
+        "high": [101.0, 100.0], "low": [100.0, 99.0],
+        "close": [100.8, 99.8], "is_complete": [True, True],
+    })
+    assert swing_bias(bars) == "SELL"
+
+
+def test_swing_bias_indeterminate():
+    from ntrade.domain.analytics.range_bars import swing_bias
+    # fewer than two completed bars -> no vote
+    bars = pd.DataFrame({"high": [100.0], "low": [99.0],
+                         "close": [99.5], "is_complete": [True]})
+    assert swing_bias(bars) is None
+    # incomplete latest bar is excluded -> only one completed -> None
+    bars2 = pd.DataFrame({"high": [100.0, 102.0], "low": [99.0, 101.0],
+                          "close": [99.5, 101.5],
+                          "is_complete": [True, False]})
+    assert swing_bias(bars2) is None

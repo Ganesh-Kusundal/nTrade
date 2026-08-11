@@ -114,3 +114,25 @@ def build_range_bars(df: pd.DataFrame, range_size: float | None = None,
     out["timestamp"] = out["ts"]
     out["volume"] = out["volume"].round(4)
     return out[_BAR_COLUMNS].reset_index(drop=True)
+
+
+def swing_bias(bars: pd.DataFrame) -> str | None:
+    """Directional vote from the last two COMPLETED range bars.
+
+    Bullish when the latest completed bar makes a higher high AND a higher low
+    than the prior; bearish on a lower high + lower low; ``None`` otherwise
+    (fewer than two completed bars, or an inside/outside bar — no vote).
+    """
+    if bars is None or bars.empty or "is_complete" not in bars:
+        return None
+    done = bars[bars["is_complete"].astype(bool)]
+    if len(done) < 2:
+        return None
+    p, c = done.iloc[-2], done.iloc[-1]
+    ph, pl = float(p["high"]), float(p["low"])
+    ch, cl = float(c["high"]), float(c["low"])
+    if ch > ph and cl > pl:
+        return "BUY"
+    if ch < ph and cl < pl:
+        return "SELL"
+    return None

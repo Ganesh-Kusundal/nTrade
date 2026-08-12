@@ -336,6 +336,7 @@ describe('auction trail', () => {
     const t = res.trades.find((t) => t.side === 'BUY')
     expect(t).toBeDefined()
     expect(t!.tp).toBeNull()
+    expect(t!.rr).toBeCloseTo(OPTS.tpMultiplier!, 6) // runner R:R collapses to tp_multiplier
   })
   it('session close wins over structure break', () => {
     const cs = [

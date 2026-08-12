@@ -523,7 +523,7 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
           : (sessionVah > sessionVal ? sessionVah + step : lastAbsorption.price + step)
         const rrFb = side === 'BUY'
           ? (entry > sl ? ((entry + (entry - sl) * tpMultiplier) - entry) / (entry - sl) : 0)
-          : (sl > entry ? (entry - ((sl - entry) * tpMultiplier)) / (sl - entry) : 0)
+          : (sl > entry ? (entry - (entry - (sl - entry) * tpMultiplier)) / (sl - entry) : 0)
         let tp: number | null = null
         let rr = rrFb
         if (priorPoc !== null) {

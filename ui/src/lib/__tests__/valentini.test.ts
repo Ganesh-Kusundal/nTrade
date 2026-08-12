@@ -347,6 +347,48 @@ describe('auction trail', () => {
     const t = res.trades.find((t) => t.side === 'BUY')
     expect(t?.reason).toBe('session_close')
   })
+  it('exits on a structure break: a completed bar closes through the prior low', () => {
+    // White-box: after the runner entry, inject a completed range-bar series
+    // whose latest bar CLOSES below the prior bar's low (structure break).
+    // Volume is HIGH (8000 > 0.6 x impulseVolume ~6660) so the divergence
+    // gate does not preempt it.
+    const cs = [
+      ...baseSession(), absorptionBar(20, 108), candle(21, { close: 118, volume: 1000 }), candle(22, { close: 120, volume: 1000 }),
+      candle(23, { close: 118.5, open: 121, high: 122, low: 118, volume: 8000 }),
+    ]
+    const res = runValentini(cs, {
+      ...OPTS,
+      injectedRangeBars: [
+        { time: 0, open: 0, high: 116, low: 114, close: 115.5, volume: 100, isComplete: true },
+        { time: 0, open: 0, high: 120, low: 117, close: 119, volume: 100, isComplete: true },
+        { time: 0, open: 0, high: 124, low: 121, close: 123, volume: 100, isComplete: true },
+        { time: 0, open: 0, high: 127, low: 119, close: 118.5, volume: 8000, isComplete: true },
+      ],
+    })
+    const t = res.trades.find((t) => t.side === 'BUY')
+    expect(t?.reason).toBe('structure_break')
+  })
+  it('exits on volume-price divergence: a new high on weak volume', () => {
+    // White-box series ends with a HIGHER high (127) on weak volume (100);
+    // the same bar's close (126) is NOT below the prior low (121) so the
+    // structure-break gate does not preempt it. impulseVolume at entry
+    // ~11100, so divergence fires when bar volume < 0.6 x 11100 = 6660.
+    const cs = [
+      ...baseSession(), absorptionBar(20, 108), candle(21, { close: 118, volume: 1000 }), candle(22, { close: 120, volume: 1000 }),
+      candle(23, { close: 128, open: 126.5, high: 129, low: 126, volume: 80 }),
+    ]
+    const res = runValentini(cs, {
+      ...OPTS,
+      injectedRangeBars: [
+        { time: 0, open: 0, high: 116, low: 114, close: 115.5, volume: 100, isComplete: true },
+        { time: 0, open: 0, high: 120, low: 117, close: 119, volume: 100, isComplete: true },
+        { time: 0, open: 0, high: 124, low: 121, close: 123, volume: 100, isComplete: true },
+        { time: 0, open: 0, high: 127, low: 122, close: 126, volume: 100, isComplete: true },
+      ],
+    })
+    const t = res.trades.find((t) => t.side === 'BUY')
+    expect(t?.reason).toBe('divergence')
+  })
 })
 
 describe('reversal', () => {

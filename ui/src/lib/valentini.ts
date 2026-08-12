@@ -8,8 +8,9 @@
  *   waiting → absorbing (absorption bar seen) → accumulating (price
  *   consolidates back near the absorption level for 2+ bars) → signal
  *   (aggression: close beyond VWAP in the absorption's direction, not
- *   extended past the ±2σ band) → entry with SL/TP → managed exit
- *   (stop / target / 0.5R breakeven trail / hard session close).
+ *   extended past the ±2σ band) → entry (runner unless prior-POC clears
+ *   minRr) → auction-following exit (stop / target / volume divergence /
+ *   structure break / swing-pivot trail / hard session close).
  *
  * STRICTLY INTRADAY: the machine is reset at every IST day boundary — an
  * open trade is force-closed at the prior day's close, the phase is wiped,
@@ -92,6 +93,11 @@ export interface ValentiniOptions {
   /** Starting realized day PnL (white-box; the mirror has no broker fills, so
    *  tests seed it — mirrors Python's `_day_pnl = 5000.0` white-box setup). */
   initialDayPnl?: number
+  /** White-box override of the completed range-bar series used by the swing /
+   *  divergence / structure-break exits — mirrors Python's `_fixed_profile`
+   *  test pattern. When given, it replaces the per-candle `buildRangeBars`
+   *  result (which is otherwise wiped by the recompute each candle). */
+  injectedRangeBars?: RangeBar[]
 }
 
 const toMinutes = (hhmm: string): number => {
@@ -375,16 +381,17 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
       if (dayBars[k].high - dayBars[k].low >= impThr) { legStart = k; break }
     }
     legStartIdx = legStart
-    const prof = buildVolumeProfile(dayBars.slice(legStartIdx), rangeSize || undefined)
+    const prof = buildVolumeProfile(dayBars.slice(legStartIdx), step)
     sessionPoc = prof.poc
     sessionVal = prof.val
     sessionVah = prof.vah
     sessionVwap = vwap[i]?.vwap ?? 0
-    rangeBars = buildRangeBars(dayBars, rangeSize, { atrPeriod: opts.atrPeriod ?? 14, tickSize: opts.tickSize })
+    rangeBars = opts.injectedRangeBars ?? buildRangeBars(dayBars, rangeSize, { atrPeriod: opts.atrPeriod ?? 14, tickSize: opts.tickSize })
     profileReady = true
 
-    // Trade management first — an open position exits on SL/TP/breakeven/
-    // session close and blocks new entries.
+    // Trade management first — an open position exits on session-close /
+    // stop / target / divergence / structure-break / swing-pivot trail and
+    // blocks new entries.
     if (active) {
       const low = c.low
       const high = c.high

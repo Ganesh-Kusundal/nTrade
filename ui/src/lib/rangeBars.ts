@@ -20,18 +20,32 @@ export interface RangeBar extends Candle {
  * exist (min_periods = period), matching the backend's pandas ewm.
  */
 export function atrSeries(candles: Candle[], period = 14): number[] {
+  // pandas ewm(alpha=1/period, min_periods=period, adjust=True).mean() over
+  // the true-range series — the adjust=True (default) form is a normalized
+  // weighted mean y_t = Σ_{j≤t} (1-α)^(t-j) x_j / Σ_{j≤t} (1-α)^j, NOT the
+  // Wilder recursion (adjust=False). The two diverge ~25% for the first
+  // 30-50 bars; matching pandas keeps the ATR floor (and thus SL distance /
+  // value-edge / reversal thresholds) in lockstep with the backend.
   const out: number[] = []
-  let prevClose = Number.NaN
-  let ewm = Number.NaN
   const alpha = 1 / period
+  let prevClose = Number.NaN
+  let x = 0 // Σ (1-α)^k over all x_j (renormalized on the fly, see below)
+  let w = 0 // Σ (1-α)^k weights
+  const trs: number[] = []
   for (let i = 0; i < candles.length; i++) {
     const c = candles[i]
     const tr = Number.isNaN(prevClose)
       ? c.high - c.low
       : Math.max(c.high - c.low, Math.abs(c.high - prevClose), Math.abs(c.low - prevClose))
     prevClose = c.close
-    ewm = Number.isNaN(ewm) ? tr : ewm * (1 - alpha) + tr * alpha
-    out.push(i >= period - 1 ? ewm : Number.NaN)
+    trs.push(tr)
+  }
+  // Adjusted EWMA (pandas default): y_t = (x_t + (1-a)x_{t-1} + ... + (1-a)^t x_0) / (1 + (1-a) + ... + (1-a)^t).
+  for (let t = 0; t < trs.length; t++) {
+    const a = trs[t]
+    w = 1 + (1 - alpha) * w
+    x = x * (1 - alpha) + a
+    out.push(t >= period - 1 ? x / w : Number.NaN)
   }
   return out
 }

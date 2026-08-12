@@ -928,8 +928,8 @@ class GainzCloneStrategy(Strategy):
     # ------------------------------------------------------------- internals
     def _enter(self, event, side: str, entry: float, atr_now: float) -> None:
         sl_dist = atr_now * self.sl_mult
-        if sl_dist <= 0:
-            return
+        if not sl_dist > 0:
+            return  # NaN or non-positive ATR never arms a degenerate stop
         sl = entry - sl_dist if side == "BUY" else entry + sl_dist
         tp = entry + sl_dist * self.tp_ratio if side == "BUY" else entry - sl_dist * self.tp_ratio
         self._active = {"side": side, "entry": entry, "sl": sl, "tp": tp,

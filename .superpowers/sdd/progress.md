@@ -99,3 +99,4 @@ Task 1 (T-020): complete — removed fake streaming no-op capabilities (_market_
 ## Multi-agent review (2026-08-12): 4 parallel agents (strategy fidelity, kernel/flows, TS mirror, repo smells)
 - TS SELL rr_fb parity bug FIXED in cf73f67 (computed 18.0 vs 2.0, defeated minRr for SELL runners).
 - Key findings (detail in final report): 2 critical python strategy crashes (GainzClone .time() missing parens + missing hma/rsi imports - BOTH pre-existing WIP, zero tests); 2 critical parity/flow bugs (paper sync wipes positions, backtest 10k-event history truncation); divergence-exit benchmark bug (range-bar vol vs leg-sum); session-rollover rows never cleared (morning contamination); static TS step lookahead.
+## Plan: 2026-08-12-priority1-fixes.md

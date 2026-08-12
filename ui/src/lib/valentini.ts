@@ -358,7 +358,12 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
       sessionVwap = 0
       rangeBars = []
       dayPnl = opts.initialDayPnl ?? 0
-      dayPnlSettled = 0
+      // Mark every trade already on record as settled: `trades` persists
+      // across days, so resetting the counter to 0 would re-add every prior
+      // day's realized PnL into the new day's `dayPnl` on its first bar
+      // (making the reversal gate "profitable ever", not "profitable today" —
+      // diverging from Python's per-session `_day_pnl = 0.0` reset).
+      dayPnlSettled = trades.length
     }
     // Rebuild today's location profile from the bars seen so far this session.
     dayBars.push(c)

@@ -352,27 +352,18 @@ def test_volume_divergence_exit(monkeypatch):
 
 def test_divergence_not_fired_on_normal_volume_followthrough(monkeypatch):
     k = _kernel()
-    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15,
-                             tp_multiplier=2.0, min_rr=1.5, fade_extended=False)
-    k.register_strategy(strat)
-    _fixed_profile(monkeypatch, val=110.0, poc=118.0, vah=126.0)
-    _uptrend_bars(k, 30)
-    _absorption_bar(k, 30, at=110.0)
-    _candle(k, 31, close=118.0)                  # BUY entry at 122; the leg
-    _candle(k, 32, close=122.0)                  # (rows 0-32) means ~142 vol
+    strat, _ = _runner_long(k, monkeypatch)      # BUY entry at 122; the leg
+    # (rows 0-32) means ~142 vol (30x100 + 1500 absorption + 2x100).
     # A higher-high range bar at NORMAL volume (100 >= 0.6 x ~142 = 85) must
     # NOT trigger divergence — the old leg-SUM benchmark (0.6 x 4700) would
     # see 100 as weak and wrongly exit the runner.
-    monkeypatch.setattr(
-        "ntrade.engines.strategies.build_range_bars",
-        lambda *a, **kw: pd.DataFrame({
-            "high": [116.0, 120.0, 124.0, 127.0],
-            "low":  [114.0, 117.0, 121.0, 122.0],
-            "close":[115.5, 119.0, 123.0, 126.0],
-            "volume":[100.0, 100.0, 100.0, 100.0],
-            "is_complete":[True, True, True, True],
-        }),
-    )
+    _install_range_bars(monkeypatch, pd.DataFrame({
+        "high": [116.0, 120.0, 124.0, 127.0],
+        "low":  [114.0, 117.0, 121.0, 122.0],
+        "close":[115.5, 119.0, 123.0, 126.0],
+        "volume":[100.0, 100.0, 100.0, 100.0],
+        "is_complete":[True, True, True, True],
+    }))
     _candle(k, 33, close=128.0, open_=126.5, high=129.0, low=126.0, volume=100)
     sells = [f for f in _fills(k) if f.side == "SELL"]
     assert not sells, f"normal-volume followthrough must NOT exit via divergence, got {len(sells)} sells"

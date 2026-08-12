@@ -645,7 +645,7 @@ class ValentiniScalper(Strategy):
         entry = float(event.close)
         step = self._step
         leg = pd.DataFrame(self._rows).iloc[self._leg_start_idx:]
-        impulse_volume = float(leg["volume"].sum()) if not leg.empty else 0.0
+        impulse_volume = float(leg["volume"].mean()) if not leg.empty else 0.0
         p = self._profile
         val = p.val if p else None
         vah = p.vah if p else None

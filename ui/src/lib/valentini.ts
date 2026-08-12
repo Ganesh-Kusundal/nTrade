@@ -533,7 +533,14 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
           if (rrPoc >= minRr) { tp = priorPoc; rr = rrPoc }
         }
         if (rr >= minRr) {
-          const impulseVolume = dayBars.slice(legStartIdx).reduce((a, b) => a + (b.volume || 0), 0)
+          // Per-bar MEAN benchmark (mirror of strategies.py _emit_entry): the
+          // divergence exit compares a range bar's volume against 0.6x the
+          // leg's AVERAGE bar volume — not the leg SUM, which inflated the
+          // threshold and exited every normal higher-high bar as "weak".
+          const leg = dayBars.slice(legStartIdx)
+          const impulseVolume = leg.length > 0
+            ? leg.reduce((a, b) => a + (b.volume || 0), 0) / leg.length
+            : 0
           trades.push({ side, entryIndex: i, entry, sl, tp, rr, exitIndex: null, exit: null, reason: null })
           active = { side, entry, sl, tp, rr, impulseVolume }
         }

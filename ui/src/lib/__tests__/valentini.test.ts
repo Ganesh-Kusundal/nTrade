@@ -351,8 +351,8 @@ describe('auction trail', () => {
   it('exits on a structure break: a completed bar closes through the prior low', () => {
     // White-box: after the runner entry, inject a completed range-bar series
     // whose latest bar CLOSES below the prior bar's low (structure break).
-    // Volume is HIGH (8000 > 0.6 x impulseVolume ~6660) so the divergence
-    // gate does not preempt it.
+    // Volume is HIGH (8000 > 0.6 x impulseVolume ~483 = 290, the per-bar mean
+    // benchmark) so the divergence gate does not preempt it.
     const cs = [
       ...baseSession(), absorptionBar(20, 108), candle(21, { close: 118, volume: 1000 }), candle(22, { close: 120, volume: 1000 }),
       candle(23, { close: 118.5, open: 121, high: 122, low: 118, volume: 8000 }),
@@ -372,8 +372,9 @@ describe('auction trail', () => {
   it('exits on volume-price divergence: a new high on weak volume', () => {
     // White-box series ends with a HIGHER high (127) on weak volume (100);
     // the same bar's close (126) is NOT below the prior low (121) so the
-    // structure-break gate does not preempt it. impulseVolume at entry
-    // ~11100, so divergence fires when bar volume < 0.6 x 11100 = 6660.
+    // structure-break gate does not preempt it. impulseVolume at entry is
+    // the per-bar MEAN of the 23-bar leg (~11100/23 = 483), so divergence
+    // fires when bar volume < 0.6 x 483 = 290.
     const cs = [
       ...baseSession(), absorptionBar(20, 108), candle(21, { close: 118, volume: 1000 }), candle(22, { close: 120, volume: 1000 }),
       candle(23, { close: 128, open: 126.5, high: 129, low: 126, volume: 80 }),

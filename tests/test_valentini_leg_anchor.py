@@ -387,6 +387,26 @@ def test_new_session_profile_excludes_prior_day_bars():
         f"day-2 rows must exclude prior-day bars, got {len(strat._rows)} rows spanning multiple days"
 
 
+def test_rollover_does_not_carry_day1_absorption_into_day2(monkeypatch):
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15)
+    k.register_strategy(strat)
+    _fixed_profile(monkeypatch, val=110.0, poc=118.0, vah=126.0)
+    # Day 1 ends with an absorption at VAL: the pre-clear frame on the
+    # rollover candle holds it at bar_index ~199, but _rows is cleared to 1
+    # row — so _update_phase's recency filter (bar_index >= window_len -
+    # abs_lookback = -4) would let it arm day 2 unless the rollover wipes
+    # the absorption/phase state.
+    for i in range(199):
+        _candle(k, i, close=100.0 + i * 0.05, volume=100)
+    _absorption_bar(k, 199, at=110.0)
+    assert strat._absorptions, "day-1 absorption must exist for the contamination probe"
+    ts2 = _TS + timedelta(days=1)
+    _candle(k, 300, close=250.0, volume=100, ts=ts2)
+    assert strat._last_absorption is None, "day-1 absorption must not arm day 2"
+    assert strat.phase == "waiting"
+
+
 # ------------------------------------------------------------------ reversal
 
 def test_reversal_not_armed_without_day_profit():

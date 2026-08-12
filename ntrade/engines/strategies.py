@@ -439,6 +439,7 @@ class ValentiniScalper(Strategy):
         # Session key (IST date) drives the location profile. On a new day we
         # stash the prior-session POC as the aggression target and drop the
         # stale profile so today's value area is rebuilt from scratch.
+        rolled_over = False
         key = self._session_key_of(event.ts)
         if key != self._session_key:
             if self._profile is not None:
@@ -451,13 +452,25 @@ class ValentiniScalper(Strategy):
                 # A genuine session rollover resets the realized day PnL and
                 # drops prior-day bars so today's profile/VWAP/SL are built
                 # from today's auction only (the current bar was appended at
-                # the top of on_candle_closed, so keep only it). The FIRST
-                # session must not wipe a white-box _day_pnl (or the PnL gate
-                # would never arm on warm-up day one) — and must not clear
-                # _rows, which would re-trigger the warmup gate and skip
-                # the next warmup-1 candles.
+                # the top of on_candle_closed, so keep only it). The phase
+                # machine is wiped too — the absorption recompute below runs
+                # on the pre-clear frame, so without the post-recompute drop
+                # (see rolled_over below) its day-1 bar_index coords would
+                # let _update_phase arm EVERY day-1 absorption against the
+                # tiny post-clear window_len (profile cleared =>
+                # _value_edge_ok true). The FIRST session must not wipe a
+                # white-box _day_pnl (or the PnL gate would never arm on
+                # warm-up day one) — and must not clear _rows, which would
+                # re-trigger the warmup gate and skip the next warmup-1
+                # candles. NOTE: a fresh session re-warms for its first
+                # `warmup` bars (analytics stay silent while today's rows
+                # accumulate) — intended: no stale day-1 context.
+                rolled_over = True
                 self._day_pnl = 0.0
                 self._rows[:] = [self._rows[-1]]
+                self._last_absorption = None
+                self._absorption_window_idx = None
+                self._phase = "waiting"
         step = self._step
         self._range_bars = build_range_bars(
             frame, range_size=self._range_size,
@@ -499,6 +512,13 @@ class ValentiniScalper(Strategy):
             frame, avg_volume_mult=self.abs_volume_mult,
             range_threshold=self.abs_range_threshold,
             range_size=self._range_size)
+        if rolled_over:
+            # The recompute just above used the pre-clear frame (prior-day
+            # rows), so its bar_index coords would make every day-1
+            # absorption look "recent" to _update_phase/_maybe_reverse (the
+            # _rows clear left window_len at 1). Drop them — today's
+            # absorptions are detected from fresh frames as they accumulate.
+            self._absorptions = []
         # CVD proxy (OHLCV): signed volume delta over the confirm window. The
         # aggression leg requires it to agree with the VWAP direction.
         self._cvd = float("nan")

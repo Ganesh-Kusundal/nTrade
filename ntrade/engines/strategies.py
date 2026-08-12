@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from ntrade.domain.analytics.indicators import atr, vwap, vwap_bands
+from ntrade.domain.analytics.indicators import atr, hma, rsi, vwap, vwap_bands
 from ntrade.domain.analytics.order_flow import detect_absorptions, cvd_from_ohlcv
 from ntrade.domain.analytics.range_bars import (
     build_range_bars, calc_auto_range, swing_bias)
@@ -814,6 +814,287 @@ class ValentiniScalper(Strategy):
             symbol=event.symbol, exchange=event.exchange, side=side,
             quantity=act["qty"], price=0.0,  # MARKET
             reference_price=float(event.close),  # bar close from CandleClosedEvent
+            exit_reason=reason, intent_price=price,
+        )
+        self._active = None
+
+
+class GainzCloneStrategy(Strategy):
+    """Clone of the public 'GainzAlgo V2 Alpha' spec — HMA baseline + ATR
+    volatility gate + RSI/VWAP momentum + candle-close execution.
+
+    NOTE: the real GainzAlgo source is invite-only/encrypted. This is the
+    *documented* clone logic (HMA + ATR filter + RSI/VWAP), which differs
+    from leaked Alpha copies (engulfing-based). It is a research harness to
+    measure the documented logic on NIFTY futures — not a recommendation and
+    not financial advice. Built on the canonical ``Strategy`` so it runs
+    identically in backtest/replay/live.
+    """
+
+    name = "gainz_clone"
+
+    def __init__(self, *, symbol: str | None = None, exchange: str = "NFO",
+                 hma_period: int = 21, atr_period: int = 14,
+                 atr_gate_period: int = 20, rsi_period: int = 14,
+                 sl_mult: float = 1.5, tp_ratio: float = 2.0,
+                 quantity: int = 1, session_start: str = "09:15",
+                 session_end: str = "15:25", warmup: int = 30):
+        super().__init__()
+        self.symbol = symbol
+        self.exchange = exchange
+        self.hma_period = int(hma_period)
+        self.atr_period = int(atr_period)
+        self.atr_gate_period = int(atr_gate_period)
+        self.rsi_period = int(rsi_period)
+        self.sl_mult = float(sl_mult)
+        self.tp_ratio = float(tp_ratio)
+        self.quantity = max(1, int(quantity))
+        self.session_start = datetime.strptime(session_start, "%H:%M").time()
+        self.session_end = datetime.strptime(session_end, "%H:%M").time()
+        self.warmup = max(int(warmup), self.hma_period + atr_gate_period)
+        self._bars: list[dict] = []
+        # Incremental indicator tails (avoid recomputing the whole frame each
+        # bar — ponytail: O(n) rolling via deque of the last raw series needed
+        # for HMA/ATR/RSI/VWAP, only the tail is recomputed).
+        self._hma_tail: list[float] = []
+        self._atr_tail: list[float] = []
+        self._rsi_tail: list[float] = []
+        self._vwap_cum_pv: float = 0.0
+        self._vwap_cum_vol: float = 0.0
+        self._active: dict | None = None
+
+    # ------------------------------------------------------------------ hooks
+    def on_candle_closed(self, event) -> None:
+        if self.symbol is not None and event.symbol != self.symbol:
+            return
+        from zoneinfo import ZoneInfo
+        ts = event.ts
+        try:
+            if ts.tzinfo is not None:
+                ts = ts.astimezone(ZoneInfo("Asia/Kolkata"))
+        except Exception:  # noqa: BLE001 — fall back to naive ts
+            pass
+        in_session = self.session_start <= ts.time() <= self.session_end
+        o, h, l, c, v = (float(event.open), float(event.high), float(event.low),
+                         float(event.close), int(event.volume))
+        self._bars.append({"open": o, "high": h, "low": l, "close": c, "volume": v})
+        if len(self._bars) < self.warmup:
+            return
+        # Recompute from a tail window only (HMA/ATR/RSI are rolling; the
+        # tail is large enough that the last two values are identical to a
+        # full-frame compute — O(n) instead of O(n^2)).
+        win = self.hma_period + self.atr_period + self.atr_gate_period + 5
+        tail = pd.DataFrame(self._bars[-win:])
+        hma_now = hma(tail, self.hma_period).iloc[-1]
+        hma_prev = hma(tail, self.hma_period).iloc[-2]
+        atr_now = atr(tail, self.atr_period).iloc[-1]
+        atr_avg = atr(tail, self.atr_period).rolling(
+            self.atr_gate_period).mean().iloc[-1]
+        rsi_now = rsi(tail, self.rsi_period).iloc[-1]
+        # Session VWAP: reset daily so it matches the documented "session VWAP".
+        if ts.time() == self.session_start:
+            self._vwap_cum_pv = 0.0
+            self._vwap_cum_vol = 0.0
+        typical = (h + l + c) / 3.0
+        if v > 0:
+            self._vwap_cum_pv += typical * v
+            self._vwap_cum_vol += v
+        vwap_now = self._vwap_cum_pv / self._vwap_cum_vol if self._vwap_cum_vol > 0 else c
+        close = c
+
+        # Direction bias + volatility gate (block when ATR below its mean = chop).
+        long_ok = close > hma_now and hma_now > hma_prev
+        short_ok = close < hma_now and hma_now < hma_prev
+        vol_ok = atr_now > atr_avg
+        momentum_long = rsi_now > 50 and close > vwap_now
+        momentum_short = rsi_now < 50 and close < vwap_now
+
+        # Exit management takes priority (so a stop/target can hit on entry bar).
+        if self._active is not None:
+            self._manage_exit(event)
+            if self._active is None:
+                return
+
+        if not in_session:
+            return
+        if self._active is not None:
+            return  # one position at a time
+
+        if long_ok and vol_ok and momentum_long:
+            self._enter(event, "BUY", close, atr_now)
+        elif short_ok and vol_ok and momentum_short:
+            self._enter(event, "SELL", close, atr_now)
+
+    # ------------------------------------------------------------- internals
+    def _enter(self, event, side: str, entry: float, atr_now: float) -> None:
+        sl_dist = atr_now * self.sl_mult
+        if sl_dist <= 0:
+            return
+        sl = entry - sl_dist if side == "BUY" else entry + sl_dist
+        tp = entry + sl_dist * self.tp_ratio if side == "BUY" else entry - sl_dist * self.tp_ratio
+        self._active = {"side": side, "entry": entry, "sl": sl, "tp": tp,
+                        "qty": self.quantity}
+        self.emit_signal(
+            symbol=event.symbol, exchange=event.exchange, side=side,
+            quantity=self.quantity, price=0.0, reference_price=float(event.close),
+            sl=round(sl, 2), tp=round(tp, 2), hma_period=self.hma_period,
+        )
+
+    def _manage_exit(self, event) -> None:
+        act = self._active
+        low, high, close = float(event.low), float(event.high), float(event.close)
+        if act["side"] == "BUY":
+            if low <= act["sl"]:
+                self._exit(event, "SELL", act["sl"], "stop")
+            elif high >= act["tp"]:
+                self._exit(event, "SELL", act["tp"], "target")
+        else:
+            if high >= act["sl"]:
+                self._exit(event, "BUY", act["sl"], "stop")
+            elif low <= act["tp"]:
+                self._exit(event, "BUY", act["tp"], "target")
+
+    def _exit(self, event, side: str, price: float, reason: str) -> None:
+        act = self._active
+        self.emit_signal(
+            symbol=event.symbol, exchange=event.exchange, side=side,
+            quantity=act["qty"], price=0.0, reference_price=float(event.close),
+            exit_reason=reason, intent_price=price,
+        )
+        self._active = None
+
+
+class VwapReclaimStrategy(Strategy):
+    """Session VWAP reclaim — the simple effective futures scalp.
+
+    Bias: long when price is above session VWAP, short when below. Entry: the
+    close reclaims VWAP in the bias direction after a pullback (a dip below
+    VWAP for longs, a rally above for shorts). Hard stop beyond the signal
+    bar; target a fixed R:R. Flat into the session close. Built on the canonical
+    ``Strategy`` so it runs identically in backtest/replay/live.
+
+    This is the simplest setup that is institutionally motivated (VWAP is the
+    benchmark big money defends) and is the recommended default over the
+    HMA/RSI clone — see scripts/backtest_gainz_*.py for the comparison.
+    """
+
+    name = "vwap_reclaim"
+
+    def __init__(self, *, symbol: str | None = None, exchange: str = "NFO",
+                 rsi_period: int = 14, rsi_filter: bool = False,
+                 sl_mult: float = 1.0, tp_ratio: float = 1.5,
+                 quantity: int = 1, session_start: str = "09:15",
+                 session_end: str = "15:25", warmup: int = 30):
+        super().__init__()
+        self.symbol = symbol
+        self.exchange = exchange
+        self.rsi_period = int(rsi_period)
+        self.rsi_filter = bool(rsi_filter)
+        self.sl_mult = float(sl_mult)
+        self.tp_ratio = float(tp_ratio)
+        self.quantity = max(1, int(quantity))
+        self.session_start = datetime.strptime(session_start, "%H:%M").time()
+        self.session_end = datetime.strptime(session_end, "%H:%M").time()
+        self.warmup = max(int(warmup), rsi_period + 5)
+        self._bars: list[dict] = []
+        self._vwap_cum_pv: float = 0.0
+        self._vwap_cum_vol: float = 0.0
+        self._active: dict | None = None
+
+    # ------------------------------------------------------------------ hooks
+    def on_candle_closed(self, event) -> None:
+        if self.symbol is not None and event.symbol != self.symbol:
+            return
+        from zoneinfo import ZoneInfo
+        ts = event.ts
+        try:
+            if ts.tzinfo is not None:
+                ts = ts.astimezone(ZoneInfo("Asia/Kolkata"))
+        except Exception:  # noqa: BLE001
+            pass
+        in_session = self.session_start <= ts.time() <= self.session_end
+        o, h, l, c, v = (float(event.open), float(event.high), float(event.low),
+                         float(event.close), int(event.volume))
+        self._bars.append({"open": o, "high": h, "low": l, "close": c, "volume": v})
+        if len(self._bars) < self.warmup:
+            return
+        # Daily-reset session VWAP.
+        if ts.time() == self.session_start:
+            self._vwap_cum_pv = 0.0
+            self._vwap_cum_vol = 0.0
+        typical = (h + l + c) / 3.0
+        if v > 0:
+            self._vwap_cum_pv += typical * v
+            self._vwap_cum_vol += v
+        vwap_now = (self._vwap_cum_pv / self._vwap_cum_vol) if self._vwap_cum_vol > 0 else c
+
+        # Exit first (so a stop/target can hit on the entry bar).
+        if self._active is not None:
+            self._manage_exit(event)
+            if self._active is None:
+                return
+
+        if not in_session:
+            return
+        if self._active is not None:
+            return  # one position at a time
+
+        rsi_now = rsi(pd.DataFrame(self._bars), self.rsi_period).iloc[-1]
+        long_bias = c > vwap_now
+        short_bias = c < vwap_now
+        prev_c = self._bars[-2]["close"]
+        reclaim_long = prev_c <= vwap_now and c > vwap_now
+        reclaim_short = prev_c >= vwap_now and c < vwap_now
+        momentum_ok = True
+        if self.rsi_filter:
+            momentum_ok = (rsi_now > 50) if long_bias else (rsi_now < 50)
+        if long_bias and reclaim_long and momentum_ok:
+            self._enter(event, "BUY", c, vwap_now, h, l)
+        elif short_bias and reclaim_short and momentum_ok:
+            self._enter(event, "SELL", c, vwap_now, h, l)
+
+    # ------------------------------------------------------------- internals
+    def _enter(self, event, side: str, entry: float, vwap_now: float,
+               high: float, low: float) -> None:
+        # Stop beyond the signal bar's extreme (VWAP is the reclaim line; the
+        # wick is the failure). +1 tick pad so a tag is a fill.
+        if side == "BUY":
+            sl = min(low, vwap_now) - 1.0
+            tp = entry + (entry - sl) * self.tp_ratio
+            if not (tp > entry > sl):
+                return
+        else:
+            sl = max(high, vwap_now) + 1.0
+            tp = entry - (sl - entry) * self.tp_ratio
+            if not (tp < entry < sl):
+                return
+        self._active = {"side": side, "entry": entry, "sl": sl, "tp": tp,
+                        "qty": self.quantity}
+        self.emit_signal(
+            symbol=event.symbol, exchange=event.exchange, side=side,
+            quantity=self.quantity, price=0.0, reference_price=float(event.close),
+            sl=round(sl, 2), tp=round(tp, 2), vwap=round(vwap_now, 2),
+        )
+
+    def _manage_exit(self, event) -> None:
+        act = self._active
+        low, high, close = float(event.low), float(event.high), float(event.close)
+        if act["side"] == "BUY":
+            if low <= act["sl"]:
+                self._exit(event, "SELL", act["sl"], "stop")
+            elif high >= act["tp"]:
+                self._exit(event, "SELL", act["tp"], "target")
+        else:
+            if high >= act["sl"]:
+                self._exit(event, "BUY", act["sl"], "stop")
+            elif low <= act["tp"]:
+                self._exit(event, "BUY", act["tp"], "target")
+
+    def _exit(self, event, side: str, price: float, reason: str) -> None:
+        act = self._active
+        self.emit_signal(
+            symbol=event.symbol, exchange=event.exchange, side=side,
+            quantity=act["qty"], price=0.0, reference_price=float(event.close),
             exit_reason=reason, intent_price=price,
         )
         self._active = None

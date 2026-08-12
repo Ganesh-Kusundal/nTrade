@@ -75,6 +75,38 @@ def vwap_bands(df: pd.DataFrame, num_std: float = 2.0) -> tuple[float, float]:
     return float(last + band), float(last - band)
 
 
+def wma(series: pd.Series, period: int) -> pd.Series:
+    """Weighted moving average. Most recent bar carries the most weight.
+
+    Vectorized via numpy convolution (the rolling .apply form allocates a
+    Python lambda per window and is unusably slow on long backtests).
+    """
+    import numpy as np
+    period = int(period)
+    weights = np.arange(period, 0, -1, dtype=float)  # period..1
+    weights /= weights.sum()
+    vals = series.to_numpy(dtype=float)
+    out = np.full_like(vals, np.nan)
+    # 'valid' slides the kernel fully inside; pad front so index aligns.
+    if len(vals) >= period:
+        conv = np.convolve(vals, weights, mode="valid")
+        out[period - 1:] = conv
+    return pd.Series(out, index=series.index)
+
+
+def hma(df: pd.DataFrame, period: int = 21) -> pd.Series:
+    """Hull Moving Average — low-lag trend baseline.
+
+    ``HMA = WMA(2*WMA(price, n/2) - WMA(price, n), sqrt(n))``. Uses typical
+    price (the same source as VWAP) so the baseline and the value band line up.
+    """
+    typical = (df["high"].astype(float) + df["low"].astype(float) + df["close"].astype(float)) / 3.0
+    half = wma(typical, max(2, int(period / 2)))
+    full = wma(typical, int(period))
+    raw = 2 * half - full
+    return wma(raw, max(2, int(round(period ** 0.5))))
+
+
 def supertrend(df: pd.DataFrame, atr_period: int = 10, multiplier: float = 3.0) -> pd.DataFrame:
     """Adds STX_<atr_period>_<multiplier> column: 'up' or 'down' per candle."""
     out = df.copy()
@@ -201,6 +233,10 @@ def compute_bundle(df: pd.DataFrame, **params) -> dict[str, float]:
     _series_last("rsi", lambda: rsi(df, rsi_period), store_key=f"rsi_{rsi_period}")
     _series_last("atr", lambda: atr(df, atr_period), store_key=f"atr_{atr_period}")
     _series_last("vwap", lambda: vwap(df), store_key="vwap")
+    if params.get("hma_period"):
+        _series_last(f"hma_{params['hma_period']}",
+                     lambda p=params["hma_period"]: hma(df, int(p)),
+                     store_key=f"hma_{int(params['hma_period'])}")
     if params.get("vwap_bands_std"):
         try:
             u, lo = vwap_bands(df, float(params["vwap_bands_std"]))

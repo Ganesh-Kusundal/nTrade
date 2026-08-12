@@ -13,6 +13,7 @@ import pandas as pd
 
 from ntrade.brokers.base import BrokerAdapter
 from ntrade.domain.market.candles import CandleSeries
+from ntrade.domain.portfolio import Position
 from ntrade.domain.market.depth import DepthLevel, MarketDepth
 from ntrade.domain.market.quote import Quote, Tick
 from ntrade.domain.orders.book import OrderBook, OrderBookEntry, TradeBook, TradeBookEntry
@@ -32,6 +33,7 @@ class PaperBroker(BrokerAdapter):
         self._history: dict[str, pd.DataFrame] = {}
         self._orders: list[Order] = []
         self._balance = 100_000.0
+        self._positions: dict[str, Position] = {}
         self._connected = True  # always available
 
     # ------------------------------------------------------------- seeding
@@ -143,6 +145,44 @@ class PaperBroker(BrokerAdapter):
         order.filled_qty = order.quantity
         order.avg_price = round(fill_price, 2)
         self._orders.append(order)
+        # Authoritative broker state: fills mutate balance + positions so the
+        # PositionSyncEngine reconciles paper to its own reality instead of
+        # wiping the kernel (the old get_positions()=[] wiped everything).
+        fill_price = order.avg_price
+        notional = fill_price * order.quantity
+        pos = self._positions.get(order.instrument.symbol)
+        if order.side.value == "BUY":
+            self._balance = round(self._balance - notional, 4)
+            qty = (pos.quantity if pos else 0) + order.quantity
+            if pos is None:
+                pos = Position(symbol=order.instrument.symbol, quantity=qty,
+                               avg_price=fill_price, ltp=fill_price,
+                               product=order.trade_type.value)
+                self._positions[order.instrument.symbol] = pos
+            else:
+                if pos.quantity * qty >= 0:
+                    total = pos.avg_price * abs(pos.quantity) + fill_price * order.quantity
+                    pos.avg_price = round(total / abs(qty), 4)
+                else:
+                    pos.avg_price = fill_price
+                pos.quantity = qty
+                pos.ltp = fill_price
+        else:  # SELL
+            self._balance = round(self._balance + notional, 4)
+            qty = (pos.quantity if pos else 0) - order.quantity
+            if pos is None:
+                pos = Position(symbol=order.instrument.symbol, quantity=qty,
+                               avg_price=fill_price, ltp=fill_price,
+                               product=order.trade_type.value)
+                self._positions[order.instrument.symbol] = pos
+            else:
+                pos.quantity = qty
+                pos.ltp = fill_price
+                # exit-and-reverse: the residual opens a fresh short
+                if pos.quantity * pos.avg_price < 0:
+                    pos.avg_price = fill_price
+            if qty == 0:
+                del self._positions[order.instrument.symbol]
         return order
 
     # ------------------------------------------------- order lifecycle
@@ -233,7 +273,7 @@ class PaperBroker(BrokerAdapter):
         return self._balance
 
     def get_positions(self):
-        return []
+        return list(self._positions.values())
 
     def get_holdings(self):
         return []

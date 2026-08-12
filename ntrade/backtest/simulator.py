@@ -106,6 +106,7 @@ class BacktestSimulator:
         self._last_carry_date = None
         self._rolled: set[str] = set()
         self._futures_costs_total = 0.0
+        self._fills: list[OrderFilledEvent] = []
         if kernel is None:
             kernel = TradingKernel(
                 mode="backtest", clock=self.clock, timeframe=timeframe,
@@ -132,6 +133,14 @@ class BacktestSimulator:
             if hasattr(kernel.risk_engine, key):
                 setattr(kernel.risk_engine, key, val)
         self.kernel = kernel
+        # Record every fill in an unbounded list — the bus history is capped at
+        # 10k events, so results() cannot trust it for long runs.
+        self.kernel.bus.subscribe(OrderFilledEvent, self._on_fill)
+
+    def _on_fill(self, event: OrderFilledEvent) -> None:
+        """Record every fill in an unbounded list (the bus history is capped
+        at 10k events, so results() cannot trust it for long runs)."""
+        self._fills.append(event)
 
     def register_strategy(self, strategy) -> "BacktestSimulator":
         self.kernel.register_strategy(strategy)
@@ -250,7 +259,7 @@ class BacktestSimulator:
 
     # ------------------------------------------------------------------ results
     def results(self) -> BacktestResult:
-        fills = [e for e in self.kernel.bus.history if isinstance(e, OrderFilledEvent)]
+        fills = self._fills
         trades = [{
             "order_id": f.order_id, "symbol": f.symbol, "side": f.side,
             "quantity": f.quantity, "fill_price": f.fill_price,

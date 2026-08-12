@@ -369,6 +369,24 @@ def test_divergence_not_fired_on_normal_volume_followthrough(monkeypatch):
     assert not sells, f"normal-volume followthrough must NOT exit via divergence, got {len(sells)} sells"
 
 
+# ------------------------------------------------------------------ session rollover
+
+def test_new_session_profile_excludes_prior_day_bars():
+    k = _kernel()
+    strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15)
+    k.register_strategy(strat)
+    # Day 1: bars at 100-115.
+    for i in range(200):
+        _candle(k, i, close=100.0 + i * 0.05, volume=100)
+    assert len(strat._rows) >= 100
+    # Day 2: a single bar at a totally different level.
+    ts2 = _TS + timedelta(days=1)
+    _candle(k, 300, close=250.0, volume=100, ts=ts2)
+    # After rollover, _rows must hold only today's bars (the current one).
+    assert all(r["timestamp"].date() == ts2.date() for r in strat._rows), \
+        f"day-2 rows must exclude prior-day bars, got {len(strat._rows)} rows spanning multiple days"
+
+
 # ------------------------------------------------------------------ reversal
 
 def test_reversal_not_armed_without_day_profit():

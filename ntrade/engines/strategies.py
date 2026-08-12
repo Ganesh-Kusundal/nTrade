@@ -448,10 +448,16 @@ class ValentiniScalper(Strategy):
             self._profile = None
             self._leg_start_idx = 0
             if prev_key is not None:
-                # A genuine session rollover resets the realized day PnL.
-                # The FIRST session must not wipe a white-box _day_pnl (or
-                # the PnL gate would never arm on warm-up day one).
+                # A genuine session rollover resets the realized day PnL and
+                # drops prior-day bars so today's profile/VWAP/SL are built
+                # from today's auction only (the current bar was appended at
+                # the top of on_candle_closed, so keep only it). The FIRST
+                # session must not wipe a white-box _day_pnl (or the PnL gate
+                # would never arm on warm-up day one) — and must not clear
+                # _rows, which would re-trigger the warmup gate and skip
+                # the next warmup-1 candles.
                 self._day_pnl = 0.0
+                self._rows[:] = [self._rows[-1]]
         step = self._step
         self._range_bars = build_range_bars(
             frame, range_size=self._range_size,

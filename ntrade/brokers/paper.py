@@ -151,38 +151,30 @@ class PaperBroker(BrokerAdapter):
         fill_price = order.avg_price
         notional = fill_price * order.quantity
         pos = self._positions.get(order.instrument.symbol)
+        delta = order.quantity if order.side.value == "BUY" else -order.quantity
+        qty = (pos.quantity if pos else 0) + delta
         if order.side.value == "BUY":
             self._balance = round(self._balance - notional, 4)
-            qty = (pos.quantity if pos else 0) + order.quantity
-            if pos is None:
-                pos = Position(symbol=order.instrument.symbol, quantity=qty,
-                               avg_price=fill_price, ltp=fill_price,
-                               product=order.trade_type.value)
-                self._positions[order.instrument.symbol] = pos
-            else:
-                if pos.quantity * qty >= 0:
-                    total = pos.avg_price * abs(pos.quantity) + fill_price * order.quantity
-                    pos.avg_price = round(total / abs(qty), 4)
-                else:
-                    pos.avg_price = fill_price
-                pos.quantity = qty
-                pos.ltp = fill_price
-        else:  # SELL
+        else:
             self._balance = round(self._balance + notional, 4)
-            qty = (pos.quantity if pos else 0) - order.quantity
-            if pos is None:
-                pos = Position(symbol=order.instrument.symbol, quantity=qty,
-                               avg_price=fill_price, ltp=fill_price,
-                               product=order.trade_type.value)
-                self._positions[order.instrument.symbol] = pos
-            else:
-                pos.quantity = qty
-                pos.ltp = fill_price
-                # exit-and-reverse: the residual opens a fresh short
-                if pos.quantity * pos.avg_price < 0:
-                    pos.avg_price = fill_price
-            if qty == 0:
-                del self._positions[order.instrument.symbol]
+        if qty == 0:
+            # Flattened: drop the position (mirror of PortfolioEngine).
+            self._positions.pop(order.instrument.symbol, None)
+        elif pos is None:
+            self._positions[order.instrument.symbol] = Position(
+                symbol=order.instrument.symbol, quantity=qty,
+                avg_price=fill_price, ltp=fill_price,
+                product=order.trade_type.value)
+        else:
+            # Same-direction add -> weighted average; partial exit (same sign)
+            # keeps the entry price; exit-and-reverse -> fresh at the fill.
+            if pos.quantity * qty > 0 and abs(qty) > abs(pos.quantity):
+                total = pos.avg_price * abs(pos.quantity) + fill_price * order.quantity
+                pos.avg_price = round(total / abs(qty), 4)
+            elif pos.quantity * qty < 0:
+                pos.avg_price = fill_price  # reversed: residual opens fresh
+            pos.quantity = qty
+            pos.ltp = fill_price
         return order
 
     # ------------------------------------------------- order lifecycle

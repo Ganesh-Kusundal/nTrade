@@ -1,80 +1,33 @@
-# Task 4 Report: Volume-confirmed accumulation
+# Task 4 Report: Session-rollover `_rows` clear
 
 ## Status: DONE
 
 ## Commit
+- `555eed1` — `fix: session rollover clears rows (today-only analytics)` (2 files: `ntrade/engines/strategies.py` +12/-3, `tests/test_valentini_leg_anchor.py` +18)
+- `00c91f4` — `fix: wipe phase machine + stale absorptions on session rollover` (review-fix round: `strategies.py` +30/-5, `tests/test_valentini_leg_anchor.py` +20)
 
-`cf88dd7d41c72c057be540ff2fa10b680d7c6856` — `feat: volume-confirmed valentini accumulation`
+`strategies.py` staging: only the rollover hunks were staged (via `git apply --cached` of the extracted hunks); the pre-existing uncommitted Task-5 WIP classes were left in the working tree.
 
-Exactly two files in the commit:
-- `ntrade/engines/strategies.py` (+13/-1)
-- `tests/test_valentini_leg_anchor.py` (+20)
-
-`tests/test_valentini_strategy.py` was NOT touched and remains unstaged with its pre-existing uncommitted WIP intact.
+## What was done
+- `ntrade/engines/strategies.py` `on_candle_closed` rollover block: on a **genuine** session rollover (`prev_key is not None`) the strategy now (a) resets `_day_pnl`, (b) clears `_rows` to the current (today's) bar so day-2 profile/VWAP/SL analytics are built from today's auction only, (c) wipes the phase machine (`_phase="waiting"`, `_last_absorption=None`, `_absorption_window_idx=None`), and (d) drops the stale post-recompute `_absorptions` (see defect below). The FIRST-session transition (`_session_key: None → key`) does NOT clear — that would drop `_rows` below `warmup` and skip the next 14 candles.
+- `tests/test_valentini_leg_anchor.py`:
+  - `test_new_session_profile_excludes_prior_day_bars` — day-2 rows must exclude prior-day bars (verbatim from the brief).
+  - `test_rollover_does_not_carry_day1_absorption_into_day2` — reviewer-requested contamination probe: a day-1 absorption at VAL must not arm day 2's phase machine.
 
 ## Test results
+- Red (pre-fix): `test_new_session_profile_excludes_prior_day_bars` → `day-2 rows must exclude prior-day bars, got 201 rows spanning multiple days` (1 failed).
+- Green:
+  - `python -m pytest tests/test_valentini_leg_anchor.py -q` → `20 passed`
+  - `python -m pytest tests/test_valentini_strategy.py -q` → `24 passed`
+  - `python -m pytest tests/test_zero_parity_across_modes.py -q` → `3 passed in 83.71s` (zero-parity preserved)
 
-Step 2 (new test, pre-fix, expected FAIL):
-```
-FAILED tests/test_valentini_leg_anchor.py::test_accumulation_requires_recent_volume
-AssertionError: assert 'accumulating' == 'absorbing'
-1 failed in 0.86s
-```
+## Deviations / PLAN DEFECTS (documented)
+1. **Plan's unconditional clear broke existing tests.** The brief placed `self._rows[:] = [self._rows[-1]]` unconditionally in the key-change block. That fires on the FIRST-session transition (first candle past warmup, `_session_key: None → key`), collapsing `_rows` to 1 row — so the next `warmup-1` candles hit the `len(_rows) < warmup` early-return, skipping analytics and shifting leg anchors (`test_impulse_candle_reanchors_leg` saw `_leg_start_idx=16` instead of 30). Fixed by gating the clear on `prev_key is not None` (genuine rollover only), alongside the existing `_day_pnl` reset.
+2. **Reviewer finding (fixed in `00c91f4`): stale absorption state crossed the day boundary, and the clear WIDENED it.** `_absorptions` is recomputed after the rollover block from the PRE-clear frame (bar_index up to ~200). After `_rows` is cleared to 1 row, `_update_phase`'s recency filter (`bar_index >= window_len - abs_lookback` = −4) lets **every** day-1 absorption appear "recent", and with `_profile` cleared `_value_edge_ok()` returns True → a day-1 absorption arms `_phase`/`_last_absorption` on day 2's first candle, surviving into day-2 trades. Fixed with a `rolled_over` flag that drops the stale recompute and resets the phase machine; verified by the new contamination-probe test (fails without the fix).
+3. **Intentional behavior worth knowing:** a fresh session re-warms for its first `warmup` bars — analytics stay silent while today's rows accumulate (no stale day-1 context, but the opening minutes produce no signals). Documented in the code comment.
 
-Step 4 (leg-anchor suite, post-fix):
-```
-... [100%]
-3 passed in 1.51s
-```
-
-Step 5 (zero-parity, ~84s):
-```
-... [100%]
-3 passed in 83.80s (0:01:23)
-```
-
-Step 6 (strategy suite, median baseline keeps these green):
-```
-........................ [100%]
-24 passed in 5.94s
-```
-
-## Changes made
-
-`ntrade/engines/strategies.py` `_update_phase`:
-- Added `frame = pd.DataFrame(self._rows)` after `close = float(event.close)`.
-- Replaced the price-only accumulation check with the median-gated version:
-  `recent_vol` = sum of the last 2 bars' volume; `prior_vol` = all bars before
-  those; `avg_vol` = `prior_vol.median()` (empty guard -> 0.0); `vol_ok` =
-  `avg_vol <= 0 or recent_vol >= self.accum_volume_mult * avg_vol`; accumulation
-  requires `elapsed >= 2`, POC proximity (`abs(close - poc) <= 2*step`), AND `vol_ok`.
-
-`tests/test_valentini_leg_anchor.py`: appended `test_accumulation_requires_recent_volume`
-verbatim from the brief.
+## Review
+Round 1 (commit `555eed1`): reviewer confirmed the change sound but flagged the stale-absorption/phase contamination as the main correctness gap + the undocumented day-2 re-warmup. Round 2 applied the phase-machine wipe + contamination test (`00c91f4`). All suites green after the fix round.
 
 ## Concerns
-
-- None blocking. Verified median (not mean) is used, matching the design note:
-  a mean baseline would have been inflated by the 1500-volume absorption bar and
-  rejected the 300-volume confirmation bar, but median keeps 300 >= 1.5*100 true.
-- The zero-parity path (3000+1000=4000 vs prior median ~1000) still confirms, so
-  entry at `111.0` is unchanged — 3 passed confirms no behavioural drift.
-
-## Fix subagent: review follow-ups (comment + ATR-bound test)
-
-- `ntrade/engines/strategies.py`: profile-build comment now reads
-  `>= leg_impulse_mult * self._step` (the ATR-floored step) instead of the
-  stale `range_size`, keeping the `ponytail:` note intact.
-- `tests/test_valentini_leg_anchor.py`: added
-  `test_impulse_reanchors_leg_when_atr_floor_binds` — `range_size=1.0` with
-  wide volatile bars (high-low 5.0, ATR ~5.0) proves `_step > range_size`
-  (ATR floor binds) then a 14.0-span impulse re-anchors the leg to row 30.
-  Note: initial span 12.0 failed (warmup bars had span 7.0 → ATR 7.0 → thr 14.0);
-  switched warmup to span 5.0 (ATR ~5.0, thr ~10.0) and impulse to span 14.0.
-
-Test results:
-- `python -m pytest tests/test_valentini_leg_anchor.py -q` → `4 passed`
-- `python -m pytest tests/test_valentini_strategy.py -q` → `24 passed`
-- `python -m pytest tests/test_zero_parity_across_modes.py -q` → `3 passed`
-
-Commit: `b57b41ee0c0e6533571bed18a940c59ada23ce7e`
+- The rollover candle itself still computes its analytics (range bars/VWAP/profile/absorptions) from the pre-clear mixed frame; `_leg_start_idx` is transiently stale in old-frame coordinates until the next candle re-clamps it. Transitional, self-correcting, accepted (matches the plan's design).

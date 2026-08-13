@@ -1,101 +1,153 @@
-# Task 5 (T-014): Attach consumers for R-006 observability events in LiveRunner
+# Task 5 Brief: PnL-gated reversal to leg POC
 
-**Goal:** Give R-004/R-005/R-006 events real consumers so none publish to zero subscribers. LiveRunner already publishes `HeartbeatEvent` (`_emit_heartbeat_if_due`) and watches the feed (`_check_feed_watchdog`), but nothing consumes `HeartbeatEvent`/`FeedDisconnectedEvent`/`OrderTimeoutEvent`. Attach handlers that (a) log heartbeats, (b) trip a risk halt on feed-disconnect, (c) cancel a stale PENDING order on timeout.
+## Where this fits
 
-Do all work in `ntrade/runner/live_runner.py`. Do NOT touch risk_engine or broker_executor unless a hard blocker forces it (report if so).
+Project: nTrade UI. The strategy mirror `ui/src/lib/valentini.ts` is being re-synced with the Python `ValentiniScalper`. Tasks 1-4 added `swingBias`, ATR floor + leg-anchored profile, direction gate + volume accumulation, and the auction-following trail. This task adds the PnL-gated reversal (secondary mean-reversion setup): only armed after a profitable day, fires on overextension + absorption at the extreme + response back toward the leg POC.
 
-## Context facts (verified — READ these before coding)
-- `LiveRunner.__init__` already subscribes `RiskHaltedEvent → self._on_risk_halted` and `OrderFilledEvent → self._on_fill` (lines 50-52). Add three more `subscribe` calls + three handlers.
-- `self.kernel` is a `TradingKernel` with `.bus`, `.clock`, `.cancel_order(order_id)` (ntrade/kernel/session.py:186), `.open_orders()`. So `_on_order_timeout` can call `self.kernel.cancel_order(event.order_id)` directly.
-- `self.logger` is the module logger (`logging.getLogger("ntrade.runner")`).
-- Events live in: `ntrade.events.lifecycle.HeartbeatEvent(tick_count, open_orders)`, `.FeedDisconnectedEvent(reason)`; `ntrade.events.order.OrderTimeoutEvent(order_id, symbol, exchange, side, quantity, age_seconds, ...)`; `ntrade.events.risk.RiskHaltedEvent(reason, ts)`.
-- There is NO `_make_runner()` helper in tests/test_live_runner.py — those tests build `TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")` + `LiveRunner(k, _source())`. Write any new tests in that same style.
-- The plan's suggested tests are WRONG for this file: they reference `_make_runner()` (doesn't exist) and monkeypatch `runner._on_feed_disconnected`/`runner._on_order_timeout` after construction — but the bus captured the **bound method at subscribe-time**, so a later attribute rebind does NOT change what gets dispatched. Use the corrected tests in the Brief's "Tests" section instead.
+## Requirements (from the plan, with a correctness fix)
 
-## Implementation
+**Files:**
+- Modify: `ui/src/lib/valentini.ts` (reversal state + dispatch)
+- Test: `ui/src/lib/__tests__/valentini.test.ts`
 
-### subscribe (in `__init__`, after the existing OrderFilledEvent subscribe)
-Add top-of-file imports:
-```python
-from ntrade.events.lifecycle import HeartbeatEvent, FeedDisconnectedEvent, RunnerStartedEvent, RunnerStoppedEvent
-from ntrade.events.order import OrderFilledEvent
-from ntrade.events.risk import RiskHaltedEvent
+**Interfaces:**
+- Consumes: `dayPnl` (accumulated from closed trades), `sessionPoc`, `step`, `reverseExtensionMult`, `lastAbsorption`, `active`.
+- Produces: reversal trades whose `tp === sessionPoc` (the computed leg POC) and `reason` null.
+
+## Correctness note (plan fix)
+
+A naive PnL accumulation ("if last.exit !== null, add PnL") would RE-ADD the same PnL on every subsequent bar: the `if (active)` block `continue`s past the accumulation on the closing bar, and `last.exit` stays non-null forever. Use a settled-counter instead.
+
+**Step 1: Write the failing tests**
+
+Append to `ui/src/lib/__tests__/valentini.test.ts`:
+
+```ts
+describe('reversal', () => {
+  // The mirror recomputes the session POC per candle; the reversal targets the
+  // *computed* POC (baseSession's heavy centre keeps it ~112), so assertions
+  // check that a reversal trade fired (non-null POC target), not a magic 118.
+  it('does NOT arm a reversal without day profit', () => {
+    const cs = [
+      ...baseSession(),
+      ...Array.from({ length: 35 }, (_, k) => candle(20 + k, { close: 120 - k * 0.5 })), // downtrend
+      absorptionBar(55, 90),
+      candle(56, { close: 92 }),
+    ]
+    const res = runValentini(cs, { ...OPTS })
+    const reversal = res.trades.find((t) => t.tp !== null && t.reason === null && t.exitIndex === null)
+    expect(reversal).toBeUndefined()
+  })
+  it('fires a BUY reversal to the leg POC after a profitable day', () => {
+    const cs = [
+      ...baseSession(),
+      ...Array.from({ length: 35 }, (_, k) => candle(20 + k, { close: 120 - k * 0.5 })),
+      absorptionBar(55, 90),
+      candle(56, { close: 92 }),
+    ]
+    // White-box: seed a profitable day, mirroring how the Python strategy
+    // test sets `strat._day_pnl = 5000.0`. The mirror is a pure function
+    // with no broker fills, so it can't manufacture a winning round-trip
+    // from the fixture — day PnL is seeded via the option.
+    const res = runValentini(cs, { ...OPTS, initialDayPnl: 5000 })
+    const reversal = res.trades.find((t) => t.side === 'BUY' && t.tp !== null && t.reason === null)
+    expect(reversal).toBeDefined()
+    // Reversal targets the computed leg POC (below entry on a BUY fade).
+    expect(reversal!.tp).toBeLessThan(reversal!.entry)
+  })
+})
 ```
-Adjust the existing `from ntrade.events.lifecycle import ...` line 15 and the local `from ntrade.events.order import OrderFilledEvent` (line 51) to consolidate. Then:
-```python
-self.kernel.bus.subscribe(HeartbeatEvent, self._on_heartbeat)
-self.kernel.bus.subscribe(FeedDisconnectedEvent, self._on_feed_disconnected)
-self.kernel.bus.subscribe(OrderTimeoutEvent, self._on_order_timeout)
+
+**Step 2: Run to verify it fails**
+
+Run: `cd ui && npm test -- __tests__/valentini.test.ts 2>&1 | tail -15`
+Expected: FAIL — no reversal trade fires in the second test.
+
+**Step 3: Add day-PnL tracking and the reversal dispatch**
+
+Add to `ValentiniOptions`:
+
+```ts
+  /** Starting realized day PnL (white-box; the mirror has no broker fills, so
+   *  tests seed it — mirrors Python's `_day_pnl = 5000.0` white-box setup). */
+  initialDayPnl?: number
 ```
-(Import `OrderTimeoutEvent` where needed.)
 
-### Add three handlers (place near `_on_fill` / `_on_risk_halted`)
-```python
-def _on_heartbeat(self, event) -> None:
-    self.logger.info("heartbeat tick_count=%d open_orders=%d",
-                     event.tick_count, event.open_orders)
+Add machine state (with the other `let` state, near `let legStartIdx = 0`):
 
-def _on_feed_disconnected(self, event) -> None:
-    self.logger.warning("feed disconnected: %s — halting", event.reason)
-    self.kernel.bus.publish(RiskHaltedEvent(
-        reason=f"feed disconnected: {event.reason}", ts=self.kernel.clock.now()))
-
-def _on_order_timeout(self, event) -> None:
-    self.logger.warning("order timeout: %s %s x%d aged %.0fs — cancelling",
-                        event.side, event.symbol, event.quantity, event.age_seconds)
-    self.kernel.cancel_order(event.order_id)
+```ts
+  let dayPnl = opts.initialDayPnl ?? 0
+  let dayPnlSettled = 0
 ```
-Do not import `RiskHaltedEvent` twice. `_on_order_timeout` cancel goes through the kernel (order reconciliation stays on the broker/tsl path; the kernel.cancel_order already delegates appropriately — do not change that path).
 
-## Tests (tests/test_live_runner.py) — use these CORRECT versions
-Append to the file (import `TradingKernel`, `ReplayClock`, `LiveRunner`, `_source` all already available):
-```python
-def test_feed_disconnected_halts_runner():
-    from ntrade.events.lifecycle import FeedDisconnectedEvent
-    from ntrade.events.risk import RiskHaltedEvent
-    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
-    runner = LiveRunner(k, _source())
-    runner.kernel.bus.publish(FeedDisconnectedEvent(
-        reason="ws drop", ts=runner.kernel.clock.now()))
-    assert runner.halted
-    assert any(isinstance(e, RiskHaltedEvent) for e in k.bus.history)
+In the day-change block (currently `valentini.ts:306-326`, the `if (key !== dayKey)` block that sets `phase = 'waiting'` and resets `dayBars`, `legStartIdx`, `sessionVwap`), add resets:
 
-
-def test_order_timeout_cancels_stale_order():
-    from ntrade.events.order import OrderTimeoutEvent
-    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
-    runner = LiveRunner(k, _source())
-    cancelled = []
-    runner.kernel.cancel_order = lambda oid: cancelled.append(oid)
-    runner.kernel.bus.publish(OrderTimeoutEvent(
-        order_id="O1", symbol="TCS", exchange="NSE", side="BUY",
-        quantity=10, age_seconds=120.0, ts=runner.kernel.clock.now()))
-    assert cancelled == ["O1"]
-
-
-def test_heartbeat_event_is_logged(caplog):
-    import logging
-    from ntrade.events.lifecycle import HeartbeatEvent
-    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
-    runner = LiveRunner(k, _source())
-    with caplog.at_level(logging.INFO, logger="ntrade.runner"):
-        k.bus.publish(HeartbeatEvent(tick_count=5, open_orders=2, ts=k.clock.now()))
-    assert "tick_count=5" in caplog.text and "open_orders=2" in caplog.text
+```ts
+      dayPnl = opts.initialDayPnl ?? 0
+      dayPnlSettled = 0
 ```
-If `k.bus.history` does not record broadcast events (verify), fall back to subscribing a collecting callback, but confirm first — the existing `test_step_evaluates_risk_breakers_between_signals` reads `k.bus.history`, so it should work. Each test must actually exercise the real handler (not a rebind), so do NOT monkeypatch `runner._on_*`. `test_heartbeat_event_is_logged` requires pytest `caplog` — confirm pytest-capture has `caplog` (it is built into pytest).
 
-## Verify
-```
-./.venv/bin/python -m pytest -q
-```
-Expected: 627 passing (baseline) + 3 new = 630.
+Add the settlement loop AFTER the `if (active)` block (i.e. after its `continue`, before the warm-up/session gate at `valentini.ts:399`):
 
-## Commit
+```ts
+    // Settle any closed trades' PnL once (the reversal gate reads dayPnl).
+    while (dayPnlSettled < trades.length && trades[dayPnlSettled].exit !== null) {
+      const t = trades[dayPnlSettled]
+      dayPnl += t.side === 'BUY' ? (t.exit! - t.entry) : (t.entry - t.exit!)
+      dayPnlSettled++
+    }
 ```
-git add ntrade/runner/live_runner.py tests/test_live_runner.py
-git commit -m "T-014 attach consumers for heartbeat/feed-drop/order-timeout events"
-```
-Stage only files you changed. Subject exactly `T-014 attach consumers for heartbeat/feed-drop/order-timeout events`.
 
-## Report
-Write `.superpowers/sdd/briefs/task-5-report.md`: commit hash, `git show --stat`, full-suite count, and a note if you had to touch any file beyond live_runner.py/test_live_runner.py (and why).
+Add the reversal dispatch after the warm-up/session gate (after `if (i < warmup || !inSession(i)) continue`):
+
+```ts
+    if (dayPnl > 0 && maybeReverse(i)) continue
+```
+
+Add `maybeReverse` after the `structureBroken` closure:
+
+```ts
+  const maybeReverse = (idx: number): boolean => {
+    if (dayPnl <= 0 || active !== null) return false
+    if (sessionPoc <= 0 || lastAbsorption === null) return false
+    const a = lastAbsorption
+    const close = candles[idx].close
+    const ext = (opts.reverseExtensionMult ?? 2.0) * step
+    if (a.side === 'SELL' && close > sessionPoc + ext && close < a.price) {
+      const sl = a.price + step
+      if (sl > close) { trades.push({ side: 'SELL', entryIndex: idx, entry: close, sl, tp: sessionPoc, rr: 0, exitIndex: null, exit: null, reason: null }); active = { side: 'SELL', entry: close, sl, tp: sessionPoc, rr: 0, impulseVolume: 0 }; return true }
+    } else if (a.side === 'BUY' && close < sessionPoc - ext && close > a.price) {
+      const sl = a.price - step
+      if (sl < close) { trades.push({ side: 'BUY', entryIndex: idx, entry: close, sl, tp: sessionPoc, rr: 0, exitIndex: null, exit: null, reason: null }); active = { side: 'BUY', entry: close, sl, tp: sessionPoc, rr: 0, impulseVolume: 0 }; return true }
+    }
+    return false
+  }
+```
+
+Note: `maybeReverse` sets `active` directly (like Python's `_emit_reversal` sets `_pending`). The `continue` from the dispatch line prevents the continuation chain from also running on the same candle.
+
+**Step 4: Run the full TS suite**
+
+Run: `cd ui && npm test 2>&1 | tail -6`
+Expected: all pass.
+
+Run: `cd ui && npm run typecheck 2>&1 | tail -4` — no type errors.
+
+**Step 5: Commit**
+
+```bash
+git add ui/src/lib/valentini.ts ui/src/lib/__tests__/valentini.test.ts
+git commit -m "feat: ts valentini pnl-gated reversal to leg POC"
+```
+
+## Global Constraints (apply to this task)
+
+- Modify ONLY `ui/src/lib/valentini.ts` and `ui/src/lib/__tests__/valentini.test.ts`.
+- Do NOT touch `TradeScreen.tsx`, `ChartPanel.tsx`, or any other file.
+- Default: `reverseExtensionMult=2.0`.
+
+## Report contract
+
+Write your report to `.superpowers/sdd/briefs/task-5-report.md`. Report:
+status (DONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED), the commit hash,
+a one-line test summary with the vitest output lines, and any concerns.

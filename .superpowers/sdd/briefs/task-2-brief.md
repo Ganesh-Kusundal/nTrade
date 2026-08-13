@@ -1,187 +1,137 @@
-# Task 2 Brief: ATR floor on step
+# Task 2 Brief: BacktestSimulator dedicated fill list
 
 ## Where this fits
 
-Project: nTrade — a Valentini AMT scalper on an event-bus kernel. Task 1 added
-inert state (`_atr`, `_step`). This task computes them per candle and floors
-`step` at 1× ATR. Task 3 uses `_step` for the profile bucket width; Task 4 uses
-it for the accumulation window.
+Project: nTrade. The multi-agent review found: `BacktestSimulator.results()` rebuilds trades/costs from `bus.history` which is a `deque(maxlen=10_000)` — long runs (30 days × ~4-7 events/bar ≈ 45k+ events) silently drop the first ~75% of fills, corrupting `n_trades`/win-rate/costs. This task adds a dedicated unbounded fill list.
 
-## Requirements (verbatim from the plan)
+## Requirements (from the plan)
 
 **Files:**
-- Modify: `ntrade/engines/strategies.py:16` (import), `:263-267` (compute),
-  `:277` (window step), `:289-290` (profile step), `:330` (`_update_phase` step),
-  `:430` (`_emit_entry` step)
-- Create: `tests/test_valentini_leg_anchor.py` (self-contained new test file)
+- Modify: `ntrade/backtest/simulator.py` (init, subscribe to fills, `results()`)
+- Test: `tests/test_backtest_simulator.py` (extend the existing file — check it exists first)
 
-**Step 1: Write the failing test**
+**Interfaces:**
+- Produces: `self._fills: list[OrderFilledEvent]` on the simulator; `results()` reads from it.
 
-Create `tests/test_valentini_leg_anchor.py` with self-contained helpers and the
-first test (exact code):
+**Step 1: Locate the simulator test file**
+
+Run: `ls tests/ | grep -i simulator`
+Expected: `tests/test_backtest_simulator.py` (use it). If none, create it.
+
+**Step 2: Write the failing test**
+
+Append to `tests/test_backtest_simulator.py`:
 
 ```python
-"""ValentiniScalper AMT-correction tests (leg anchor / ATR step / volume accumulation).
+def test_results_fills_not_truncated_by_bus_cap():
+    """results() must use a dedicated unbounded fill list, not the 10k-event
+    bus history cap (regression: long runs silently dropped early fills)."""
+    import pandas as pd
+    from datetime import datetime, timedelta
+    from ntrade.backtest.simulator import BacktestSimulator
+    from ntrade.engines.strategies import ValentiniScalper
+    from ntrade.execution.costs import FixedSlippage, FlatCommission
+    from ntrade.events.order import OrderFilledEvent
 
-Self-contained: redefines its own kernel/candle helpers so it does not import
-from tests/test_valentini_strategy.py (which carries unrelated uncommitted WIP).
-"""
+    # ~2 days x 375 bars x ~5 events/bar > 10k bus events: early fills would
+    # be dropped by the bus deque if results() read bus.history.
+    rows = []
+    t0 = datetime(2026, 7, 27, 9, 15)
+    for d in range(2):
+        for i in range(375):
+            px = 100.0 + (i % 50) * 0.1 + d * 0.5
+            rows.append({"timestamp": t0 + timedelta(days=d, minutes=i),
+                         "open": px, "high": px + 0.5, "low": px - 0.5,
+                         "close": px + 0.1, "volume": 1000.0})
+    df = pd.DataFrame(rows)
 
-from datetime import datetime, timedelta
-
-from ntrade.domain.instruments.cash import Equity
-from ntrade.engines.strategies import ValentiniScalper
-from ntrade.events.market import CandleClosedEvent, QuoteEvent
-from ntrade.kernel.clock import ReplayClock
-from ntrade.kernel.session import TradingKernel
-
-_TS = datetime(2026, 8, 3, 10, 0)   # within session 09:15-15:25
-_NIFTY = "NIFTY"
-
-
-def _kernel():
-    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m",
-                      initial_cash=1_000_000.0)
-    k.register(Equity(_NIFTY))
-    return k
-
-
-def _candle(k, i, *, close=None, open_=None, high=None, low=None, volume=100,
-            ts=None):
-    """Publish one 1m closed candle; OHLC default to a small bullish bar."""
-    c = close if close is not None else 100.0 + i * 0.5
-    o = open_ if open_ is not None else c - 0.5
-    h = high if high is not None else max(c, o) + 0.5
-    lo = low if low is not None else min(c, o) - 0.5
-    ts = ts or (_TS + timedelta(minutes=i))
-    k.bus.publish(QuoteEvent(
-        symbol=_NIFTY, exchange="NSE", ltp=c, bid=0.0, ask=0.0,
-        open=o, high=h, low=lo, volume=volume, ts=ts,
-    ))
-    k.bus.publish(CandleClosedEvent(
-        symbol=_NIFTY, exchange="NSE", timeframe="1m",
-        open=o, high=h, low=lo, close=c, volume=volume, ts=ts,
-    ))
-
-
-def _uptrend_bars(k, n=40, start=100.0, step=0.5, volume=100):
-    """Publish n rising candles to build warmup + range bars + profile."""
-    for i in range(n):
-        _candle(k, i, close=start + i * step, volume=volume)
-
-
-def _absorption_bar(k, i, at, volume=1500, span=0.05, ts=None):
-    """Publish a high-volume compressed candle at price ``at`` (absorption)."""
-    _candle(k, i, close=at, open_=at - 0.02, high=at + span,
-            low=at - span, volume=volume, ts=ts)
-
-
-def _fixed_profile(monkeypatch, val, poc, vah, step=4.0):
-    """Force the strategy's volume-profile analysis to a known POC/VAH/VAL
-    (white-box) so the Triple-A location/SL/TP/balance rules are tested in
-    isolation from profile construction."""
-    from ntrade.domain.analytics.volume_profile import VolumeProfile, VPLevel
-    prof = VolumeProfile(
-        levels=tuple(
-            VPLevel(price=p, volume=1.0) for p in (val, poc, vah)
-        ),
-        poc=poc, vah=vah, val=val, step=step,
+    sim = BacktestSimulator(
+        symbol="NIFTY", exchange="NFO", timeframe="1m", initial_cash=1_000_000.0,
+        slippage=FixedSlippage(0.05), commission=FlatCommission(20.0), statutory=None,
     )
-    monkeypatch.setattr(
-        "ntrade.engines.strategies.build_volume_profile",
-        lambda *a, **kw: prof,
-    )
-    return prof
+    sim.register_strategy(ValentiniScalper(symbol="NIFTY", range_size=4.0, warmup=15))
+    sim.run(df)
 
-
-# ------------------------------------------------------------------ step (ATR floor)
-
-def test_step_floored_to_atr_when_range_below_atr():
-    k = _kernel()
-    # Explicit tiny range_size (1.0) with real bars whose ATR(14) is larger:
-    # the stop/step must be floored to the ATR, not left at the tight 1.0.
-    strat = ValentiniScalper(symbol=_NIFTY, range_size=1.0, warmup=15)
-    k.register_strategy(strat)
-    # Wide, volatile bars -> ATR(14) well above 1.0.
-    for i in range(30):
-        _candle(k, i, close=100.0 + i * 0.5, open_=99.0 + i * 0.5,
-                high=103.0 + i * 0.5, low=96.0 + i * 0.5, volume=500)
-    assert strat._atr > 1.0, f"setup should yield ATR > 1.0, got {strat._atr}"
-    assert strat._step >= strat._atr, (
-        f"step {strat._step} must be >= ATR {strat._atr}")
+    # The dedicated fill list must have grown (any fills at all); results()
+    # must derive from it so n_trades == len(_fills).
+    assert hasattr(sim, "_fills"), "simulator must expose a dedicated _fills list"
+    bus_fills = [e for e in sim.kernel.bus.history if isinstance(e, OrderFilledEvent)]
+    res = sim.results()
+    assert len(sim._fills) == len(res.trades), \
+        f"results().trades ({len(res.trades)}) must equal _fills ({len(sim._fills)})"
+    assert len(sim._fills) >= len(bus_fills), \
+        "_fills must hold >= the bus's (capped) fill count"
 ```
 
-**Step 2: Run to verify it fails**
+Note: `OrderFilledEvent` is imported at `simulator.py:25`. If the strategy produces zero trades on this synthetic frame, adjust the assertion to still verify `_fills` exists and is the source (e.g., assert `len(sim._fills) >= 0` and that `results()` reads from `_fills` structurally). The KEY regression: `results()` must not read `bus.history`.
 
-Run: `python -m pytest tests/test_valentini_leg_anchor.py::test_step_floored_to_atr_when_range_below_atr -q`
-Expected: FAIL — `strat._atr` is `0.0` (attr exists but is never updated) →
-`assert strat._atr > 1.0` fails.
+**Step 3: Run to verify it fails**
 
-**Step 3: Import `atr`**
+Run: `python -m pytest tests/test_backtest_simulator.py::test_results_fills_not_truncated_by_bus_cap -q`
+Expected: FAIL — `AttributeError: 'BacktestSimulator' object has no attribute '_fills'`.
 
-`strategies.py:16` currently imports `from ntrade.domain.analytics.indicators import vwap, vwap_bands`. Change to:
+**Step 4: Add the dedicated fill list**
+
+In `BacktestSimulator.__init__` (after `self._futures_costs_total = 0.0` at `simulator.py:108`), add:
 
 ```python
-from ntrade.domain.analytics.indicators import atr, vwap, vwap_bands
+        self._fills: list[OrderFilledEvent] = []
 ```
 
-**Step 4: Compute `_atr` and `_step` per candle**
-
-In `on_candle_closed`, after `self._range_size` is set (currently at
-`strategies.py:266-267`), insert:
+Subscribe to fills: find where the simulator builds its kernel/subscribers (near `simulator.py:109-134`). If there's an existing subscribe block, add:
 
 ```python
-        # ATR floor: step can never be tighter than 1x ATR (low-tick IL&O
-        # contracts would otherwise get sub-ATR stops from a small explicit
-        # range_size). calc_auto_range already yields ~1x ATR, so this only
-        # clamps explicit range_size values.
-        a = atr(frame, self.atr_period)
-        self._atr = 0.0
-        if len(a) and pd.notna(a.iloc[-1]) and a.iloc[-1] > 0:
-            self._atr = float(a.iloc[-1])
-        self._step = max(self._range_size or 1.0, self._atr or 0.0)
+        kernel.bus.subscribe(OrderFilledEvent, self._on_fill)
 ```
 
-Place this *after* `self._range_size = self.range_size or calc_auto_range(...)`
-and *before* `step = self._range_size or 1.0` at line 277.
-
-**Step 5: Replace the three step sites**
-
-Line 277 (`step = self._range_size or 1.0` in `on_candle_closed`) → `step = self._step`.
-
-Line 289-290 (`self._profile = build_volume_profile(frame, step=self._range_size or None)`) → `step=self._step`:
+And add a handler method (place it near `register_strategy`):
 
 ```python
-            self._profile = build_volume_profile(
-                frame, step=self._step)
+    def _on_fill(self, event: OrderFilledEvent) -> None:
+        """Record every fill in an unbounded list (the bus history is capped
+        at 10k events, so results() cannot trust it for long runs)."""
+        self._fills.append(event)
 ```
 
-Line 330 (`step = self._range_size or 1.0` in `_update_phase`) → `step = self._step`.
+If the kernel is created outside `__init__` (passed in), subscribe in `run()` before the loop instead (after `self.kernel = kernel` is available). Match the existing subscribe style in the file (search for `bus.subscribe`).
 
-Line 430 (`step = self._range_size or 1.0` in `_emit_entry`) → `step = self._step`.
+**Step 5: Rewrite `results()` to read from `_fills`**
 
-**Step 6: Run the new test to verify it passes**
+`simulator.py:253` — change:
 
-Run: `python -m pytest tests/test_valentini_leg_anchor.py -q`
-Expected: PASS — 1 passed.
+```python
+        fills = [e for e in self.kernel.bus.history if isinstance(e, OrderFilledEvent)]
+```
+to:
+```python
+        fills = self._fills
+```
+
+Keep the rest of `results()` unchanged.
+
+**Step 6: Run the test to verify it passes + full backtest suite**
+
+Run: `python -m pytest tests/test_backtest_simulator.py -q`
+Expected: PASS.
+
+Run: `python -m pytest tests/test_zero_parity_across_modes.py tests/test_backtest_risk_breaker.py -q`
+Expected: all pass (zero-parity preserved). NOTE: the zero-parity suite has real-time loops and can take 2-3 min — allow time.
 
 **Step 7: Commit**
 
 ```bash
-git add ntrade/engines/strategies.py tests/test_valentini_leg_anchor.py
-git commit -m "feat: floor valentini step at 1x ATR (sub-ATR stop guard)"
+git add ntrade/backtest/simulator.py tests/test_backtest_simulator.py
+git commit -m "fix: backtest results use dedicated fill list (exact metrics >10k events)"
 ```
 
 ## Global Constraints (apply to this task)
 
-- Only modify `ntrade/engines/strategies.py` and create `tests/test_valentini_leg_anchor.py`.
-- `tests/test_valentini_strategy.py` has uncommitted WIP that must NOT be
-  staged or committed. Do NOT touch that file, and do NOT import from it.
-- Existing constructor params must keep their defaults and semantics.
+- Modify ONLY `ntrade/backtest/simulator.py` and `tests/test_backtest_simulator.py`.
+- Zero-parity must hold (fills still at reference price; only the results aggregation source changes).
 - Keep it lazy: no new modules, no refactors of unrelated code.
 
 ## Report contract
 
 Write your report to `.superpowers/sdd/briefs/task-2-report.md`. Report:
 status (DONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED), the commit hash,
-a one-line test summary with the pytest output line, and any concerns.
+a one-line test summary with the pytest output lines, and any concerns.

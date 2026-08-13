@@ -1,0 +1,114 @@
+=== RE-REVIEW: commits after bdee309 ===
+785b2e7 chore: ledger update
+c5f5521 fix: paper broker BUY-flatten short ZeroDivisionError + short avg_price parity
+
+=== FIX DIFF ===
+diff --git a/ntrade/brokers/paper.py b/ntrade/brokers/paper.py
+index 176c130..0cb4d62 100644
+--- a/ntrade/brokers/paper.py
++++ b/ntrade/brokers/paper.py
+@@ -146,48 +146,40 @@ class PaperBroker(BrokerAdapter):
+         order.avg_price = round(fill_price, 2)
+         self._orders.append(order)
+         # Authoritative broker state: fills mutate balance + positions so the
+         # PositionSyncEngine reconciles paper to its own reality instead of
+         # wiping the kernel (the old get_positions()=[] wiped everything).
+         fill_price = order.avg_price
+         notional = fill_price * order.quantity
+         pos = self._positions.get(order.instrument.symbol)
++        delta = order.quantity if order.side.value == "BUY" else -order.quantity
++        qty = (pos.quantity if pos else 0) + delta
+         if order.side.value == "BUY":
+             self._balance = round(self._balance - notional, 4)
+-            qty = (pos.quantity if pos else 0) + order.quantity
+-            if pos is None:
+-                pos = Position(symbol=order.instrument.symbol, quantity=qty,
+-                               avg_price=fill_price, ltp=fill_price,
+-                               product=order.trade_type.value)
+-                self._positions[order.instrument.symbol] = pos
+-            else:
+-                if pos.quantity * qty >= 0:
+-                    total = pos.avg_price * abs(pos.quantity) + fill_price * order.quantity
+-                    pos.avg_price = round(total / abs(qty), 4)
+-                else:
+-                    pos.avg_price = fill_price
+-                pos.quantity = qty
+-                pos.ltp = fill_price
+-        else:  # SELL
++        else:
+             self._balance = round(self._balance + notional, 4)
+-            qty = (pos.quantity if pos else 0) - order.quantity
+-            if pos is None:
+-                pos = Position(symbol=order.instrument.symbol, quantity=qty,
+-                               avg_price=fill_price, ltp=fill_price,
+-                               product=order.trade_type.value)
+-                self._positions[order.instrument.symbol] = pos
+-            else:
+-                pos.quantity = qty
+-                pos.ltp = fill_price
+-                # exit-and-reverse: the residual opens a fresh short
+-                if pos.quantity * pos.avg_price < 0:
+-                    pos.avg_price = fill_price
+-            if qty == 0:
+-                del self._positions[order.instrument.symbol]
++        if qty == 0:
++            # Flattened: drop the position (mirror of PortfolioEngine).
++            self._positions.pop(order.instrument.symbol, None)
++        elif pos is None:
++            self._positions[order.instrument.symbol] = Position(
++                symbol=order.instrument.symbol, quantity=qty,
++                avg_price=fill_price, ltp=fill_price,
++                product=order.trade_type.value)
++        else:
++            # Same-direction add -> weighted average; partial exit (same sign)
++            # keeps the entry price; exit-and-reverse -> fresh at the fill.
++            if pos.quantity * qty > 0 and abs(qty) > abs(pos.quantity):
++                total = pos.avg_price * abs(pos.quantity) + fill_price * order.quantity
++                pos.avg_price = round(total / abs(qty), 4)
++            elif pos.quantity * qty < 0:
++                pos.avg_price = fill_price  # reversed: residual opens fresh
++            pos.quantity = qty
++            pos.ltp = fill_price
+         return order
+ 
+     # ------------------------------------------------- order lifecycle
+     def cancel_order(self, order: Order) -> Order:
+         if order.order_id is not None:
+             for stored in self._orders:
+                 if stored.order_id == order.order_id and stored.status in (OrderStatus.PENDING, OrderStatus.PARTIALLY_FILLED):
+                     stored.status = OrderStatus.CANCELLED
+diff --git a/tests/test_paper_broker_state.py b/tests/test_paper_broker_state.py
+index 8f658dd..b74962f 100644
+--- a/tests/test_paper_broker_state.py
++++ b/tests/test_paper_broker_state.py
+@@ -17,8 +17,30 @@ def test_paper_broker_reports_authoritative_balance_and_positions():
+     assert broker.get_balance() < 100_000.0, "balance must decrease on a buy fill"
+     pos = broker.get_positions()
+     assert len(pos) == 1 and pos[0].quantity == 10, "position must be tracked"
+ 
+     # Sell 10 @ 101 -> back to flat; balance increases by the sell notional.
+     rel.order.place("SELL", 10, order_type=OrderType.MARKET, price=101.0)
+     assert broker.get_positions() == [], "position must close on the sell"
+     assert broker.get_balance() > 99_900.0, "balance must recover on the sell"
++
++
++def test_paper_broker_short_round_trip_does_not_crash():
++    """Regression: BUY-flattening a short hit ZeroDivisionError (the BUY
++    branch lacked the qty==0 guard). Also checks partial-cover avg_price."""
++    broker = PaperBroker()
++    rel = Equity("RELIANCE", broker=broker)
++    broker.seed_quote("RELIANCE", 100.0)
++
++    # Open a short: SELL 10 @ 100 -> qty -10.
++    rel.order.place("SELL", 10, order_type=OrderType.MARKET, price=100.0)
++    assert broker.get_positions()[0].quantity == -10
++
++    # Partial cover: BUY 4 @ 105 -> qty -6; avg_price keeps the entry (100).
++    rel.order.place("BUY", 4, order_type=OrderType.MARKET, price=105.0)
++    pos = broker.get_positions()[0]
++    assert pos.quantity == -6, f"expected -6, got {pos.quantity}"
++    assert pos.avg_price == 100.0, f"partial cover keeps entry avg, got {pos.avg_price}"
++
++    # Flatten: BUY 6 @ 110 -> qty 0 -> position removed (must NOT divide by 0).
++    rel.order.place("BUY", 6, order_type=OrderType.MARKET, price=110.0)
++    assert broker.get_positions() == [], "short must flatten cleanly"

@@ -1,0 +1,215 @@
+=== COMMITS (d393598..HEAD) ===
+eace3ec feat: ts valentini pnl-gated reversal to leg POC
+
+=== DIFF STAT ===
+ ui/src/lib/__tests__/valentini.test.ts | 35 +++++++++++++++++++++++++++
+ ui/src/lib/valentini.ts                | 43 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 78 insertions(+)
+
+=== FULL DIFF (valentini.ts + valentini.test.ts) ===
+diff --git a/ui/src/lib/__tests__/valentini.test.ts b/ui/src/lib/__tests__/valentini.test.ts
+index 4761ea0..6528a68 100644
+--- a/ui/src/lib/__tests__/valentini.test.ts
++++ b/ui/src/lib/__tests__/valentini.test.ts
+@@ -341,10 +341,45 @@ describe('auction trail', () => {
+     const cs = [
+       ...baseSession(), absorptionBar(20, 108), candle(21, { close: 118, volume: 1000 }), candle(22, { close: 120, volume: 1000 }),
+       // post-session candle that would also read as a structure break
+       candle(23, { close: 116, open: 122, high: 123, low: 115, ts: OUTSIDE }),
+     ]
+     const res = runValentini(cs, { ...OPTS, sessionEnd: '15:25' })
+     const t = res.trades.find((t) => t.side === 'BUY')
+     expect(t?.reason).toBe('session_close')
+   })
+ })
++
++describe('reversal', () => {
++  // The mirror recomputes the session POC per candle; the reversal targets the
++  // *computed* POC (baseSession's heavy centre keeps it ~112), so assertions
++  // check that a reversal trade fired (non-null POC target), not a magic 118.
++  it('does NOT arm a reversal without day profit', () => {
++    const cs = [
++      ...baseSession(),
++      ...Array.from({ length: 35 }, (_, k) => candle(20 + k, { close: 120 - k * 0.5 })), // downtrend
++      absorptionBar(55, 90),
++      candle(56, { close: 92 }),
++    ]
++    const res = runValentini(cs, { ...OPTS })
++    const reversal = res.trades.find((t) => t.tp !== null && t.reason === null && t.exitIndex === null)
++    expect(reversal).toBeUndefined()
++  })
++  it('fires a BUY reversal to the leg POC after a profitable day', () => {
++    const cs = [
++      ...baseSession(),
++      ...Array.from({ length: 35 }, (_, k) => candle(20 + k, { close: 120 - k * 0.5 })),
++      absorptionBar(55, 90),
++      candle(56, { close: 92 }),
++    ]
++    // White-box: seed a profitable day, mirroring how the Python strategy
++    // test sets `strat._day_pnl = 5000.0`. The mirror is a pure function
++    // with no broker fills, so it can't manufacture a winning round-trip
++    // from the fixture — day PnL is seeded via the option.
++    const res = runValentini(cs, { ...OPTS, initialDayPnl: 5000 })
++    const reversal = res.trades.find((t) => t.side === 'BUY' && t.tp !== null && t.reason === null)
++    expect(reversal).toBeDefined()
++    // Reversal targets the computed leg POC (above entry on a BUY fade back
++    // toward it — Python's test asserts tp=118 with entry 92).
++    expect(reversal!.tp).toBeGreaterThan(reversal!.entry)
++  })
++})
+diff --git a/ui/src/lib/valentini.ts b/ui/src/lib/valentini.ts
+index bd84d9f..780bc2d 100644
+--- a/ui/src/lib/valentini.ts
++++ b/ui/src/lib/valentini.ts
+@@ -82,20 +82,23 @@ export interface ValentiniOptions {
+   /** Impulse span multiple that starts a new leg (default 2.0). */
+   legImpulseMult?: number
+   /** Recent-2-bar volume vs prior-median threshold for accumulation (1.5). */
+   accumVolumeMult?: number
+   /** R-multiple of profit that arms the swing-pivot trail (default 1.0). */
+   trailArmMult?: number
+   /** New-swing-extreme volume fraction of impulse volume = divergence (0.6). */
+   divergenceVolumeMult?: number
+   /** Leg-POC distance multiple marking an overextended reversal zone (2.0). */
+   reverseExtensionMult?: number
++  /** Starting realized day PnL (white-box; the mirror has no broker fills, so
++   *  tests seed it — mirrors Python's `_day_pnl = 5000.0` white-box setup). */
++  initialDayPnl?: number
+ }
+ 
+ const toMinutes = (hhmm: string): number => {
+   const [h, m] = hhmm.split(':').map(Number)
+   return h * 60 + m
+ }
+ 
+ /** IST minutes-of-day for a wire UTC epoch (IST has no DST — fixed offset). */
+ function istMinuteOfDay(epochSeconds: number): number {
+   const shifted = ((epochSeconds + 19800) % 86400 + 86400) % 86400
+@@ -208,20 +211,22 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
+     const m = istMinuteOfDay(candles[i].time)
+     return m >= sessionStart && m <= sessionEnd
+   }
+   const close = (i: number): number => candles[i].close
+ 
+   // ponytail: session-keyed volume profile (guide "location") + prior-day POC
+   // used as the aggression target. Built from the bars of each IST day.
+   let priorPoc: number | null = null
+   let dayBars: Candle[] = []
+   let legStartIdx = 0
++  let dayPnl = opts.initialDayPnl ?? 0
++  let dayPnlSettled = 0
+   let sessionVwap = 0
+   let rangeBars: RangeBar[] = []
+   let profileReady = false
+   let sessionPoc = 0
+   let sessionVal = 0
+   let sessionVah = 0
+   const valueEdgeOk = (side: 'BUY' | 'SELL', price: number): boolean => {
+     // Absorption must sit at the value edge (VAL for longs, VAH for shorts).
+     if (!profileReady) return true // warm-up: no profile yet
+     return side === 'BUY'
+@@ -287,20 +292,47 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
+     return side === 'BUY' ? c2.high > p.high : c2.low < p.low
+   }
+   const structureBroken = (side: 'BUY' | 'SELL'): boolean => {
+     const d = doneRangeBars()
+     if (d.length < 2) return false
+     const p = d[d.length - 2]
+     const c2 = d[d.length - 1]
+     return side === 'BUY' ? c2.close < p.low : c2.close > p.high
+   }
+ 
++  const maybeReverse = (idx: number): boolean => {
++    if (dayPnl <= 0 || active !== null) return false
++    if (sessionPoc <= 0) return false
++    // Python's _maybe_reverse reads the most recent raw absorption in the
++    // recency window (`recent[-1]` from self._absorptions), not the
++    // value-edge-armed `_last_absorption` — a reversal can fade an
++    // absorption that sits at an extreme, far from the value edge.
++    const recentAbs = absorptions.filter(
++      (a) =>
++        a.barIndex <= idx &&
++        a.barIndex >= idx + 1 - absLookback &&
++        istDateKey(candles[a.barIndex].time) === istDateKey(candles[idx].time),
++    )
++    if (recentAbs.length === 0) return false
++    const a = recentAbs[recentAbs.length - 1]
++    const close = candles[idx].close
++    const ext = (opts.reverseExtensionMult ?? 2.0) * step
++    if (a.side === 'SELL' && close > sessionPoc + ext && close < a.price) {
++      const sl = a.price + step
++      if (sl > close) { trades.push({ side: 'SELL', entryIndex: idx, entry: close, sl, tp: sessionPoc, rr: 0, exitIndex: null, exit: null, reason: null }); active = { side: 'SELL', entry: close, sl, tp: sessionPoc, rr: 0, impulseVolume: 0 }; return true }
++    } else if (a.side === 'BUY' && close < sessionPoc - ext && close > a.price) {
++      const sl = a.price - step
++      if (sl < close) { trades.push({ side: 'BUY', entryIndex: idx, entry: close, sl, tp: sessionPoc, rr: 0, exitIndex: null, exit: null, reason: null }); active = { side: 'BUY', entry: close, sl, tp: sessionPoc, rr: 0, impulseVolume: 0 }; return true }
++    }
++    return false
++  }
++
+   let dayKey = ''
+   for (let i = 0; i < candles.length; i++) {
+     const c = candles[i]
+     const key = istDateKey(c.time)
+ 
+     // Strict intraday: a new IST day force-closes any open trade at the prior
+     // day's close (even when the data jumps straight from 15:25 to the next
+     // 09:15 with no out-of-session bar to trigger the gate) and wipes the
+     // phase machine — no position or setup ever carries overnight.
+     if (key !== dayKey) {
+@@ -318,20 +350,22 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
+       // today's profile from scratch (strict intraday — no cross-day carry).
+       if (sessionVah > sessionVal) priorPoc = sessionPoc
+       dayKey = key
+       phase = 'waiting'
+       lastAbsorption = null
+       absorptionWindowIdx = 0
+       dayBars = []
+       legStartIdx = 0
+       sessionVwap = 0
+       rangeBars = []
++      dayPnl = opts.initialDayPnl ?? 0
++      dayPnlSettled = 0
+     }
+     // Rebuild today's location profile from the bars seen so far this session.
+     dayBars.push(c)
+     // Advance the leg anchor: the last 1m candle with span >= legImpulseMult
+     // * step starts a fresh leg (mirror of strategies.py on_candle_closed).
+     const impThr = (opts.legImpulseMult ?? 2.0) * step
+     let legStart = legStartIdx
+     for (let k = dayBars.length - 1; k >= 0; k--) {
+       if (dayBars[k].high - dayBars[k].low >= impThr) { legStart = k; break }
+     }
+@@ -387,24 +421,33 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
+           trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'structure_break' }
+           active = null
+         } else if (low <= active.entry - (opts.trailArmMult ?? 1.0) * Math.abs(active.entry - active.sl)) {
+           const pivot = lastSwingHigh()
+           if (pivot !== null && pivot < active.sl) active.sl = pivot
+         }
+       }
+       continue
+     }
+ 
++    // Settle any closed trades' PnL once (the reversal gate reads dayPnl).
++    while (dayPnlSettled < trades.length && trades[dayPnlSettled].exit !== null) {
++      const t = trades[dayPnlSettled]
++      dayPnl += t.side === 'BUY' ? (t.exit! - t.entry) : (t.entry - t.exit!)
++      dayPnlSettled++
++    }
++
+     // Warm-up + session gate: the strategy only arms setups inside the
+     // trading session (never overnight risk).
+     if (i < warmup || !inSession(i)) continue
+ 
++    if (dayPnl > 0 && maybeReverse(i)) continue
++
+     // Phase machine (mirrors `_update_phase`). Absorptions are precomputed,
+     // but each evaluation must only see bars up to the current close (the
+     // backend recomputes over the frame-so-far) — filter out any future
+     // absorption before the recency check. The same-IST-day guard keeps a
+     // prior day's absorption from arming today's setup.
+     const recent = absorptions.filter(
+       (a) =>
+         a.barIndex <= i &&
+         a.barIndex >= i + 1 - absLookback &&
+         istDateKey(candles[a.barIndex].time) === key,

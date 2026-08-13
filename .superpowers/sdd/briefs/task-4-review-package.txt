@@ -1,0 +1,360 @@
+=== COMMITS (91c8e61..HEAD) ===
+6d21b3f feat: ts valentini auction-following trail
+
+=== DIFF STAT ===
+ ui/src/lib/__tests__/valentini.test.ts |  36 ++++++++++--
+ ui/src/lib/valentini.ts                | 102 +++++++++++++++++++++++----------
+ 2 files changed, 102 insertions(+), 36 deletions(-)
+
+=== FULL DIFF (valentini.ts + valentini.test.ts) ===
+diff --git a/ui/src/lib/__tests__/valentini.test.ts b/ui/src/lib/__tests__/valentini.test.ts
+index bbf45f7..4761ea0 100644
+--- a/ui/src/lib/__tests__/valentini.test.ts
++++ b/ui/src/lib/__tests__/valentini.test.ts
+@@ -72,23 +72,24 @@ describe('valentini state machine', () => {
+     const bars = [
+       ...baseSession(),
+       absorptionBar(20, 108),     // BUY absorption at VAL
+       bar(21, 112, { volume: 1000 }), // consolidate at POC
+       bar(22, 120, { volume: 1000 }), // break above VAH + VWAP -> signal
+     ]
+     const r = runValentini(bars, OPTS)
+     const t = r.trades[0]
+     expect(t.side).toBe('BUY')
+     expect(t.entryIndex).toBe(22)
+-    // SL = VAL - step = 108 - 4; TP = 2R from entry (no prior POC in one day).
++    // SL = VAL - step = 108 - 4; no prior-day POC in a single session, so the
++    // entry is a runner (tp null) gated by the R-multiple R:R (2.0 >= minRr).
+     expect(t.sl).toBeCloseTo(108.0 - 4.0, 6)
+-    expect(t.tp).toBeCloseTo(t.entry + (t.entry - t.sl) * 2.0, 6)
++    expect(t.tp).toBeNull()
+     expect(t.rr).toBeCloseTo(2.0, 6)
+   })
+ 
+   it('blocks the signal when price is below VWAP (downtrend)', () => {
+     const bars = [
+       ...Array.from({ length: 35 }, (_, i) => candle(i, { close: 120.0 - i * 0.5 })),
+       absorptionBar(35, 100.0),
+       candle(36, { close: 101.8 }),
+       candle(37, { close: 101.6 }),
+     ]
+@@ -251,40 +252,41 @@ describe('valentini state machine', () => {
+       bar(42, 112, { ts: T1 + 21 * 60 }),
+       bar(43, 120, { ts: T1 + 22 * 60 }),
+     ]
+     const r = runValentini([...day1, ...day2], OPTS)
+     const t = r.trades[0]
+     expect(t.side).toBe('BUY')
+     expect(t.entryIndex).toBe(43)
+     expect(r.trades).toHaveLength(1)
+   })
+ 
+-  it('uses the R-multiple fallback when the prior POC is not a valid target', () => {
++  it('runs with no fixed target when the prior POC is not a valid target', () => {
+     // Day 1 builds a profile with POC=112; day 2's BUY entry (~120) is above
+-    // the prior POC, so the prior POC cannot be the target -> R-multiple used.
++    // the prior POC, so the prior POC cannot be the target -> the entry is a
++    // runner (tp null), still gated by the R-multiple R:R.
+     const day1 = [
+       ...Array.from({ length: 10 }, (_, k) => bar(k, 112, { volume: 500, ts: T0 + k * 60 })),
+       ...Array.from({ length: 3 }, (_, k) => bar(10 + k, 108, { ts: T0 + (10 + k) * 60 })),
+       ...Array.from({ length: 3 }, (_, k) => bar(13 + k, 116, { ts: T0 + (13 + k) * 60 })),
+       bar(16, 112, { volume: 500, ts: T0 + 16 * 60 }),
+     ]
+     const T1 = Date.UTC(2026, 7, 4, 3, 45) / 1000 // 09:15 IST
+     const day2 = [
+       ...Array.from({ length: 10 }, (_, j) => bar(17 + j, 112, { volume: 500, ts: T1 + j * 60 })),
+       absorptionBar(27, 108, T1 + 10 * 60),
+       bar(28, 112, { volume: 1000, ts: T1 + 11 * 60 }),
+       bar(29, 120, { volume: 1000, ts: T1 + 12 * 60 }),
+     ]
+     const r = runValentini([...day1, ...day2], OPTS)
+     const t = r.trades[0]
+     expect(t.side).toBe('BUY')
+-    expect(t.tp).toBeCloseTo(t.entry + (t.entry - t.sl) * 2.0, 6)
++    expect(t.tp).toBeNull()
+   })
+ })
+ 
+ describe('swingBias', () => {
+   const rb = (high: number, low: number, complete: boolean) => ({
+     time: 0, open: 0, high, low, close: (high + low) / 2, volume: 1, isComplete: complete,
+   })
+   it('is BUY on higher high + higher low', () => {
+     expect(swingBias([rb(100, 98, true), rb(101, 99, true)])).toBe('BUY')
+   })
+@@ -315,10 +317,34 @@ describe('direction gate', () => {
+     const cs = [
+       ...baseSession(),
+       absorptionBar(20, 108),              // BUY absorption at VAL
+       candle(21, { close: 118 }),
+       candle(22, { close: 122 }),          // above VWAP, not in balance
+     ]
+     const res = runValentini(cs, { ...OPTS, fadeExtended: false })
+     expect(buys(res)).toBeGreaterThanOrEqual(0)
+   })
+ })
++
++describe('auction trail', () => {
++  it('enters a runner (tp null) when no prior-day POC clears minRr', () => {
++    // TS mirror computes the profile from real bars (POC 112, VAL 108), so the
++    // trigger close must sit within 2*step of the POC and carry volume — plain
++    // `candle()` (vol 100, close 122) would fail both the accumulation and the
++    // volume gates and never reach the signal phase.
++    const cs = [...baseSession(), absorptionBar(20, 108), candle(21, { close: 118, volume: 1000 }), candle(22, { close: 120, volume: 1000 })]
++    const res = runValentini(cs, { ...OPTS })
++    const t = res.trades.find((t) => t.side === 'BUY')
++    expect(t).toBeDefined()
++    expect(t!.tp).toBeNull()
++  })
++  it('session close wins over structure break', () => {
++    const cs = [
++      ...baseSession(), absorptionBar(20, 108), candle(21, { close: 118, volume: 1000 }), candle(22, { close: 120, volume: 1000 }),
++      // post-session candle that would also read as a structure break
++      candle(23, { close: 116, open: 122, high: 123, low: 115, ts: OUTSIDE }),
++    ]
++    const res = runValentini(cs, { ...OPTS, sessionEnd: '15:25' })
++    const t = res.trades.find((t) => t.side === 'BUY')
++    expect(t?.reason).toBe('session_close')
++  })
++})
+diff --git a/ui/src/lib/valentini.ts b/ui/src/lib/valentini.ts
+index 2902929..bd84d9f 100644
+--- a/ui/src/lib/valentini.ts
++++ b/ui/src/lib/valentini.ts
+@@ -26,29 +26,30 @@
+  * 3-day window stays cheap even when a bar completes every tick.
+  */
+ 
+ import type { Candle } from '../types/market'
+ import { istDateKey } from './istTime'
+ import { calcAutoRange, atrSeries, buildRangeBars, swingBias, type RangeBar } from './rangeBars'
+ import { buildVolumeProfile, detectAbsorptions, type Absorption } from './indicators'
+ 
+ export type ValentiniPhase = 'waiting' | 'absorbing' | 'accumulating' | 'signal'
+ 
+-export type ExitReason = 'stop' | 'target' | 'session_close'
++export type ExitReason = 'stop' | 'target' | 'divergence' | 'structure_break' | 'session_close'
+ 
+ export interface ValentiniTrade {
+   side: 'BUY' | 'SELL'
+   /** Bar index (into the input candles) where the entry fires. */
+   entryIndex: number
+   entry: number
+   sl: number
+-  tp: number
++  /** Target — null for a runner (auction-following trail, no fixed target). */
++  tp: number | null
+   rr: number
+   /** Exit bar index / price / reason — null while the trade is open. */
+   exitIndex: number | null
+   exit: number | null
+   reason: ExitReason | null
+ }
+ 
+ export interface ValentiniResult {
+   phase: ValentiniPhase
+   /** All trades in chronological order (last is the open one, if any). */
+@@ -194,21 +195,21 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
+         s0 = i
+         sKey = key ?? ''
+       }
+     }
+   }
+ 
+   const trades: ValentiniTrade[] = []
+   let phase: ValentiniPhase = 'waiting'
+   let lastAbsorption: Absorption | null = null
+   let absorptionWindowIdx = 0
+-  let active: { side: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; rr: number } | null = null
++  let active: { side: 'BUY' | 'SELL'; entry: number; sl: number; tp: number | null; rr: number; impulseVolume: number } | null = null
+ 
+   const inSession = (i: number): boolean => {
+     const m = istMinuteOfDay(candles[i].time)
+     return m >= sessionStart && m <= sessionEnd
+   }
+   const close = (i: number): number => candles[i].close
+ 
+   // ponytail: session-keyed volume profile (guide "location") + prior-day POC
+   // used as the aggression target. Built from the bars of each IST day.
+   let priorPoc: number | null = null
+@@ -257,20 +258,48 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
+   const direction = (closePrice: number): 'BUY' | 'SELL' | null => {
+     if (!volumeSupports()) return null
+     const vwapSide = closePrice > sessionVwap
+       ? 'BUY' as const
+       : closePrice < sessionVwap ? 'SELL' as const : null
+     if (vwapSide === null) return null
+     const struct = swingBias(rangeBars)
+     if (struct === null) return vwapSide
+     return struct === vwapSide ? vwapSide : null
+   }
++  const doneRangeBars = () => rangeBars.filter((b) => b.isComplete)
++  const lastSwingLow = (): number | null => {
++    const d = doneRangeBars()
++    if (d.length < 2) return null
++    return d[d.length - 1].low > d[d.length - 2].low ? d[d.length - 1].low : null
++  }
++  const lastSwingHigh = (): number | null => {
++    const d = doneRangeBars()
++    if (d.length < 2) return null
++    return d[d.length - 1].high < d[d.length - 2].high ? d[d.length - 1].high : null
++  }
++  const divergenceExit = (side: 'BUY' | 'SELL'): boolean => {
++    const d = doneRangeBars()
++    if (d.length < 2) return false
++    const p = d[d.length - 2]
++    const c2 = d[d.length - 1]
++    const impVol = active?.impulseVolume ?? 0
++    if (impVol <= 0) return false
++    if ((c2.volume || 0) >= (opts.divergenceVolumeMult ?? 0.6) * impVol) return false
++    return side === 'BUY' ? c2.high > p.high : c2.low < p.low
++  }
++  const structureBroken = (side: 'BUY' | 'SELL'): boolean => {
++    const d = doneRangeBars()
++    if (d.length < 2) return false
++    const p = d[d.length - 2]
++    const c2 = d[d.length - 1]
++    return side === 'BUY' ? c2.close < p.low : c2.close > p.high
++  }
+ 
+   let dayKey = ''
+   for (let i = 0; i < candles.length; i++) {
+     const c = candles[i]
+     const key = istDateKey(c.time)
+ 
+     // Strict intraday: a new IST day force-closes any open trade at the prior
+     // day's close (even when the data jumps straight from 15:25 to the next
+     // 09:15 with no out-of-session bar to trigger the gate) and wipes the
+     // phase machine — no position or setup ever carries overnight.
+@@ -313,47 +342,62 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
+     sessionVah = prof.vah
+     sessionVwap = vwap[i]?.vwap ?? 0
+     rangeBars = buildRangeBars(dayBars, rangeSize, { atrPeriod: opts.atrPeriod ?? 14, tickSize: opts.tickSize })
+     profileReady = true
+ 
+     // Trade management first — an open position exits on SL/TP/breakeven/
+     // session close and blocks new entries.
+     if (active) {
+       const low = c.low
+       const high = c.high
++      // Hard session close FIRST: the gate is absolute and wins over the
++      // conditional auction exits (mirror of strategies.py _manage_exit).
++      if (!inSession(i)) {
++        trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'session_close' }
++        active = null
++        continue
++      }
+       if (active.side === 'BUY') {
+         if (low <= active.sl) {
+           trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: active.sl, reason: 'stop' }
+           active = null
+-        } else if (high >= active.tp) {
++        } else if (active.tp !== null && high >= active.tp) {
+           trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: active.tp, reason: 'target' }
+           active = null
+-        } else {
+-          const half = active.entry + 0.5 * (active.tp - active.entry)
+-          if (high >= half && active.sl < active.entry) active.sl = active.entry // trail to breakeven
++        } else if (divergenceExit('BUY')) {
++          trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'divergence' }
++          active = null
++        } else if (structureBroken('BUY')) {
++          trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'structure_break' }
++          active = null
++        } else if (high >= active.entry + (opts.trailArmMult ?? 1.0) * Math.abs(active.entry - active.sl)) {
++          const pivot = lastSwingLow()
++          if (pivot !== null && pivot > active.sl) active.sl = pivot
+         }
+       } else {
+         if (high >= active.sl) {
+           trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: active.sl, reason: 'stop' }
+           active = null
+-        } else if (low <= active.tp) {
++        } else if (active.tp !== null && low <= active.tp) {
+           trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: active.tp, reason: 'target' }
+           active = null
+-        } else {
+-          const half = active.entry - 0.5 * (active.entry - active.tp)
+-          if (low <= half && active.sl > active.entry) active.sl = active.entry // trail to breakeven
++        } else if (divergenceExit('SELL')) {
++          trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'divergence' }
++          active = null
++        } else if (structureBroken('SELL')) {
++          trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'structure_break' }
++          active = null
++        } else if (low <= active.entry - (opts.trailArmMult ?? 1.0) * Math.abs(active.entry - active.sl)) {
++          const pivot = lastSwingHigh()
++          if (pivot !== null && pivot < active.sl) active.sl = pivot
+         }
+       }
+-      if (active && !inSession(i)) {
+-        trades[trades.length - 1] = { ...trades[trades.length - 1], exitIndex: i, exit: close(i), reason: 'session_close' }
+-        active = null
+-      }
+       continue
+     }
+ 
+     // Warm-up + session gate: the strategy only arms setups inside the
+     // trading session (never overnight risk).
+     if (i < warmup || !inSession(i)) continue
+ 
+     // Phase machine (mirrors `_update_phase`). Absorptions are precomputed,
+     // but each evaluation must only see bars up to the current close (the
+     // backend recomputes over the frame-so-far) — filter out any future
+@@ -409,43 +453,39 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
+       if (side === 'BUY' && dirn === 'BUY') {
+         if (fadeExtended && close(i) > v.upper) continue // extended — wait for pullback
+         if (!cvdAgrees('BUY', i)) continue
+         phase = 'signal'
+       } else if (side === 'SELL' && dirn === 'SELL') {
+         if (fadeExtended && close(i) < v.lower) continue // extended — wait for pullback
+         if (!cvdAgrees('SELL', i)) continue
+         phase = 'signal'
+       }
+       if (phase === 'signal') {
+-        // Stop: VAL − step (long) / VAH + step (short). Target: prefer the
+-        // prior session's POC when its R:R clears minRr, else R-multiple.
++        // Stop: VAL − step (long) / VAH + step (short). Entry is a runner
++        // (tp null) unless the prior session's POC clears minRr.
+         const entry = close(i)
+         const sl = side === 'BUY'
+           ? (sessionVah > sessionVal ? sessionVal - step : lastAbsorption.price - step)
+           : (sessionVah > sessionVal ? sessionVah + step : lastAbsorption.price + step)
+-        let tp = side === 'BUY'
+-          ? entry + (entry - sl) * tpMultiplier
+-          : entry - (sl - entry) * tpMultiplier
+-        let rr = side === 'BUY'
+-          ? (entry > sl ? (tp - entry) / (entry - sl) : 0)
+-          : (sl > entry ? (entry - tp) / (sl - entry) : 0)
++        const rrFb = side === 'BUY'
++          ? (entry > sl ? ((entry + (entry - sl) * tpMultiplier) - entry) / (entry - sl) : 0)
++          : (sl > entry ? (entry - ((sl - entry) * tpMultiplier)) / (sl - entry) : 0)
++        let tp: number | null = null
++        let rr = rrFb
+         if (priorPoc !== null) {
+-          const tpPoc = priorPoc
+           const rrPoc = side === 'BUY'
+-            ? (entry > sl && tpPoc > entry ? (tpPoc - entry) / (entry - sl) : 0)
+-            : (sl > entry && tpPoc < entry ? (entry - tpPoc) / (sl - entry) : 0)
+-          if (rrPoc >= minRr) {
+-            tp = tpPoc
+-            rr = rrPoc
+-          }
++            ? (entry > sl && priorPoc > entry ? (priorPoc - entry) / (entry - sl) : 0)
++            : (sl > entry && priorPoc < entry ? (entry - priorPoc) / (sl - entry) : 0)
++          if (rrPoc >= minRr) { tp = priorPoc; rr = rrPoc }
+         }
+         if (rr >= minRr) {
++          const impulseVolume = dayBars.slice(legStartIdx).reduce((a, b) => a + (b.volume || 0), 0)
+           trades.push({ side, entryIndex: i, entry, sl, tp, rr, exitIndex: null, exit: null, reason: null })
+-          active = { side, entry, sl, tp, rr }
++          active = { side, entry, sl, tp, rr, impulseVolume }
+         }
+         phase = 'waiting' // one signal per setup
+       }
+     }
+   }
+ 
+   return { phase, trades, lastAbsorption }
+ }

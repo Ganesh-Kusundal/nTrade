@@ -1,50 +1,32 @@
-# Task 2 Report: ATR floor on step
+# Task 2 Report: BacktestSimulator dedicated fill list
 
-- **Status:** DONE
-- **Commit hash:** `641e28a3d138b1d57473c5f446617fa1f0db4d93`
-- **Branch:** `integration-completeness`
+## Status
+DONE
 
-## Test summary
+## Commit
+`a6da0b2` — `fix: backtest results use dedicated fill list (exact metrics >10k events)`
 
-- `python -m pytest tests/test_valentini_leg_anchor.py -q` → `1 passed in 0.81s`
-- `python -m pytest tests/test_valentini_strategy.py -q` → `24 passed in 5.60s`
+Staged exactly: `ntrade/backtest/simulator.py`, `tests/test_backtest_simulator.py` (verified via `git show --stat HEAD`). No other files staged (repo had large pre-existing uncommitted data/ state left untouched).
 
-## What was done (in order)
+## What changed
+- `ntrade/backtest/simulator.py`
+  - `__init__`: added `self._fills: list[OrderFilledEvent] = []` (after `_futures_costs_total`).
+  - Subscribed `self.kernel.bus.subscribe(OrderFilledEvent, self._on_fill)` after `self.kernel = kernel` (covers both kernel-created-here and passed-in paths; no need for a `run()`-time subscribe since the kernel is always available at end of `__init__`).
+  - Added `_on_fill` handler that appends every fill to `_fills`.
+  - `results()`: replaced the bus.history scan with `fills = self._fills` (the rest of `results()` unchanged).
+- `tests/test_backtest_simulator.py`: new file with the regression test (verbatim from brief).
 
-1. Created `tests/test_valentini_leg_anchor.py` with the exact code from the
-   brief (module docstring, `_kernel`, `_candle`, `_uptrend_bars`,
-   `_absorption_bar`, `_fixed_profile` helpers, and the single test
-   `test_step_floored_to_atr_when_range_below_atr`).
-2. Verified the test fails on the inert state as expected:
-   `assert 0.0 > 1.0` / `got 0.0` (1 failed).
-3. `ntrade/engines/strategies.py` changes, all verbatim per the brief:
-   - Import: `from ntrade.domain.analytics.indicators import atr, vwap, vwap_bands`
-   - Per-candle `_atr`/`_step` computation inserted after the
-     `self._range_size = self.range_size or calc_auto_range(...)` line and
-     before `step = self._range_size or 1.0`.
-   - Replaced all three `step = self._range_size or 1.0` sites (the
-     `on_candle_closed` window step, the `_update_phase` step, the `_emit_entry`
-     step) with `step = self._step`.
-   - Replaced the profile call `build_volume_profile(frame, step=self._range_size or None)`
-     with `build_volume_profile(frame, step=self._step)`.
-4. New test passes: 1 passed.
-5. Regression run passes: 24 passed (no regression).
-6. Committed exactly `ntrade/engines/strategies.py` and
-   `tests/test_valentini_leg_anchor.py` with the required message.
+## Test results
+- Pre-fix (red): `tests/test_backtest_simulator.py::test_results_fills_not_truncated_by_bus_cap` — FAILED
+  `AssertionError: simulator must expose a dedicated _fills list` (1 failed in 79.59s)
+- Post-fix (green):
+  - `python -m pytest tests/test_backtest_simulator.py -q` → `1 passed in 54.47s`
+  - `python -m pytest tests/test_zero_parity_across_modes.py tests/test_backtest_risk_breaker.py -q` → `6 passed in 84.60s (0:01:24)`
 
-## Constraints honored
-
-- Only the two allowed files were modified/created. Nothing else was staged.
-- `tests/test_valentini_strategy.py` was not touched (byte-identical) and was
-  not staged; it remains a working-tree modification alongside all other
-  unrelated uncommitted changes.
-- Constructor params, defaults, and semantics unchanged.
+## Notes on the regression frame
+The synthetic 750-bar frame produced **zero fills** (ValentiniScalper is session/volume-profile driven and stays flat on the synthetic sawtooth; `run()` returned `trades=0`). The assertion `len(sim._fills) == len(res.trades)` still binds: it structurally verifies `results()` derives `n_trades` from `_fills` (0 == 0 here) rather than from `bus.history`, and the `_fills >= bus_fills` check plus the `hasattr` check pin the mechanism. If this synthetic frame had instead produced >10k bus events with real fills, the old code would have truncated them; the regression assertion keeps that path honest for future frames that do fill.
 
 ## Concerns
-
-- None. Commit contains only the two intended files (2 files changed, 102
-  insertions(+), 5 deletions(-)).
-- Note for Task 3/4 consumers: `_step` now defaults to `max(range_size or 1.0, _atr or 0.0)`
-  and is recomputed every candle; profile bucket width now uses `_step` (which
-  differs from the prior `_range_size or None` only when an explicit tiny
-  `range_size` was clamped by ATR, or when `_step` was previously `None`).
+- **Fills are append-only across repeated `run()` calls.** `_fills` is initialized in `__init__` and never cleared at the top of `run()`, matching the pre-existing accumulative behaviour of `bus.history` (the capped deque was also never cleared between runs). A subsequent `run()` on the same simulator would double-count trades from earlier runs in `results()`. Pre-existing semantics, unchanged by this fix — flagging for a possible follow-up (reset `_fills = []` in `run()`) if anyone relies on re-running the same simulator instance.
+- **Test runtime.** The new test takes ~55-80s (full kernel over 750 bars); the brief's 3-minute allowance for the zero-parity suite was ample (84.6s).
+- One incidental note: `_on_fill`'s docstring is duplicated verbatim in the subscription comment in `__init__` — kept for parity with the brief's exact code.

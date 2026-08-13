@@ -1,0 +1,118 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-base text-ink antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #334155 transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    @apply rounded bg-line;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Terminal-style card surface */
+  .tpanel {
+    @apply rounded-lg border border-line/60 bg-panel;
+  }
+  /* Compact data readout (label + value) */
+  .treadout-label {
+    @apply text-[11px] font-medium uppercase tracking-wider text-muted;
+  }
+  .treadout-value {
+    @apply font-mono text-sm text-ink;
+  }
+  /* Pill button used for symbol / interval / speed selectors */
+  .tpill {
+    @apply cursor-pointer rounded-md border border-line/60 bg-panel2/60 px-2.5 py-1 text-xs font-medium
+      text-muted transition-colors duration-150 hover:border-line hover:text-ink
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60;
+  }
+  .tpill-active {
+    @apply border-accent/70 bg-accent/10 text-accent;
+  }
+  .tpill:disabled {
+    @apply cursor-not-allowed opacity-40;
+  }
+  /* Dark <select> */
+  .tselect {
+    @apply w-full cursor-pointer appearance-none rounded-md border border-line/60
+      bg-panel2/60 px-3 py-2 text-sm text-ink transition-colors
+      focus:border-accent/70 focus:outline-none focus:ring-2 focus:ring-accent/40;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.65rem center;
+  }
+  .tselect option {
+    @apply bg-panel text-ink;
+  }
+  /* Dark datetime/text input (replay window) */
+  .tinput {
+    @apply rounded-md border border-line/60 bg-panel2/60 px-2.5 py-1 font-mono text-xs
+      text-ink transition-colors focus:border-accent/70 focus:outline-none
+      focus:ring-2 focus:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .tinput::-webkit-calendar-picker-indicator {
+    filter: invert(0.6);
+  }
+  /* Icon button */
+  .tbtn {
+    @apply cursor-pointer inline-flex items-center justify-center gap-1.5 rounded-md border border-line/60
+      bg-panel2/60 px-2.5 py-1.5 text-xs font-medium text-ink transition-colors
+      duration-150 hover:border-accent/60 hover:text-accent
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60;
+  }
+  .tbtn-primary {
+    @apply border-accent/70 bg-accent/15 text-accent hover:bg-accent/25;
+  }
+  .tbtn:disabled {
+    @apply cursor-not-allowed opacity-40 hover:border-line/60 hover:text-ink;
+  }
+}
+
+/* Range slider — dark terminal styling */
+input[type='range'].treplay {
+  @apply h-1.5 w-full cursor-pointer appearance-none rounded-full bg-line/60;
+}
+input[type='range'].treplay::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  @apply h-3.5 w-3.5 rounded-full border-2 border-base bg-accent;
+}
+input[type='range'].treplay::-moz-range-thumb {
+  @apply h-3.5 w-3.5 rounded-full border-2 border-base bg-accent;
+}
+input[type='range'].treplay:disabled {
+  @apply opacity-40;
+}
+
+/* Respect reduced-motion: freeze spins/pulses, keep state colors. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

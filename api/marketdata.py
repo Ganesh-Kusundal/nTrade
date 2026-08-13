@@ -874,14 +874,23 @@ def build_service(provider: str | None = None, env: dict | None = None,
     """Build a service for ``provider`` (env ``NTRADE_MARKET_PROVIDER``).
 
     Supported: ``dhan`` (live), ``parquet`` (offline store), ``synthetic``
-    (deterministic offline — the safe default).
+    (deterministic offline — explicit opt-in only, never a silent default).
+
+    Raises :class:`MarketDataError` when no provider is configured so the
+    server can never silently serve fabricated data.
     """
-    name = (provider or os.environ.get("NTRADE_MARKET_PROVIDER") or "synthetic").strip().lower()
+    env = env if env is not None else os.environ
+    name = (provider or env.get("NTRADE_MARKET_PROVIDER") or "").strip().lower()
+    if not name:
+        raise MarketDataError(
+            "no market provider configured: set NTRADE_MARKET_PROVIDER or "
+            "pass --provider (dhan|parquet|synthetic)"
+        )
     master = master or FuturesMaster()
     if name == "dhan":
         service = MarketDataService(DhanProvider(master, env=env), master=master)
     elif name == "parquet":
-        base = os.environ.get("NTRADE_DATA_DIR", "data/ohlcv")
+        base = env.get("NTRADE_DATA_DIR", "data/ohlcv")
         service = MarketDataService(ParquetProvider(master, base_path=base), master=master)
     elif name == "synthetic":
         service = MarketDataService(SyntheticProvider(master), master=master)

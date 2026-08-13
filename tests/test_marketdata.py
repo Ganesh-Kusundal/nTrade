@@ -523,6 +523,16 @@ def test_build_service_unknown_provider():
         build_service("bogus")
 
 
+def test_build_service_requires_provider(monkeypatch):
+    monkeypatch.delenv("NTRADE_MARKET_PROVIDER", raising=False)
+    with pytest.raises(MarketDataError):
+        build_service()
+
+def test_build_service_from_env(monkeypatch):
+    monkeypatch.setenv("NTRADE_MARKET_PROVIDER", "synthetic")
+    assert build_service().name == "synthetic"
+
+
 def test_service_roots_only_nifty_banknifty(tmp_path):
     """The terminal's root list shows NIFTY/BANKNIFTY only, even when the
     master carries more index futures (FINNIFTY, ...)."""

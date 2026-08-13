@@ -1,8 +1,8 @@
 """``python -m api`` — run the market API server locally.
 
 Provider selection: ``--provider synthetic|dhan|parquet`` (env
-``NTRADE_MARKET_PROVIDER`` works too; default ``synthetic`` so the server is
-usable offline). The built UI is served from ``ui/dist`` when present.
+``NTRADE_MARKET_PROVIDER`` works too; a provider is required — there is no
+silent synthetic default). The built UI is served from ``ui/dist`` when present.
 
 Live streaming is ON by default and gated by NSE/MCX session hours
 (:mod:`api.market_hours`). Pass ``--no-live-stream`` for historical-only.
@@ -27,9 +27,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="nTrade market API server")
     parser.add_argument(
         "--provider",
-        default=os.environ.get("NTRADE_MARKET_PROVIDER", "synthetic"),
+        default=os.environ.get("NTRADE_MARKET_PROVIDER", ""),
         choices=("synthetic", "dhan", "parquet"),
-        help="market data provider (default: synthetic, offline-safe)",
+        help="market data provider (required unless NTRADE_MARKET_PROVIDER is set)",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
@@ -40,6 +40,12 @@ def main() -> None:
         help="enable live candle pump (default: on; still gated by market hours)",
     )
     args = parser.parse_args()
+
+    if not args.provider:
+        parser.error(
+            "no market provider configured: pass --provider (dhan|parquet|synthetic) "
+            "or set NTRADE_MARKET_PROVIDER"
+        )
 
     from api.server import create_app
 

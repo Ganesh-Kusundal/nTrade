@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import logging
 import os
 import random
@@ -467,24 +468,11 @@ class DhanProvider:
         if contract is None or root not in SUPPORTED_ROOTS:
             return
         try:
-            import pandas as pd
             from ntrade.data.parquet_store import ParquetStorage
 
-            ist = [datetime.fromtimestamp(r["time"], tz=_SESSION_TZ).replace(tzinfo=None)
-                   for r in rows]
-            frame = pd.DataFrame({
-                "symbol": [symbol] * len(rows),
-                "exchange": [exchange] * len(rows),
-                "kind": [kind] * len(rows),
-                "timeframe": [interval.lower()] * len(rows),
-                "timestamp": ist,
-                "open": [r["open"] for r in rows],
-                "high": [r["high"] for r in rows],
-                "low": [r["low"] for r in rows],
-                "close": [r["close"] for r in rows],
-                "volume": [r["volume"] for r in rows],
-            })
-            ParquetStorage(self._data_dir).upsert(frame)
+            ParquetStorage(self._data_dir).upsert(parquet_frame(
+                symbol=symbol, exchange=exchange, interval=interval,
+                kind=kind, rows=rows))
         except Exception as exc:  # cache write must never break the request
             log.warning("parquet write-through failed for %s: %s", symbol, exc)
 
@@ -532,6 +520,26 @@ class DhanProvider:
             "oi": int(q.oi or 0),
             "source": self.name,
         }
+
+
+def parquet_frame(*, symbol: str, exchange: str, interval: str,
+                  kind: str, rows: list[dict]) -> "pd.DataFrame":
+    """Rows -> the parquet store's DataFrame shape (naive IST timestamps)."""
+    import pandas as pd
+    ist = [datetime.fromtimestamp(r["time"], tz=_SESSION_TZ).replace(tzinfo=None)
+           for r in rows]
+    return pd.DataFrame({
+        "symbol": [symbol] * len(rows),
+        "exchange": [exchange] * len(rows),
+        "kind": [kind] * len(rows),
+        "timeframe": [interval.lower()] * len(rows),
+        "timestamp": ist,
+        "open": [r["open"] for r in rows],
+        "high": [r["high"] for r in rows],
+        "low": [r["low"] for r in rows],
+        "close": [r["close"] for r in rows],
+        "volume": [r["volume"] for r in rows],
+    })
 
 
 class ParquetProvider:
@@ -829,11 +837,14 @@ class MarketDataService:
     def ticks(self, *, symbol: str, exchange: str = Exchange.DERIVATIVES,
               interval: str = Timeframe.MIN, start: datetime | None = None,
               end: datetime | None = None, limit: int | None = None) -> list[dict]:
-        """Synthesize deterministic 1-second ticks from the provider's candles.
+        """Replay ticks for a symbol/range.
 
-        Reuses the framework's :func:`synthesize_1m_ticks`, so each bar's
-        intra-bar path is bar-faithful: open/close are anchored, high/low are
-        genuinely touched, and the bar's volume is distributed across ticks.
+        For the ``synthetic`` provider the ticks are synthesized from the
+        provider's candles (deterministic, seeded per bar). Every other
+        provider serves the *recorded* real ticks written by the live pump
+        (JSONL), so replay reflects what was actually traded, not an
+        extrapolation.
+
         The wire format is compact — one entry per bar with ``prices`` /
         ``quantities`` arrays (tick i of a bar is at ``bar.time + i``) — so a
         full contract history fits in a few MB of JSON.
@@ -843,6 +854,8 @@ class MarketDataService:
         animation is watched. Bars beyond the budget have no ticks and the
         client falls back to plain bars for them.
         """
+        if self.name != "synthetic":
+            return self._recorded_ticks(symbol, interval, start, end)
         rows = self.candles(symbol=symbol, exchange=exchange, interval=interval,
                             start=start, end=end, limit=limit)
         if not rows:
@@ -864,6 +877,44 @@ class MarketDataService:
                         "prices": [float(t.price) for t in tks],
                         "quantities": [int(t.quantity) for t in tks]})
         return out
+
+    def _recorded_ticks(self, symbol: str, interval: str,
+                        start: datetime | None, end: datetime | None) -> list[dict]:
+        """Group recorded JSONL ticks into the per-bar replay wire format."""
+        base = Path(os.environ.get("NTRADE_TICKS_DIR", "data/ticks"))
+        span_s = _INTERVAL_MINUTES.get(interval, 1) * 60
+        bars: dict[int, dict] = {}
+        # Naive start/end are IST wall-clock (the route's contract) — pin them
+        # so .timestamp() is the correct epoch regardless of machine tz.
+        if start is not None and start.tzinfo is None:
+            start = start.replace(tzinfo=_SESSION_TZ)
+        if end is not None and end.tzinfo is None:
+            end = end.replace(tzinfo=_SESSION_TZ)
+        start_ts = start.timestamp() if start else None
+        end_ts = end.timestamp() if end else None
+        lo_date = (start or datetime.now(tz=_SESSION_TZ)).date()
+        hi_date = end.date() if end else lo_date
+        d = lo_date
+        while d <= hi_date:
+            p = base / symbol / f"{d:%Y-%m-%d}.jsonl"
+            d += timedelta(days=1)
+            if not p.exists():
+                continue
+            for line in p.read_text().splitlines():
+                try:
+                    rec = json.loads(line)
+                    ts = datetime.fromisoformat(rec["ts"]).timestamp()
+                    if start_ts is not None and ts < start_ts:
+                        continue
+                    if end_ts is not None and ts > end_ts:
+                        continue
+                    b = int(ts) - (int(ts) % span_s)
+                    entry = bars.setdefault(b, {"time": b, "prices": [], "quantities": []})
+                    entry["prices"].append(float(rec["price"]))
+                    entry["quantities"].append(int(rec["qty"]))
+                except Exception:  # noqa: BLE001
+                    continue
+        return [bars[k] for k in sorted(bars)]
 
     def quote(self, *, symbol: str, exchange: str = Exchange.DERIVATIVES) -> dict:
         return self.provider.quote(symbol=symbol, exchange=exchange)

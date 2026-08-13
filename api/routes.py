@@ -123,14 +123,17 @@ def get_ticks(
     end: str | None = Query(None, description="ISO-8601 end (naive = IST)"),
     limit: int = Query(MAX_CANDLES_LIMIT, ge=1, le=MAX_CANDLES_LIMIT),
 ) -> dict:
-    """Synthesized 1-second ticks for replay: each bar is extrapolated from its
-    own OHLCV (anchored open/close, high/low touched, volume distributed).
+    """Replay ticks: real recorded ticks for live/parquet providers, or
+    deterministic synthesized ticks for the ``synthetic`` provider (each bar
+    extrapolated from its own OHLCV: anchored open/close, high/low touched,
+    volume distributed).
 
     Compact per-bar wire format: ``bars`` = [{time, prices[], quantities[]}]
     where tick i of a bar is at ``time + i``. ``seconds`` = ticks per bar
-    (60 for 1m, 300 for 5m, ...). Bars beyond the tick budget
-    (``MAX_TICKS``) are dropped — the client falls back to plain bars for
-    those. Deterministic: the same symbol/range always yields the same ticks
+    (60 for 1m, 300 for 5m, ...). ``synthetic`` is true only when the ticks
+    were fabricated by the provider; when no recorded ticks exist for the
+    range a ``reason`` is included so the client can fall back to plain bars.
+    Deterministic: the same symbol/range always yields the same ticks
     (seeded per bar), so replay is reproducible.
     """
     service = _service(request)
@@ -155,9 +158,11 @@ def get_ticks(
         "exchange": exchange.strip().upper(),
         "interval": interval,
         "source": service.name,
+        "synthetic": service.name == "synthetic",
         "seconds": _INTERVAL_MINUTES.get(interval, 1) * 60,
         "count": sum(len(b["prices"]) for b in ticks),
         "bars": ticks,
+        **({} if ticks else {"reason": "no recorded ticks for range — replay falls back to plain bars"}),
     }
 
 

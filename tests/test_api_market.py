@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from api.marketdata import FuturesMaster
+from ntrade.domain.market_hours import IST
+from api.marketdata import FuturesMaster, build_service
 from api.server import create_app
 
 
@@ -57,6 +60,48 @@ def test_ticks_endpoint_shape_and_validation(client):
     # Same validation taxonomy as /candles
     assert client.get("/api/market/ticks", params={"symbol": "NIFTY AUG FUT", "interval": "7m"}).status_code == 422
     assert client.get("/api/market/ticks", params={"symbol": "NIFTY AUG FUT!!", "interval": "1m"}).status_code == 422
+
+
+def test_ticks_are_recorded_not_synthesized_for_real_feed(tmp_path, monkeypatch):
+    ticks_dir = tmp_path / "ticks"
+    monkeypatch.setenv("NTRADE_TICKS_DIR", str(ticks_dir))
+    app = create_app("synthetic", master=FuturesMaster(_sample_master(tmp_path)), live_stream=False)
+    app.state.pump._real_feed = True
+    app.state.pump.enabled = True
+    app.state.pump.subscribe("NIFTY AUG FUT", "NFO", "1m")
+    t0 = datetime(2026, 8, 13, 9, 31, 0, tzinfo=IST)
+    for i in range(5):
+        app.state.pump.ingest_tick("NIFTY AUG FUT", 24300.0 + i, 25, now=t0 + timedelta(seconds=i))
+    # The recorder wrote real JSONL — nothing was synthesized.
+    day_file = ticks_dir / "NIFTY AUG FUT" / "2026-08-13.jsonl"
+    assert day_file.exists()
+    lines = day_file.read_text().splitlines()
+    assert len(lines) == 5
+    rec = json.loads(lines[0])
+    assert {"ts", "symbol", "price", "qty"} <= set(rec)
+    # The synthetic provider's /ticks is honest about being synthetic.
+    c = TestClient(app)
+    r = c.get("/api/market/ticks", params={"symbol": "NIFTY AUG FUT", "exchange": "NFO", "interval": "1m"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "synthetic"
+    assert body["synthetic"] is True
+
+
+def test_recorded_ticks_group_into_bars(tmp_path, monkeypatch):
+    ticks_dir = tmp_path / "ticks"
+    monkeypatch.setenv("NTRADE_TICKS_DIR", str(ticks_dir))
+    p = ticks_dir / "NIFTY AUG FUT"
+    p.mkdir(parents=True)
+    (p / "2026-08-13.jsonl").write_text("\n".join([
+        json.dumps({"ts": f"2026-08-13T09:31:0{i}+05:30", "symbol": "NIFTY AUG FUT", "price": 24300.0 + i, "qty": 25})
+        for i in range(3)
+    ]))
+    svc = build_service("synthetic")
+    out = svc._recorded_ticks("NIFTY AUG FUT", "1m", None, None)
+    assert out, "recorded ticks must be read back"
+    assert all(set(b) == {"time", "prices", "quantities"} for b in out)
+    assert sum(len(b["prices"]) for b in out) == 3
 
 
 def test_provider_endpoint(client):
@@ -222,3 +267,45 @@ def test_master_missing_503(tmp_path):
     app = create_app("synthetic", master=FuturesMaster(str(tmp_path / "none.csv")))
     with TestClient(app) as c:
         assert c.get("/api/market/roots").status_code == 503
+
+
+def test_ticks_are_recorded_not_synthesized_for_real_feed(tmp_path, monkeypatch):
+    ticks_dir = tmp_path / "ticks"
+    monkeypatch.setenv("NTRADE_TICKS_DIR", str(ticks_dir))
+    app = create_app("synthetic", master=FuturesMaster(_sample_master(tmp_path)), live_stream=False)
+    app.state.pump._real_feed = True
+    app.state.pump.enabled = True
+    app.state.pump.subscribe("NIFTY AUG FUT", "NFO", "1m")
+    t0 = datetime(2026, 8, 13, 9, 31, 0, tzinfo=IST)
+    for i in range(5):
+        app.state.pump.ingest_tick("NIFTY AUG FUT", 24300.0 + i, 25, now=t0 + timedelta(seconds=i))
+    # The recorder wrote real JSONL — nothing was synthesized.
+    day_file = ticks_dir / "NIFTY AUG FUT" / "2026-08-13.jsonl"
+    assert day_file.exists()
+    lines = day_file.read_text().splitlines()
+    assert len(lines) == 5
+    rec = json.loads(lines[0])
+    assert {"ts", "symbol", "price", "qty"} <= set(rec)
+    # The synthetic provider's /ticks is honest about being synthetic.
+    c = TestClient(app)
+    r = c.get("/api/market/ticks", params={"symbol": "NIFTY AUG FUT", "exchange": "NFO", "interval": "1m"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "synthetic"
+    assert body["synthetic"] is True
+
+
+def test_recorded_ticks_group_into_bars(tmp_path, monkeypatch):
+    ticks_dir = tmp_path / "ticks"
+    monkeypatch.setenv("NTRADE_TICKS_DIR", str(ticks_dir))
+    p = ticks_dir / "NIFTY AUG FUT"
+    p.mkdir(parents=True)
+    (p / "2026-08-13.jsonl").write_text("\n".join([
+        json.dumps({"ts": f"2026-08-13T09:31:0{i}+05:30", "symbol": "NIFTY AUG FUT", "price": 24300.0 + i, "qty": 25})
+        for i in range(3)
+    ]))
+    svc = build_service("synthetic")
+    out = svc._recorded_ticks("NIFTY AUG FUT", "1m", None, None)
+    assert out, "recorded ticks must be read back"
+    assert all(set(b) == {"time", "prices", "quantities"} for b in out)
+    assert sum(len(b["prices"]) for b in out) == 3

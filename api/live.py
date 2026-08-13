@@ -15,8 +15,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -192,6 +194,7 @@ class LiveCandlePump:
         now = now or self._clock()
         state["last_tick"] = now
         state["stale_emitted"] = False
+        self._record_tick(state["symbol"], float(price), int(quantity or 0), now)
         msg = self._apply_tick(state, float(price), int(quantity or 0), now)
         if msg is not None:
             self._emit(msg)
@@ -203,6 +206,36 @@ class LiveCandlePump:
                 log.exception("tick listener failed")
         return msg
 
+    def _record_tick(self, symbol: str, price: float, qty: int, ts: datetime) -> None:
+        if not self._real_feed:
+            return
+        day = ts.strftime("%Y-%m-%d")
+        base = Path(os.environ.get("NTRADE_TICKS_DIR", "data/ticks"))
+        path = base / symbol / f"{day}.jsonl"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a") as fh:
+                fh.write(json.dumps(
+                    {"ts": ts.isoformat(), "symbol": symbol,
+                     "price": price, "qty": qty}) + "\n")
+        except Exception:  # noqa: BLE001 — recording must never break ingestion
+            log.exception("tick record failed")
+
+    def _persist_bar(self, state: dict, bar: dict) -> None:
+        if not self._real_feed:
+            return
+        try:
+            from api.marketdata import parquet_frame
+            from ntrade.data.parquet_store import ParquetStorage
+            base = os.environ.get("NTRADE_DATA_DIR", "data/ohlcv")
+            ParquetStorage(base).upsert(parquet_frame(
+                symbol=state["symbol"], exchange=state["exchange"],
+                interval=state["interval"], kind="live",
+                rows=[{"time": bar["time"], "open": bar["open"], "high": bar["high"],
+                       "low": bar["low"], "close": bar["close"], "volume": bar["volume"]}]))
+        except Exception:  # noqa: BLE001 — persistence never breaks streaming
+            log.exception("live bar persist failed for %s", state["symbol"])
+
     def _apply_tick(self, state: dict, price: float, qty: int, now: datetime) -> dict | None:
         if price <= 0 or not is_market_open(state["exchange"], now):
             return None
@@ -213,10 +246,13 @@ class LiveCandlePump:
         bar_start = int(session_start.timestamp()) + (int(elapsed) // span_s) * span_s
         bar = state["bar"]
         if bar is None or bar_start != state["bar_start"]:
+            completed = state["bar"]
             bar = {"time": bar_start, "open": price, "high": price,
                    "low": price, "close": price, "volume": 0}
             state["bar_start"] = bar_start
             state["bar"] = bar
+            if completed is not None:
+                self._persist_bar(state, completed)
         bar["high"] = max(bar["high"], price)
         bar["low"] = min(bar["low"], price)
         bar["close"] = price

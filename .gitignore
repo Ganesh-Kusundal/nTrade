@@ -28,3 +28,4 @@ graphify-out/
 # Scratch / local artifacts
 ui/.vite/
 *.ipynb
+ntrade.egg-info

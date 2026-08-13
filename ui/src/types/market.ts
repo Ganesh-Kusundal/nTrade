@@ -109,7 +109,7 @@ export interface RootsResponse {
 
 /** Live WS messages */
 export type WsMessage =
-  | { type: 'live_status'; symbol: string; exchange: string; interval: Interval; status: string; source: string }
+  | { type: 'live_status'; symbol: string; exchange: string; interval: Interval; status: 'streaming' | 'off' | 'stale'; source: string; reason?: string }
   | { type: 'candle'; symbol: string; exchange: string; interval: Interval; candle: Candle; ts: string }
   | { type: 'pong' }
   | { type: 'error'; detail: string }

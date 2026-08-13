@@ -167,7 +167,7 @@ export function runValentini(candles: Candle[], opts: ValentiniOptions = {}): Va
   const cvdConfirm = opts.cvdConfirm ?? 3
   const rangeSize = opts.rangeSize && opts.rangeSize > 0
     ? opts.rangeSize
-    : calcAutoRange(candles, opts.atrPeriod ?? 14, 1, opts.tickSize)
+    : (calcAutoRange(candles, opts.atrPeriod ?? 14, 1, opts.tickSize) ?? 1.0)
 
   if (candles.length === 0) {
     return { phase: 'waiting', trades: [], lastAbsorption: null }

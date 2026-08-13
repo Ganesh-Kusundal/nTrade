@@ -38,16 +38,27 @@ describe('calcAutoRange', () => {
   it('scales with ATR (wild frames get a bigger range)', () => {
     const calm = frame(Array.from({ length: 30 }, () => 100), { step: 1 })
     const wild = frame(Array.from({ length: 30 }, () => 100), { step: 10 })
-    expect(calcAutoRange(wild)).toBeGreaterThan(calcAutoRange(calm))
+    expect(calcAutoRange(wild)).not.toBeNull()
+    expect(calcAutoRange(calm)).not.toBeNull()
+    expect(calcAutoRange(wild)!).toBeGreaterThan(calcAutoRange(calm)!)
   })
 
   it('rounds to the tick grid when tick_size is given', () => {
     const r = calcAutoRange(frame(Array.from({ length: 30 }, (_, i) => 100 + i)), 14, 1, 0.05)
-    expect(Math.abs(r / 0.05 - Math.round(r / 0.05))).toBeLessThan(1e-9)
+    expect(r).not.toBeNull()
+    expect(Math.abs(r! / 0.05 - Math.round(r! / 0.05))).toBeLessThan(1e-9)
   })
 
-  it('falls back to a sane default on empty input', () => {
-    expect(calcAutoRange([])).toBeGreaterThan(0)
+  it('falls back to null (insufficient data) on empty input', () => {
+    expect(calcAutoRange([])).toBeNull()
+  })
+
+  it('returns null when ATR(14) has not converged (too few bars)', () => {
+    expect(calcAutoRange(frame([100, 101]))).toBeNull()
+  })
+
+  it('buildRangeBars returns [] instead of fabricating bars when ATR is unavailable', () => {
+    expect(buildRangeBars(frame([100, 101]))).toEqual([])
   })
 })
 

@@ -18,7 +18,7 @@ interface ChartState {
   quote: Quote | null
   quoteError: string | null
   // live socket status — lifted so the chrome can render the true feed state
-  wsStatus: 'connected' | 'disconnected' | 'reconnecting' | 'off'
+  wsStatus: 'connected' | 'disconnected' | 'reconnecting' | 'off' | 'stale'
   // actions
   init: () => Promise<void>
   selectRoot: (root: string) => void
@@ -26,7 +26,7 @@ interface ChartState {
   selectInterval: (interval: Interval) => void
   setMode: (mode: Mode) => void
   refreshQuote: (symbol: string) => Promise<void>
-  setWsStatus: (status: 'connected' | 'disconnected' | 'reconnecting' | 'off') => void
+  setWsStatus: (status: 'connected' | 'disconnected' | 'reconnecting' | 'off' | 'stale') => void
 }
 
 export const useChartStore = create<ChartState>()(

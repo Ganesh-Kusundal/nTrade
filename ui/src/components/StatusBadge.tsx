@@ -3,8 +3,9 @@ import type { Mode } from '../types/market'
 
 interface StatusBadgeProps {
   source: string | null
+  provider: string | null | undefined
   live: boolean
-  wsStatus: 'connected' | 'disconnected' | 'reconnecting' | 'off'
+  wsStatus: 'connected' | 'disconnected' | 'reconnecting' | 'off' | 'stale'
   mode: Mode
 }
 
@@ -13,8 +14,8 @@ interface StatusBadgeProps {
  * reserved for `streaming` only; historical / offline / replay are muted so a
  * disconnected session can never read as "live".
  */
-export function StatusBadge({ source, live, wsStatus, mode }: StatusBadgeProps) {
-  const feed = feedKind(mode, live, wsStatus)
+export function StatusBadge({ source, provider, live, wsStatus, mode }: StatusBadgeProps) {
+  const feed = feedKind(mode, provider, live, wsStatus, wsStatus === 'stale')
   const m = FEED_META[feed]
   const streaming = feed === 'streaming'
   return (

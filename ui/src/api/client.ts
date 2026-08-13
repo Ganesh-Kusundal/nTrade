@@ -9,7 +9,7 @@ import type {
   WsMessage,
 } from '../types/market'
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
+export const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
 /** Throw a readable error for non-2xx responses (backend sends JSON detail). */
 async function request<T>(path: string, params?: Record<string, string | number>): Promise<T> {
@@ -141,8 +141,25 @@ export class MarketSocket {
   private readonly subs = new Map<string, { symbol: string; exchange: string; interval: Interval }>()
   private readonly listeners = new Set<(msg: WsMessage) => void>()
   private readonly url: string
-  /** 'off' = server answers live_status with status 'off' (no live feed). */
-  onStatus: (status: 'connected' | 'disconnected' | 'reconnecting' | 'off') => void = () => {}
+  /** 'off' = server live_status 'off'; 'stale' = no candles within timeout. */
+  onStatus: (status: 'connected' | 'disconnected' | 'reconnecting' | 'off' | 'stale') => void = () => {}
+
+  private serverStreaming = false
+  private lastCandleAt = 0
+  private readonly staleMs = 5000
+  private watchdog: ReturnType<typeof setInterval> | null = null
+
+  private armWatchdog(): void {
+    if (this.watchdog !== null) return
+    this.watchdog = setInterval(() => {
+      if (!this.serverStreaming) return
+      if (this.lastCandleAt > 0 && Date.now() - this.lastCandleAt > this.staleMs) {
+        this.onStatus('stale')
+      } else if (this.lastCandleAt > 0) {
+        this.onStatus('connected')
+      }
+    }, 1000)
+  }
 
   constructor(url: string = wsUrl()) {
     this.url = url
@@ -150,6 +167,7 @@ export class MarketSocket {
 
   connect(): void {
     this.closed = false
+    this.armWatchdog()
     this.open()
   }
 
@@ -175,7 +193,20 @@ export class MarketSocket {
         // The server reports whether live streaming is actually on. When it is
         // off (market closed / no live feed), surface that as a distinct
         // status instead of pretending we're streaming.
-        if (msg.type === 'live_status' && msg.status === 'off') this.onStatus('off')
+        if (msg.type === 'live_status') {
+          if (msg.status === 'off') {
+            this.serverStreaming = false
+            this.onStatus('off')
+          } else if (msg.status === 'stale') {
+            this.onStatus('stale')
+          } else {
+            this.serverStreaming = true
+          }
+        } else if (msg.type === 'candle') {
+          this.lastCandleAt = Date.now()
+          this.serverStreaming = true
+          this.onStatus('connected')
+        }
         this.emit(msg)
       } catch {
         /* ignore malformed frames */
@@ -239,6 +270,11 @@ export class MarketSocket {
       clearTimeout(this.timer)
       this.timer = null
     }
+    if (this.watchdog !== null) {
+      clearInterval(this.watchdog)
+      this.watchdog = null
+    }
+    this.serverStreaming = false
     this.ws?.close()
     this.ws = null
     this.listeners.clear()

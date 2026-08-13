@@ -62,21 +62,22 @@ export function rangeSizeFromTicks(ticks: number | null | undefined, tickSize?: 
 }
 
 /**
- * ATR-derived range size, optionally rounded to a tick grid. Falls back to
- * 10.0 when ATR cannot be computed; never returns <= 0.
+ * ATR-derived range size, optionally rounded to a tick grid. Returns `null`
+ * when ATR cannot be computed (too few bars) — the caller must render an
+ * "insufficient data" state instead of silently building bars with a magic
+ * default size.
  */
 export function calcAutoRange(
   candles: Candle[],
   atrPeriod = 14,
   multiplier = 1,
   tickSize?: number,
-): number {
-  let raw = 10
-  if (candles.length > 0) {
-    const a = atrSeries(candles, atrPeriod)
-    const last = a[a.length - 1]
-    if (Number.isFinite(last) && last > 0) raw = last * multiplier
-  }
+): number | null {
+  if (candles.length === 0) return null
+  const a = atrSeries(candles, atrPeriod)
+  const last = a[a.length - 1]
+  if (!Number.isFinite(last) || !(last > 0)) return null
+  let raw = last * multiplier
   if (tickSize && tickSize > 0) raw = Math.max(tickSize, Math.round(raw / tickSize) * tickSize)
   return Math.max(raw, 0.5)
 }
@@ -96,6 +97,9 @@ export function buildRangeBars(
   const size = rangeSize && rangeSize > 0
     ? rangeSize
     : calcAutoRange(candles, opts.atrPeriod ?? 14, 1, opts.tickSize)
+  // Auto ATR(14) needs enough bars — without a computable size there is no
+  // honest range to build; the caller shows an "insufficient data" state.
+  if (size == null) return []
 
   const bars: RangeBar[] = []
   let cur: RangeBar | null = null

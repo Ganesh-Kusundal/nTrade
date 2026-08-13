@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { indicators, strategies, sessionProfileCandles, type IndicatorSpec, type StrategySpec } from '../registry'
-import { vwapSeries, buildVolumeProfile, detectAbsorptions } from '../indicators'
-import { runValentini, type ValentiniResult } from '../valentini'
-import { runMorningVahVal, type MorningVahValResult } from '../morningVahVal'
+import { indicators, strategies, sessionProfileCandles } from '../registry'
+import type { ValentiniResult } from '../valentini'
+import type { MorningVahValResult } from '../morningVahVal'
 import type { Candle } from '../../types/market'
 
 function bar(time: number, open: number, high: number, low: number, close: number, volume: number): Candle {
@@ -65,7 +64,7 @@ describe('registry — indicator + strategy mirror', () => {
   })
 
   it('indicator labels are human-readable and each spec has a run fn', () => {
-    for (const [key, spec] of Object.entries(indicators)) {
+    for (const spec of Object.values(indicators)) {
       // The registry key is the chart toggle key; ``spec.id`` is the backend
       // id (may differ for ``absorptions`` vs ``absorption`` — a known
       // parity-tax divergence tracked for Phase B).

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { API_BASE } from '../api/client'
 import { chartStartEpoch, chartStartIst, CHART_DAYS } from '../lib/istTime'
 import { buildRangeBars, rangeSizeFromTicks } from '../lib/rangeBars'
 import { clipChartDays } from './replayVisible'
@@ -66,7 +67,7 @@ export function useCandles(
     // guard so switching contracts can never flash stale data. Range bars
     // are derived from the 1m feed (the backend serves only timeframes).
     const wireInterval: Exclude<Interval, 'Range'> = interval === 'Range' ? '1m' : interval
-    const url = new URL(`/api/market/candles`, window.location.origin)
+    const url = new URL(`${API_BASE}/market/candles`, window.location.origin)
     url.searchParams.set('symbol', symbol)
     url.searchParams.set('interval', wireInterval)
     url.searchParams.set('exchange', exchange)

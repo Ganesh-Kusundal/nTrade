@@ -99,7 +99,7 @@ export function MarketHeader({ contract, quote, lastClose, source, live, wsStatu
           </div>
         )}
 
-        <StatusBadge source={source} live={live} wsStatus={wsStatus} mode={mode} />
+        <StatusBadge source={source} provider={null} live={live} wsStatus={wsStatus} mode={mode} />
       </div>
     </div>
   )

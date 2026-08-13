@@ -189,6 +189,10 @@ describe('runMorningVahVal', () => {
     expect(t.tp!).toBeGreaterThan(t.entry)
     expect(t.tp!).toBeLessThanOrEqual(lvl.vah)
     expect(t.sizing).toBe('half') // < 20 bars → not at the EMA cluster
+    expect(t.slNow).toBe(t.sl)    // entry phase — stop has not trailed yet
+    expect(t.tslActive).toBe(false)
+    expect(t.stops).toEqual([{ index: t.entryIndex, price: t.sl }])
+    expect(r.state).toMatchObject({ bias: 'UP', profileReady: true, inEntryWindow: true, windowClosed: false })
   })
 
   it('short: VAH rejection emits a SELL', () => {
@@ -246,6 +250,8 @@ describe('runMorningVahVal', () => {
     expect(t.partialIndex).not.toBeNull()
     expect(t.partial).toBe(t.tp !== null ? t.tp : t.partial) // tp cleared after partial
     expect(t.reason).toBeNull() // runner still open at breakeven
+    expect(t.tslActive).toBe(true)   // T1 booked → runner trails
+    expect(t.slNow).toBe(t.entry)    // stop moved to cost-to-cost
     // A drift back below the entry (breakeven) trips the cost-to-cost stop.
     const r2 = runMorningVahVal(build(longSetup(), [
       candle(ist(2026, 8, D2, 9, 33), 99.7, 103.0, 99.6, 102.6),
@@ -347,6 +353,11 @@ describe('runMorningVahVal', () => {
     const t = lastTrade(r)
     expect(t.reason).toBe('stop')
     expect(t.exit!).toBeGreaterThan(t.entry) // stopped at a profit, not breakeven
+    // The trail path is recorded: TSL ratcheted above entry, and the last
+    // recorded stop is the one that was hit.
+    expect(t.slNow).toBeGreaterThan(t.entry)
+    expect(t.stops.length).toBeGreaterThan(1)
+    expect(t.stops[t.stops.length - 1].price).toBe(t.slNow)
   })
 
   it('trailBack loosens the BE-phase ratchet', () => {

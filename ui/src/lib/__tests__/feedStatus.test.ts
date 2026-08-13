@@ -3,20 +3,28 @@ import { feedKind, isSessionOpen, exchangeSession } from '../feedStatus'
 
 describe('feedKind', () => {
   it('replay wins regardless of live/WS state', () => {
-    expect(feedKind('replay', false, 'off')).toBe('replay')
-    expect(feedKind('replay', true, 'connected')).toBe('replay')
+    expect(feedKind('replay', 'dhan', false, 'off', false)).toBe('replay')
+    expect(feedKind('replay', 'dhan', true, 'connected', false)).toBe('replay')
   })
 
-  it('non-live provider is historical even if a socket is open', () => {
-    expect(feedKind('live', false, 'off')).toBe('historical')
-    // a live provider whose socket was never opened (paper/seed) is also historical
-    expect(feedKind('live', true, 'off')).toBe('historical')
+  it('non-live provider is historical if genuine store, else offline', () => {
+    expect(feedKind('live', 'parquet', false, 'off', false)).toBe('historical')
+    // a live provider whose socket was never opened (paper/seed) is not streaming
+    expect(feedKind('live', 'dhan', true, 'off', false)).toBe('offline')
   })
 
-  it('live provider maps the socket state', () => {
-    expect(feedKind('live', true, 'connected')).toBe('streaming')
-    expect(feedKind('live', true, 'reconnecting')).toBe('reconnecting')
-    expect(feedKind('live', true, 'disconnected')).toBe('offline')
+  it('labels synthetic provider as synthetic, not historical', () => {
+    expect(feedKind('live', 'synthetic', false, 'connected', false)).toBe('synthetic')
+  })
+
+  it('flags stale when WS is up but no ticks', () => {
+    expect(feedKind('live', 'dhan', true, 'connected', true)).toBe('stale')
+  })
+
+  it('streams only for a live provider with connected+fresh socket', () => {
+    expect(feedKind('live', 'dhan', true, 'connected', false)).toBe('streaming')
+    expect(feedKind('live', 'dhan', true, 'reconnecting', false)).toBe('reconnecting')
+    expect(feedKind('live', 'dhan', true, 'disconnected', false)).toBe('offline')
   })
 })
 

@@ -26,6 +26,12 @@ export interface StrategyTrade {
   side: 'BUY' | 'SELL'
   entryIndex: number
   sl: number
+  /** Current stop — equals `sl` until T1, then the trailing stop. */
+  slNow?: number
+  /** True once the runner trails (T1 booked) — draw the TSL line/markers. */
+  tslActive?: boolean
+  /** Stop placements: initial at entry + each ratchet {bar index, price}. */
+  stops?: Array<{ index: number; price: number }>
   tp: number | null
   exitIndex: number | null
   exit: number | null
@@ -380,6 +386,21 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
             text: '½',
           })
         }
+        // Trailing-stop ratchet steps (Morning VAH/VAL: T1 breakeven then the
+        // candle/chandelier trail) — small arrows where the stop moved.
+        if (t.stops && t.stops.length > 1) {
+          for (const s of t.stops) {
+            if (s.index < 0 || s.index >= src.length) continue
+            if (s.index === t.entryIndex) continue // initial stop = the entry marker
+            markers.push({
+              time: istChartTime(src[s.index].time) as UTCTimestamp,
+              position: t.side === 'BUY' ? 'belowBar' : 'aboveBar',
+              shape: t.side === 'BUY' ? 'arrowUp' : 'arrowDown',
+              color: '#F59E0B',
+              text: 'TSL',
+            })
+          }
+        }
         if (t.exitIndex != null && t.reason && t.exitIndex >= 0 && t.exitIndex < src.length) {
           markers.push({
             time: istChartTime(src[t.exitIndex].time) as UTCTimestamp,
@@ -401,8 +422,10 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     }
   }, [strategyCandles ?? candles, strategy, toggles.absorptions, toggles.strategy])
 
-  // Open-trade SL/TP price lines (strategy overlay) — dashed lines at the
-  // live trade's stop and target, removed when the trade closes / toggled off.
+  // Open-trade SL/TSL/TP price lines (strategy overlay) — dashed lines at the
+  // live trade's initial stop, current trailing stop and target. The TSL line
+  // moves as the BE-phase ratchet lifts/lowers the stop; removed when the
+  // trade closes / toggled off.
   useEffect(() => {
     const cs = candleRef.current
     if (!cs) return
@@ -411,9 +434,22 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     if (!toggles.strategy || !strategy) return
     const open = strategy.trades[strategy.trades.length - 1]
     if (!open || open.exitIndex != null) return
+    // The initial stop is the live stop until T1 trails; label it SL.
+    const trailing = open.tslActive === true && open.slNow != null
     stratLinesRef.current = [
-      cs.createPriceLine({ price: open.sl, color: '#EF5350', lineWidth: 1, lineStyle: LineStyle.Dashed, title: 'SL', axisLabelVisible: true }),
+      cs.createPriceLine({
+        price: open.sl, color: '#EF5350', lineWidth: 1, lineStyle: LineStyle.Dashed,
+        title: 'SL', axisLabelVisible: true,
+      }),
     ]
+    if (trailing) {
+      stratLinesRef.current.push(
+        cs.createPriceLine({
+          price: open.slNow as number, color: '#F59E0B', lineWidth: 1, lineStyle: LineStyle.Dashed,
+          title: 'TSL', axisLabelVisible: true,
+        }),
+      )
+    }
     if (open.tp != null) {
       stratLinesRef.current.push(
         cs.createPriceLine({ price: open.tp, color: '#26A69A', lineWidth: 1, lineStyle: LineStyle.Dashed, title: 'TP', axisLabelVisible: true }),

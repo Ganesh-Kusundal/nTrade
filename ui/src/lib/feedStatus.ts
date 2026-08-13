@@ -6,23 +6,34 @@ import { IST_OFFSET_S } from './istTime'
 
 export type FeedKind =
   | 'replay' // replay mode, no live feed required
-  | 'streaming' // live provider + WS connected
+  | 'streaming' // live provider + WS connected + ticks arriving
+  | 'stale' // live provider + WS connected but no ticks (watchdog)
   | 'reconnecting' // live provider, WS trying to reconnect
   | 'offline' // live provider, WS disconnected
-  | 'historical' // provider has no live feed (paper / seed) — historical only
+  | 'synthetic' // provider fabricates data (seeded random walk) — NOT history
+  | 'historical' // genuine offline store (parquet)
 
-export type WsStatus = 'connected' | 'disconnected' | 'reconnecting' | 'off'
+export type WsStatus = 'connected' | 'disconnected' | 'reconnecting' | 'off' | 'stale'
 
 /**
  * Derive the one feed status the whole chrome should show. Replay wins;
- * otherwise a non-live provider (paper/seed) or a socket that was never
- * opened is historical-only, and a live provider maps connected /
- * reconnecting / disconnected (note: 'off' is historical, not 'offline' —
- * 'offline' is reserved for an attempted-but-failed live socket).
+ * otherwise a synthetic provider is always 'synthetic' (fabricated data is
+ * not history and never streams), a genuine offline store is 'historical',
+ * and a live provider maps connected / reconnecting / disconnected — with
+ * 'stale' when the socket is up but no ticks have arrived within the
+ * watchdog window ('off' is treated as offline — the socket never streamed).
  */
-export function feedKind(mode: 'live' | 'replay', live: boolean, wsStatus: WsStatus): FeedKind {
+export function feedKind(
+  mode: 'live' | 'replay',
+  provider: string | null | undefined,
+  live: boolean,
+  wsStatus: WsStatus,
+  wsStale: boolean,
+): FeedKind {
   if (mode === 'replay') return 'replay'
-  if (!live || wsStatus === 'off') return 'historical'
+  if (provider === 'synthetic') return 'synthetic'
+  if (!live) return provider === 'parquet' ? 'historical' : 'offline'
+  if (wsStale) return 'stale'
   if (wsStatus === 'connected') return 'streaming'
   if (wsStatus === 'reconnecting') return 'reconnecting'
   return 'offline'
@@ -30,8 +41,10 @@ export function feedKind(mode: 'live' | 'replay', live: boolean, wsStatus: WsSta
 
 export const FEED_META: Record<FeedKind, { label: string; dot: string; text: string }> = {
   streaming: { label: 'streaming', dot: 'bg-accent', text: 'text-accent' },
+  stale: { label: 'stale — no ticks', dot: 'bg-danger animate-pulse', text: 'text-danger' },
   reconnecting: { label: 'reconnecting…', dot: 'bg-amber-400 animate-pulse', text: 'text-amber-300' },
   offline: { label: 'feed offline', dot: 'bg-danger', text: 'text-danger' },
+  synthetic: { label: 'synthetic', dot: 'bg-amber-400', text: 'text-amber-300' },
   historical: { label: 'historical', dot: 'bg-slate-400', text: 'text-muted' },
   replay: { label: 'replay', dot: 'bg-slate-400', text: 'text-muted' },
 }

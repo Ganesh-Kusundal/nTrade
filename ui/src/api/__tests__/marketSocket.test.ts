@@ -105,4 +105,46 @@ describe('MarketSocket', () => {
     expect(got).toHaveLength(1)
     s.disconnect()
   })
+
+  it('surfaces server live_status "off" as a distinct status', () => {
+    const s = new MarketSocket('ws://test/ws/market')
+    const statuses: string[] = []
+    s.onStatus = (st) => statuses.push(st)
+    s.connect()
+    const ws = FakeWebSocket.instances[0]
+    ws.open()
+    ws.receive({ type: 'live_status', symbol: 'NIFTY AUG FUT', exchange: 'NFO', interval: '1m', status: 'off', source: 'synthetic', reason: 'no real live feed' })
+    expect(statuses).toContain('off')
+    s.disconnect()
+  })
+
+  it('flags stale when streaming but no candle arrives within the watchdog window', () => {
+    const s = new MarketSocket('ws://test/ws/market')
+    const statuses: string[] = []
+    s.onStatus = (st) => statuses.push(st)
+    s.connect()
+    const ws = FakeWebSocket.instances[0]
+    ws.open()
+    ws.receive({ type: 'live_status', symbol: 'NIFTY AUG FUT', exchange: 'NFO', interval: '1m', status: 'streaming', source: 'dhan' })
+    ws.receive({ type: 'candle', symbol: 'NIFTY AUG FUT', exchange: 'NFO', interval: '1m', candle: { time: 1, open: 1, high: 1, low: 1, close: 1, volume: 1 }, ts: 'x' })
+    vi.advanceTimersByTime(6000)
+    expect(statuses).toContain('stale')
+    s.disconnect()
+  })
+
+  it('recovers from stale once a fresh candle arrives', () => {
+    const s = new MarketSocket('ws://test/ws/market')
+    const statuses: string[] = []
+    s.onStatus = (st) => statuses.push(st)
+    s.connect()
+    const ws = FakeWebSocket.instances[0]
+    ws.open()
+    ws.receive({ type: 'live_status', symbol: 'NIFTY AUG FUT', exchange: 'NFO', interval: '1m', status: 'streaming', source: 'dhan' })
+    ws.receive({ type: 'candle', symbol: 'NIFTY AUG FUT', exchange: 'NFO', interval: '1m', candle: { time: 1, open: 1, high: 1, low: 1, close: 1, volume: 1 }, ts: 'x' })
+    vi.advanceTimersByTime(6000)
+    expect(statuses).toContain('stale')
+    ws.receive({ type: 'candle', symbol: 'NIFTY AUG FUT', exchange: 'NFO', interval: '1m', candle: { time: 2, open: 1, high: 1, low: 1, close: 1, volume: 1 }, ts: 'x' })
+    expect(statuses[statuses.length - 1]).toBe('connected')
+    s.disconnect()
+  })
 })

@@ -35,7 +35,16 @@ export interface MorningVahValTrade {
   entryIndex: number
   /** Entry reference price (the 2m bar's close at signal time). */
   entry: number
+  /** Initial stop at entry — static (the SL marker). */
   sl: number
+  /** Current effective stop — equals `sl` until T1, then the trailing stop
+   *  (the TSL marker). Updated as the BE-phase ratchet lifts/lowers it. */
+  slNow: number
+  /** True once T1 books and the runner trails (drives the TSL marker). */
+  tslActive: boolean
+  /** Every stop placement: the initial stop at entry + each ratchet step
+   *  (breakeven at T1, then candle/chandelier trail). {bar index, price}. */
+  stops: Array<{ index: number; price: number }>
   /** T1 = opposite VA level; null after the partial books. */
   tp: number | null
   sizing: 'full' | 'half'
@@ -46,6 +55,18 @@ export interface MorningVahValTrade {
   exitIndex: number | null
   exit: number | null
   reason: MorningVahValReason | null
+}
+
+/** Live strategy state for today — drives the signals panel's status line. */
+export interface MorningVahValState {
+  /** Today's tradeable bias (null until a full prior day completes). */
+  bias: 'UP' | 'DOWN' | 'SIDEWAYS' | null
+  /** Morning FRVP frozen (VAH/VAL/POC available to trade against). */
+  profileReady: boolean
+  /** The last processed bar sits inside the 09:30–11:00 entry window. */
+  inEntryWindow: boolean
+  /** Time has passed the 11:00 entry-window close on today's session. */
+  windowClosed: boolean
 }
 
 /** Frozen morning FRVP level per IST day (VAH/VAL/POC — static after 09:30). */
@@ -66,6 +87,8 @@ export interface MorningVahValResult {
   trades: MorningVahValTrade[]
   levels: MorningVahValLevels[]
   bias: MorningVahValBias[]
+  /** Today's machine state (bias / profile / entry-window position). */
+  state: MorningVahValState
 }
 
 export interface MorningVahValOptions {
@@ -274,8 +297,9 @@ export function runMorningVahVal(candles: Candle[], opts: MorningVahValOptions =
     const full = emaCluster(entry)
     if (requireCluster && !full) return // only EMA-cluster entries when required
     trades.push({
-      side, entryIndex: atIndex, entry, sl, tp,
-      sizing: full ? 'full' : 'half',
+      side, entryIndex: atIndex, entry, sl,
+      slNow: sl, tslActive: false, stops: [{ index: atIndex, price: sl }],
+      tp, sizing: full ? 'full' : 'half',
       partialIndex: null, partial: null, exitIndex: null, exit: null, reason: null,
     })
     activeIdx = trades.length - 1
@@ -308,7 +332,10 @@ export function runMorningVahVal(candles: Candle[], opts: MorningVahValOptions =
     }
     t.tp = null
     phase = 'be'
+    t.tslActive = true
     activeSl = activeEntry   // cost-to-cost on the runner
+    t.slNow = activeSl
+    t.stops.push({ index: atIndex, price: activeSl })
     activeTp = null
   }
 
@@ -335,15 +362,21 @@ export function runMorningVahVal(candles: Candle[], opts: MorningVahValOptions =
         } else if (phase === 'be') {
           activeDayHigh = Math.max(activeDayHigh, bar.high)
           activeDayLow = Math.min(activeDayLow, bar.low)
+          let next = activeSl
           if (trailMode === 'chandelier') {
             const a = atrNow()
             if (a > 0) {
               const trail = activeDayHigh - atrMult * a
-              if (trail > activeSl) activeSl = trail
+              if (trail > next) next = trail
             }
           } else {
             const prior = bars[bars.length - 1 - trailBack]
-            if (prior && prior.low > activeSl) activeSl = prior.low // ratchet toward day high
+            if (prior && prior.low > next) next = prior.low // ratchet toward day high
+          }
+          if (next !== activeSl) {
+            activeSl = next
+            t.slNow = next
+            t.stops.push({ index: atIndex, price: next })
           }
         }
       } else {
@@ -356,15 +389,21 @@ export function runMorningVahVal(candles: Candle[], opts: MorningVahValOptions =
         } else if (phase === 'be') {
           activeDayHigh = Math.max(activeDayHigh, bar.high)
           activeDayLow = Math.min(activeDayLow, bar.low)
+          let next = activeSl
           if (trailMode === 'chandelier') {
             const a = atrNow()
             if (a > 0) {
               const trail = activeDayLow + atrMult * a
-              if (trail < activeSl) activeSl = trail
+              if (trail < next) next = trail
             }
           } else {
             const prior = bars[bars.length - 1 - trailBack]
-            if (prior && prior.high < activeSl) activeSl = prior.high // ratchet toward day low
+            if (prior && prior.high < next) next = prior.high // ratchet toward day low
+          }
+          if (next !== activeSl) {
+            activeSl = next
+            t.slNow = next
+            t.stops.push({ index: atIndex, price: next })
           }
         }
       }
@@ -467,5 +506,14 @@ export function runMorningVahVal(candles: Candle[], opts: MorningVahValOptions =
     }
   }
 
-  return { trades, levels, bias: biasOut }
+  const last = candles[candles.length - 1]
+  const lastMinute = last ? istMinuteOfDay(last.time) : -1
+  const state: MorningVahValState = {
+    bias,
+    profileReady: profile !== null,
+    inEntryWindow: lastMinute >= entryStart && lastMinute < entryEnd,
+    windowClosed: lastMinute >= entryEnd,
+  }
+
+  return { trades, levels, bias: biasOut, state }
 }

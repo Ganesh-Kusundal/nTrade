@@ -1,15 +1,16 @@
 """Paper trading service + REST routes.
 
-Runs ``MorningVAHVAL`` on a ₹1M ``PaperBroker`` session that is fed by the
-live candle pump — a UI control ("paper trade on the selected symbol") that
-exercises the real kernel pipeline (feed → candles → strategy → risk →
-paper fills) with zero real orders.
+Runs ``MorningVAHVAL`` on a ₹1M ``PaperBroker`` session fed by the live
+candle pump — a UI control ("paper trade on the selected symbol") that
+exercises the real kernel pipeline (real ``TickEvent`` → MarketEngine →
+CandleEngine → strategy → risk → paper fills) with zero real orders.
 
-The pump forms live 1m bars; this service polls the pump's in-progress bar
-and feeds each *completed* bar into the paper kernel as Quote +
-CandleClosed events (the strategy reacts on candle close, exactly like the
-live engine stack). Outside exchange hours the pump produces no bars and the
-paper session simply idles.
+The pump's ``on_tick`` listener publishes every real tick into the paper
+kernel; a snapshot loop then polls the kernel (LTP, position sync, fill /
+signal recording) so the status endpoint tracks the canonical engine's
+decisions. No ``QuoteEvent``/``CandleClosedEvent`` is ever hand-injected.
+Starting paper requires a real live feed; outside exchange hours the pump
+produces no ticks and the paper session simply idles.
 
 Routes:
     POST /api/paper/start   {symbol, exchange, lot_size}
@@ -23,12 +24,13 @@ import logging
 import threading
 import time
 from datetime import datetime
+from typing import Callable
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ntrade.domain.market_hours import IST
-from ntrade.events.market import CandleClosedEvent, QuoteEvent
+from ntrade.events.market import TickEvent
 
 log = logging.getLogger("api.paper")
 
@@ -76,8 +78,7 @@ class PaperTraderService:
         self._lot_size = 1
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        self._pending_bar = None
-        self._last_bar_time = 0
+        self._unsub: Callable[[], None] | None = None
         self._started_at: str | None = None
         self._error: str | None = None
         self._fills: list[dict] = []
@@ -88,6 +89,11 @@ class PaperTraderService:
               lot_size: int | None = None) -> dict:
         symbol = symbol.strip().upper()
         with self._lock:
+            if not self._pump._real_feed or not self._pump.enabled:
+                raise HTTPException(
+                    status_code=422,
+                    detail="paper trading requires a real live feed (run --provider dhan --live-stream)",
+                )
             if self._session is not None:
                 already = True
             else:
@@ -101,8 +107,9 @@ class PaperTraderService:
                 self._started_at = datetime.now(tz=IST).isoformat()
                 self._error = None
                 self._stop_event.clear()
-                self._thread = threading.Thread(target=self._feed_loop, daemon=True,
-                                                name="paper-feed")
+                self._unsub = self._pump.on_tick(self._on_pump_tick)
+                self._thread = threading.Thread(target=self._snapshot_loop, daemon=True,
+                                                name="paper-snapshot")
                 self._thread.start()
         # status() takes the same lock — call it outside the with block.
         if not already:
@@ -116,6 +123,13 @@ class PaperTraderService:
             self._session = None
             self._symbol = None
             self._stop_event.set()
+            unsub = self._unsub
+            self._unsub = None
+            if unsub is not None:
+                try:
+                    unsub()
+                except Exception:  # noqa: BLE001
+                    pass
             if session is not None:
                 try:
                     session.kernel.stop(reason="paper stop")
@@ -127,8 +141,6 @@ class PaperTraderService:
                     pass
             thread = self._thread
             self._thread = None
-            self._pending_bar = None
-            self._last_bar_time = 0
         if thread is not None:
             thread.join(timeout=_POLL_S * 2)
         log.info("paper trading stopped (%s)", symbol)
@@ -215,10 +227,8 @@ class PaperTraderService:
         ref = cls.TUNED_REF_PRICE
         try:
             state = self._pump._subs.get(symbol) or {}
-            px = float(state.get("price") or 0.0)
-            if px <= 0:
-                bar = state.get("bar") or {}
-                px = float(bar.get("close") or 0.0)
+            bar = state.get("bar") or {}
+            px = float(bar.get("close") or 0.0)
         except Exception:  # noqa: BLE001 — fall back to the reference price
             px = 0.0
         if px > 0:
@@ -243,75 +253,56 @@ class PaperTraderService:
         self._fills = []
         self._signals = []
 
-    def _feed_loop(self) -> None:
-        with self._lock:
-            session = self._session
-        while not self._stop_event.is_set():
-            bar = self._pump_bar()
-            if bar is not None and bar.get("time") != self._last_bar_time:
-                if self._pending_bar is not None:
-                    self._feed_closed(self._pending_bar, session)
-                self._pending_bar = dict(bar)
-                self._last_bar_time = int(bar["time"])
-            elif bar is not None:
-                self._pending_bar = dict(bar)  # in-progress revision
-            time.sleep(_POLL_S)
-        # Flush the in-progress bar on stop so the final partial candle is
-        # evaluated too (the captured session outlives stop() clearing it).
-        with self._lock:
-            bar = self._pending_bar
-        if session is not None and bar is not None:
-            self._feed_closed(bar, session)
-
-    def _pump_bar(self) -> dict | None:
-        with self._lock:
-            symbol = self._symbol
-            subs = self._pump._subs
-        if not symbol:
-            return None
-        state = subs.get(symbol)
-        return state.get("bar") if state else None
-
-    def _feed_closed(self, bar: dict, session=None) -> None:
-        with self._lock:
-            session = session or self._session
-            symbol = self._symbol
-            exchange = self._exchange
-        if session is None or symbol is None:
+    def _on_pump_tick(self, symbol: str, exchange: str, price: float,
+                      qty: int, ts: datetime) -> None:
+        session = self._session
+        if session is None or symbol != self._symbol:
             return
         try:
-            ts = datetime.fromtimestamp(int(bar["time"]), tz=IST)
-            k = session.kernel
-            k.bus.publish(QuoteEvent(
-                symbol=symbol, exchange=exchange, ltp=float(bar["close"]),
-                bid=0.0, ask=0.0, open=float(bar["open"]),
-                high=float(bar["high"]), low=float(bar["low"]),
-                volume=int(bar.get("volume", 0) or 0), ts=ts,
+            session.kernel.bus.publish(TickEvent(
+                symbol=symbol, exchange=exchange, price=float(price),
+                quantity=int(qty), ts=ts,
             ))
-            k.bus.publish(CandleClosedEvent(
-                symbol=symbol, exchange=exchange, timeframe="1m",
-                open=float(bar["open"]), high=float(bar["high"]),
-                low=float(bar["low"]), close=float(bar["close"]),
-                volume=int(bar.get("volume", 0) or 0), ts=ts,
-            ))
-            # Keep the open position's LTP live so the status endpoint's
-            # equity / unrealized PnL move with price (mirror of the backtest
-            # simulator's _mark_to_market: Position.ltp otherwise only updates
-            # on fills).
-            position = k.ctx.portfolio.position(symbol)
-            if position is not None:
-                position.ltp = float(bar["close"])
-            # Snapshot fills + signals for the status endpoint (bus history is
-            # capped at 10k events, so keep our own growing lists).
-            for event in k.bus.history:
-                from ntrade.events.order import OrderFilledEvent
-                from ntrade.events.risk import SignalGeneratedEvent
-                if isinstance(event, OrderFilledEvent):
-                    self._record_fill(event)
-                elif isinstance(event, SignalGeneratedEvent):
-                    self._record_signal(event)
-        except Exception:  # noqa: BLE001 — a bad bar never kills the loop
-            log.exception("paper feed failed on bar %s", bar.get("time"))
+        except Exception:  # noqa: BLE001
+            log.exception("paper tick publish failed")
+
+    def _snapshot_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                session = self._session
+                if session is not None:
+                    k = session.kernel
+                    # The bus RLock is the kernel's serialization point: live
+                    # mode has multiple producer threads and the shared
+                    # read-models must never observe a torn dispatch (EventBus
+                    # docstring). This snapshot loop mutates the same
+                    # read-models (position LTP, portfolio sync) and scans
+                    # history, so it must run inside that lock or it races the
+                    # pump's tick dispatch — concurrent list/read-model
+                    # mutation that hangs or segfaults under load.
+                    with k.bus._lock:
+                        bar = (self._pump._subs.get(self._symbol) or {}).get("bar")
+                        if bar:
+                            position = k.ctx.portfolio.position(self._symbol)
+                            if position is not None:
+                                position.ltp = float(bar["close"])
+                        try:
+                            k.sync_positions()
+                        except Exception:  # noqa: BLE001
+                            pass  # reconciliation failure keeps prior state
+                        for event in k.bus.history:
+                            from ntrade.events.order import OrderFilledEvent
+                            from ntrade.events.risk import SignalGeneratedEvent
+                            if isinstance(event, OrderFilledEvent):
+                                self._record_fill(event)
+                            elif isinstance(event, SignalGeneratedEvent) and (
+                                "exit_reason" in (event.metadata or {})
+                                or (event.metadata or {}).get("phase") == "signal"
+                            ):
+                                self._record_signal(event)
+            except Exception:  # noqa: BLE001
+                log.exception("paper snapshot failed")
+            time.sleep(_POLL_S)
 
     def _record_fill(self, event: OrderFilledEvent) -> None:
         if any(f.get("order_id") == event.order_id for f in self._fills):

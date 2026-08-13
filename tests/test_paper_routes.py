@@ -20,6 +20,11 @@ def test_paper_routes_lifecycle(tmp_path):
         assert st["running"] is False
         assert st["initial_cash"] == 1_000_000.0
 
+        # Paper now requires a real live feed — open the fixture seams so the
+        # start control can run without a Dhan connection.
+        app.state.paper._pump._real_feed = True
+        app.state.paper._pump.enabled = True
+
         # Start a paper session on a symbol (idempotent second start).
         st = c.post("/api/paper/start",
                     json={"symbol": "NIFTY AUG FUT", "exchange": "NFO"}).json()
@@ -40,3 +45,11 @@ def test_paper_start_requires_symbol():
     with TestClient(app) as c:
         # Missing symbol → 422 from the pydantic body.
         assert c.post("/api/paper/start", json={}).status_code == 422
+
+
+def test_paper_start_requires_real_feed():
+    app = create_app("synthetic", live_stream=False)
+    c = TestClient(app)
+    r = c.post("/api/paper/start", json={"symbol": "NIFTY AUG FUT", "exchange": "NFO"})
+    assert r.status_code == 422
+    assert "real live feed" in r.json()["detail"]

@@ -351,6 +351,7 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     const markers: SeriesMarker<UTCTimestamp>[] = []
     if (toggles.absorptions) {
       for (const a of ABSORB_RUN(src)) {
+        if (a.barIndex < 0 || a.barIndex >= src.length) continue
         markers.push({
           time: istChartTime(src[a.barIndex].time) as UTCTimestamp,
           position: a.side === 'BUY' ? 'belowBar' : 'aboveBar',
@@ -361,6 +362,7 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     }
     if (toggles.strategy && strategy) {
       for (const t of strategy.trades) {
+        if (t.entryIndex < 0 || t.entryIndex >= src.length) continue
         markers.push({
           time: istChartTime(src[t.entryIndex].time) as UTCTimestamp,
           position: t.side === 'BUY' ? 'belowBar' : 'aboveBar',
@@ -369,7 +371,7 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
           text: t.side === 'BUY' ? 'BUY' : 'SELL',
         })
         // T1 partial book (Morning VAH/VAL: 50% at the opposite VA level).
-        if (t.partialIndex != null && t.partialIndex >= 0) {
+        if (t.partialIndex != null && t.partialIndex >= 0 && t.partialIndex < src.length) {
           markers.push({
             time: istChartTime(src[t.partialIndex].time) as UTCTimestamp,
             position: t.side === 'BUY' ? 'aboveBar' : 'belowBar',
@@ -378,7 +380,7 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
             text: '½',
           })
         }
-        if (t.exitIndex != null && t.reason) {
+        if (t.exitIndex != null && t.reason && t.exitIndex >= 0 && t.exitIndex < src.length) {
           markers.push({
             time: istChartTime(src[t.exitIndex].time) as UTCTimestamp,
             position: t.side === 'BUY' ? 'aboveBar' : 'belowBar',
@@ -389,6 +391,9 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
         }
       }
     }
+    // lightweight-charts requires markers ascending by time; absorptions +
+    // strategy trades are merged from independent walks so they can interleave.
+    markers.sort((a, b) => (a.time as number) - (b.time as number))
     const key = JSON.stringify(markers)
     if (key !== absMarkersRef.current) {
       absMarkersRef.current = key

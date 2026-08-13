@@ -194,8 +194,15 @@ class PaperTraderService:
 
     # ------------------------------------------------------------- internals
     def _build_session(self, symbol: str, exchange: str, lot_size: int | None) -> None:
-        from ntrade.engines.morning_vah_val import MorningVAHVAL
+        from ntrade.registry import strategy as _strategy_reg
+        from ntrade.engines.strategies import _strategy_classes
         from ntrade.kernel.trading_session import TradingSession
+
+        # Resolve the strategy by id through the registry — no hardcoded class
+        # import. The spec carries the constructor defaults; _strategy_classes
+        # maps the spec id to the concrete implementation.
+        spec = _strategy_reg.get("morning_vah_val")
+        cls = _strategy_classes[spec.id]
 
         self._lot_size = lot_size or _default_lot_size(symbol)
         session = TradingSession.paper(initial_cash=self._initial_cash,
@@ -204,8 +211,8 @@ class PaperTraderService:
         # The tuned preset's sl_pad is absolute points calibrated for ~₹76k
         # index-futures notional; scale it to this symbol's price so a ₹100
         # stock doesn't get a 30% stop pad.
-        kw = dict(MorningVAHVAL.TUNED)
-        ref = MorningVAHVAL.TUNED_REF_PRICE
+        kw = dict(cls.TUNED)
+        ref = cls.TUNED_REF_PRICE
         try:
             state = self._pump._subs.get(symbol) or {}
             px = float(state.get("price") or 0.0)
@@ -216,7 +223,7 @@ class PaperTraderService:
             px = 0.0
         if px > 0:
             kw["sl_pad"] = kw["sl_pad"] * (px / ref)
-        session.register_strategy(MorningVAHVAL(
+        session.register_strategy(cls(
             symbol=symbol, exchange=exchange, lot_size=self._lot_size, **kw,
         ), risk={
             # Sizing is the strategy's risk budget; these are sanity ceilings.

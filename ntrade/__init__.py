@@ -16,7 +16,7 @@ from ntrade.domain.market.depth import DepthLevel, MarketDepth
 from ntrade.domain.market.quote import Quote, Tick
 from ntrade.domain.analytics.greeks import Greeks
 from ntrade.factories import InstrumentFactory
-from ntrade.registry import BrokerRegistry, SymbolMaster
+from ntrade.registry import BrokerRegistry, SymbolMaster, StrategySpec, IndicatorSpec, indicator, strategy
 from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType, TradeType
 from ntrade.domain.session import MarketState, SessionState
 
@@ -77,6 +77,8 @@ __all__ = [
     "MarketState", "SessionState",
     # Factory
     "InstrumentFactory", "BrokerRegistry", "SymbolMaster",
+    # Registry
+    "IndicatorSpec", "StrategySpec", "indicator", "strategy",
     # Events
     "Event",
     "TickEvent", "QuoteEvent", "DepthEvent", "CandleClosedEvent",

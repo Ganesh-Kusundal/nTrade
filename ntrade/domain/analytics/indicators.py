@@ -9,6 +9,8 @@ import logging
 
 import pandas as pd
 
+from ntrade.registry import IndicatorSpec, PlotSpec, indicator
+
 logger = logging.getLogger("ntrade.indicators")
 
 
@@ -198,6 +200,36 @@ def renko_bricks(df: pd.DataFrame, box_size: float = 7.0) -> pd.DataFrame:
         bricks.append({"timestamp": ts, "close": px, "direction": direction})
         prev = px
     return pd.DataFrame(bricks)
+
+
+# Register each computable indicator at import time. The registry is the
+# contract (id + default params + plot shape); the calc lives in the fn above
+# and is reused verbatim by compute_bundle. New indicator = register() one
+# entry here — no call-site edits anywhere else.
+indicator.register("rsi", IndicatorSpec(
+    id="rsi", label="RSI", params={"rsi_period": 14},
+    series=True, plot=PlotSpec(series_key="rsi_14", pane="separate", color="#7e57c2")))
+indicator.register("atr", IndicatorSpec(
+    id="atr", label="ATR", params={"atr_period": 14},
+    series=True, plot=PlotSpec(series_key="atr_14", pane="separate", color="#ff9800")))
+indicator.register("sma", IndicatorSpec(
+    id="sma", label="SMA", params={"sma_periods": (20,)},
+    series=True, plot=PlotSpec(series_key="sma_20", pane="overlay", color="#2196f3")))
+indicator.register("ema", IndicatorSpec(
+    id="ema", label="EMA", params={"ema_periods": (9,)},
+    series=True, plot=PlotSpec(series_key="ema_9", pane="overlay", color="#4caf50")))
+indicator.register("vwap", IndicatorSpec(
+    id="vwap", label="VWAP", params={},
+    series=True, plot=PlotSpec(series_key="vwap", pane="overlay", color="#f44336")))
+indicator.register("vwap_bands", IndicatorSpec(
+    id="vwap_bands", label="VWAP Bands", params={"vwap_bands_std": 2.0},
+    series=False, plot=PlotSpec(series_key="vwap_upper", pane="overlay", color="#9e9e9e")))
+indicator.register("hma", IndicatorSpec(
+    id="hma", label="HMA", params={"hma_period": 21},
+    series=True, plot=PlotSpec(series_key="hma_21", pane="overlay", color="#00bcd4")))
+indicator.register("st", IndicatorSpec(
+    id="st", label="SuperTrend", params={"st_period": 10, "st_mult": 3.0},
+    series=True, plot=PlotSpec(series_key="stx_10_3", pane="separate", color="#e91e63")))
 
 
 def compute_bundle(df: pd.DataFrame, **params) -> dict[str, float]:

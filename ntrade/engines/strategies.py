@@ -19,6 +19,7 @@ from ntrade.domain.analytics.range_bars import (
     build_range_bars, calc_auto_range, swing_bias)
 from ntrade.domain.analytics.volume_profile import build_volume_profile
 from ntrade.engines.strategy_engine import Strategy
+from ntrade.registry import StrategySpec, strategy
 
 # MorningVAHVAL lives in its own module (self-contained 2m aggregation + FRVP
 # freeze) but is re-exported here so callers can import every strategy from one
@@ -822,5 +823,64 @@ class ValentiniScalper(Strategy):
             exit_reason=reason, intent_price=price,
         )
         self._active = None
+
+
+# Implementation lookup: maps a strategy id (the registry key / StrategySpec.id)
+# to the concrete class. The registry is the contract; this dict is the plumbing
+# that turns a spec into a live instance. New strategy → one register() + one
+# _strategy_classes line, zero call-site edits elsewhere.
+_strategy_classes = {
+    "ema_cross": EmaCrossStrategy,
+    "valentini": ValentiniScalper,
+    "morning_vah_val": MorningVAHVAL,
+}
+
+
+# Register each strategy as a spec (id + default-constructor params + the
+# indicator ids it reads). Registration happens at import time so callers only
+# need to import `strategy` — the contract is populated by the side-effect.
+strategy.register("ema_cross", StrategySpec(
+    id="ema_cross", label="EMA Cross",
+    params={"fast": 9, "slow": 21, "quantity": 5},
+    indicators=["ema"],
+))
+strategy.register("valentini", StrategySpec(
+    id="valentini", label="Valentini Scalper",
+    params={
+        "symbol": None, "exchange": "NSE", "timeframe": "1m",
+        "range_size": None, "atr_period": 14, "tick_size": None,
+        "warmup": 15, "abs_volume_mult": 1.5,
+        "abs_range_threshold": 0.5, "abs_lookback": 5,
+        "tp_multiplier": 2.0, "min_rr": 1.5,
+        "risk_per_trade_pct": 0.5, "lot_size": 1,
+        "session_start": None, "session_end": None, "max_window": 600,
+        "fade_extended": True,
+        "depth_imbalance_min": None,
+        "require_cvd": True, "cvd_confirm_bars": 3,
+        "leg_impulse_mult": 2.0,
+        "accum_volume_mult": 1.5,
+        "direction_volume_mult": 1.0,
+        "trail_arm_mult": 1.0,
+        "divergence_volume_mult": 0.6,
+        "reverse_extension_mult": 2.0,
+    },
+    indicators=["vwap", "vwap_bands", "atr", "ema", "hma"],
+))
+strategy.register("morning_vah_val", StrategySpec(
+    id="morning_vah_val", label="Morning VAH/VAL",
+    params={
+        "symbol": None, "exchange": "NFO", "timeframe": "1m",
+        "risk_per_trade_pct": 0.5, "lot_size": 1,
+        "session_start": "09:15", "profile_end": "09:30",
+        "entry_start": "09:30", "entry_end": "11:00",
+        "ema_fast": 10, "ema_slow": 20, "ema_cluster_tol_pct": 0.1,
+        "sideway_threshold": 0.0015, "sl_pad": 0.0,
+        "require_cluster": False, "book_partial": True,
+        "trail_back": 1, "reversal_margin_pct": 0.0,
+        "trail_mode": "candle", "atr_mult": 2.0,
+        "atr_period": 3, "max_window": 6000,
+    },
+    indicators=["ema", "atr"],
+))
 
 

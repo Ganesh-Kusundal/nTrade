@@ -22,7 +22,7 @@ from typing import Callable
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ntrade.domain.market_hours import IST, is_market_open, session_open
-from api.marketdata import MarketDataService
+from api.marketdata import MarketDataService, _base_price
 
 log = logging.getLogger("api.live")
 
@@ -135,7 +135,7 @@ class LiveCandlePump:
         if not self._real_feed:
             last = self._service.candles(symbol=symbol, exchange=exchange,
                                          interval=interval, limit=1)
-            price = float(last[-1]["close"]) if last else self._base(symbol)
+            price = float(last[-1]["close"]) if last else _base_price(symbol)
             rng = random.Random(_seed(symbol, interval))
         return {
             "symbol": symbol,
@@ -147,11 +147,6 @@ class LiveCandlePump:
             "bar_start": None,
             "bar": None,
         }
-
-    @staticmethod
-    def _base(symbol: str) -> float:
-        digest = int.from_bytes(hashlib.md5(symbol.encode()).digest()[:8], "big")
-        return round(15_000.0 + (digest % 55_000) / 10.0, 2)
 
     # ------------------------------------------------------------ pump loop
     async def _run(self) -> None:

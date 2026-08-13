@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.live import LiveCandlePump, ws_router
 from api.marketdata import FuturesMaster, build_service
+from api.paper_trader import PaperTraderService, paper_router
 from api.routes import router
 
 
@@ -70,7 +71,13 @@ def create_app(provider: str | None = None, env: dict | None = None,
     if live_stream and service.name == "dhan":
         app.state.pump.attach_broker_feed()
 
+    # Paper trading: MorningVAHVAL on a ₹1M PaperBroker session fed by the
+    # live candle pump (UI start/stop/status control).
+    app.state.paper = PaperTraderService(service, app.state.pump,
+                                         initial_cash=1_000_000.0)
+
     app.include_router(router)
+    app.include_router(paper_router)
     app.include_router(ws_router)
 
     # Serve the built React app (ui/dist) when present — dev mode runs Vite

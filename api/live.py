@@ -21,7 +21,7 @@ from typing import Callable
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from api.market_hours import IST, is_market_open, session_open
+from ntrade.domain.market_hours import IST, is_market_open, session_open
 from api.marketdata import MarketDataService
 
 log = logging.getLogger("api.live")

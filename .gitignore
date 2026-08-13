@@ -29,3 +29,4 @@ graphify-out/
 ui/.vite/
 *.ipynb
 ntrade.egg-info
+node_modules/

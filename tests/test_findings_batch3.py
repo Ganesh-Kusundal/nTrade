@@ -214,26 +214,23 @@ def test_m8_transport_positions_are_domain_objects():
 # L2 — Market facade consolidation
 
 
-def test_l2_market_delegates_to_trading_session():
-    from ntrade.facade import Market
+def test_l2_trading_session_is_the_single_impl():
+    """TradingSession is the single session implementation (the legacy Market
+    facade that delegated to it was removed)."""
     from ntrade.kernel.trading_session import TradingSession
 
-    m = Market(broker="paper")
-    assert isinstance(m._session, TradingSession)  # single implementation
-    assert m.broker is m._session.broker
-    rel = m.equity("RELIANCE")
+    m = TradingSession.paper()
+    rel = m.stock("RELIANCE")
     assert rel.broker_adapter is m.broker
     assert m.balance() == 100_000.0
     assert m.positions() == []
     assert m.live_pnl() == 0.0
-    # Market's instruments factory is the session's (single implementation)
-    assert m.instruments is m._session.factory
 
 
-def test_l2_market_chain_via_session():
-    from ntrade.facade import Market
+def test_l2_trading_session_chain():
+    from ntrade.kernel.trading_session import TradingSession
 
-    m = Market(broker="paper")
+    m = TradingSession.paper()
     nifty = m.index("NIFTY")
     nifty._quote = nifty._quote.with_update(ltp=24550.0)
     chain = m.chain(nifty, num_strikes=7)

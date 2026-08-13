@@ -167,7 +167,11 @@ def test_direction_none_when_volume_does_not_support():
     strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15,
                              direction_volume_mult=100.0)
     k.register_strategy(strat)
-    _uptrend_bars(k, 30, volume=100)          # impulse leg vol ~3000
+    _uptrend_bars(k, 30, volume=100)          # 30 bars of vol 100
+    # White-box: anchor the leg at bar 20 so there IS prior history for the
+    # volume gate to compare against (without an impulse leg, _leg_start_idx
+    # stays 0, prior is empty, and _volume_supports short-circuits True).
+    strat._leg_start_idx = 20
     strat._vwap = 110.0
     assert strat._direction(close=122.0) is None
 
@@ -384,11 +388,18 @@ Append to `tests/test_valentini_leg_anchor.py`:
 ```python
 # ------------------------------------------------------------------ auction trail
 
+def _install_range_bars(monkeypatch, bars_df):
+    """Force build_range_bars to return a controlled completed-bar series.
+    NOTE: on_candle_closed REBUILDS self._range_bars every candle
+    (strategies.py:295-297), so a direct `strat._range_bars = ...` override
+    would be wiped before _manage_exit runs. Monkeypatching the builder (the
+    _fixed_profile idiom) survives the rebuild."""
+    monkeypatch.setattr("ntrade.engines.strategies.build_range_bars",
+                        lambda *a, **kw: bars_df)
+
+
 def _runner_long(k, monkeypatch):
-    """Drive the strategy to a filled BUY entry (runner: tp=None) at bar 32,
-    then override _range_bars with a controlled completed-bar series so the
-    trail/exit logic is tested deterministically (white-box), mirroring the
-    _fixed_profile pattern."""
+    """Drive the strategy to a filled BUY entry (runner: tp=None) at bar 32."""
     strat = ValentiniScalper(symbol=_NIFTY, range_size=4.0, warmup=15,
                              tp_multiplier=2.0, min_rr=1.5, fade_extended=False)
     k.register_strategy(strat)
@@ -399,16 +410,6 @@ def _runner_long(k, monkeypatch):
     _candle(k, 32, close=122.0)                # BUY entry at 122
     buys = [f for f in _fills(k) if f.side == "BUY"]
     assert buys, "entry did not fill"
-    # Controlled range-bar series: latest completed bar makes a higher low
-    # (trail anchor at 121) then a down-close through it (structure break).
-    strat._range_bars = pd.DataFrame({
-        "high": [116.0, 120.0, 124.0, 127.0],
-        "low":  [114.0, 117.0, 121.0, 119.0],
-        "close":[115.5, 119.0, 123.0, 118.5],
-        "volume":[100.0, 100.0, 100.0, 100.0],
-        "is_complete":[True, True, True, True],
-    })
-    strat._leg_start_idx = 0
     return strat, buys[0]
 
 
@@ -425,8 +426,16 @@ def test_runner_has_no_fixed_target(monkeypatch):
 def test_structure_break_exit(monkeypatch):
     k = _kernel()
     strat, _ = _runner_long(k, monkeypatch)
-    # The controlled series ends with a down-close (118.5) through the prior
-    # bar's low (121.0): structure break -> SELL exit on the next candle.
+    # Controlled series: latest completed bar closes (118.5) through the prior
+    # bar's low (121.0) = structure break. Volume is HIGH (4000) so the
+    # divergence gate does NOT fire first (it needs weak volume).
+    _install_range_bars(monkeypatch, pd.DataFrame({
+        "high": [116.0, 120.0, 124.0, 127.0],
+        "low":  [114.0, 117.0, 121.0, 119.0],
+        "close":[115.5, 119.0, 123.0, 118.5],
+        "volume":[100.0, 100.0, 100.0, 4000.0],
+        "is_complete":[True, True, True, True],
+    }))
     _candle(k, 33, close=118.5, open_=122.0, high=122.5, low=118.0, volume=100)
     sells = [f for f in _fills(k) if f.side == "SELL"]
     assert sells, "structure break must exit the long"
@@ -438,15 +447,17 @@ def test_structure_break_exit(monkeypatch):
 def test_volume_divergence_exit(monkeypatch):
     k = _kernel()
     strat, _ = _runner_long(k, monkeypatch)
-    # Controlled series ends with a HIGHER high (127) on weak volume; the next
-    # candle makes a new high on low volume -> divergence exit.
-    strat._range_bars = pd.DataFrame({
+    # Controlled series ends with a HIGHER high (127) on weak volume (100);
+    # the same bar's close (126) is NOT below the prior low (121) so the
+    # structure-break gate does not fire. Impulse volume at entry ~4700 so
+    # 0.6 x 4700 = 2820 > 100 -> divergence fires.
+    _install_range_bars(monkeypatch, pd.DataFrame({
         "high": [116.0, 120.0, 124.0, 127.0],
         "low":  [114.0, 117.0, 121.0, 122.0],
         "close":[115.5, 119.0, 123.0, 126.0],
         "volume":[100.0, 100.0, 100.0, 100.0],
         "is_complete":[True, True, True, True],
-    })
+    }))
     _candle(k, 33, close=128.0, open_=126.5, high=129.0, low=126.0, volume=80)
     sells = [f for f in _fills(k) if f.side == "SELL"]
     assert sells
@@ -455,12 +466,13 @@ def test_volume_divergence_exit(monkeypatch):
     assert "divergence" in reason, f"got reasons {reason}"
 ```
 
-Note: these tests are white-box — they override `_range_bars` directly so the
-trail helpers (`_last_swing_low`, `_divergence_exit`, `_structure_broken`)
-operate on a controlled series, exactly like `_fixed_profile` does for the
-volume profile. `impulse_volume` comes from the strategy's real `_rows` at
-entry (the absorption spike at bar 30 → ~4700), so the divergence test's
-`volume=80 < 0.6 × 4700` holds.
+Note: these tests monkeypatch `build_range_bars` (not `strat._range_bars`
+directly) because `on_candle_closed` rebuilds `_range_bars` every candle —
+a direct override would be wiped before `_manage_exit` runs. The structure-break
+test uses high volume (4000) so divergence does NOT preempt it; the divergence
+test keeps the close above the prior low so structure-break does NOT preempt it.
+`impulse_volume` comes from the strategy's real `_rows` at entry (absorption
+spike at bar 30 → ~4700), so the divergence test's `volume=80 < 0.6 × 4700` holds.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -576,6 +588,15 @@ Replace the body of `_manage_exit` (the BUY/SELL stop/target/breakeven block, cu
         low, high, close = float(event.low), float(event.high), float(event.close)
         risk = abs(act["entry"] - act["sl"])
         side = act["side"]
+        # Hard session close FIRST: the session gate is absolute ("never hold
+        # past close") and must win over the auction exits, which are
+        # conditional on price/volume narrative. Without this ordering a
+        # post-session candle would exit "structure_break" instead of
+        # "session_close" (regression on test_hard_session_close_exits_open_position).
+        if not self._in_session(event.ts):
+            self._exit(event, "SELL" if side == "BUY" else "BUY",
+                       close, reason="session_close")
+            return
         if side == "BUY":
             if low <= act["sl"]:
                 self._exit(event, "SELL", act["sl"], reason="stop")
@@ -682,12 +703,11 @@ def test_reversal_fires_to_poc_after_profit(monkeypatch):
     assert sig
     assert sig[0].metadata.get("tp") == 118.0    # target = leg POC
 ```
-```
 
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `python -m pytest tests/test_valentini_leg_anchor.py::test_reversal_fires_to_poc_after_profit -q`
-Expected: FAIL — no SELL fill (reversal not implemented).
+Expected: FAIL — no BUY fill (reversal not implemented).
 
 - [ ] **Step 3: Add day-PnL state and reset on session change**
 

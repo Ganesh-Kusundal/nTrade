@@ -21,11 +21,26 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from ntrade.domain.market_hours import DAILY_TIMEFRAMES, session_close, session_open
+
 # Columns stored in every parquet row group
 _BASE_COLUMNS = [
     "symbol", "exchange", "kind", "timeframe", "timestamp",
     "open", "high", "low", "close", "volume",
 ]
+
+
+def _session_bar_mask(df: pd.DataFrame) -> pd.Series:
+    """True for daily bars and intraday bars inside exchange session hours."""
+    tf = df["timeframe"].astype(str).str.lower()
+    daily = tf.isin(DAILY_TIMEFRAMES)
+    t = df["timestamp"].dt.time
+    mcx = df["exchange"].astype(str).str.upper().eq("MCX")
+    nse_open, nse_close = session_open("NSE"), session_close("NSE")
+    mcx_open, mcx_close = session_open("MCX"), session_close("MCX")
+    in_nse = (t >= nse_open) & (t < nse_close)
+    in_mcx = (t >= mcx_open) & (t < mcx_close)
+    return daily | (mcx & in_mcx) | (~mcx & in_nse)
 
 
 class ParquetStorage:
@@ -132,6 +147,10 @@ class ParquetStorage:
         # comparisons consistent (fix: Cannot compare tz-naive vs tz-aware).
         if getattr(df["timestamp"].dt, "tz", None) is not None:
             df["timestamp"] = df["timestamp"].dt.tz_localize(None)
+        # Drop after-hours intraday bars at the trust boundary. Existing
+        # partitions stay dirty until rewritten; readers that care (ORB
+        # screener) still clip in SQL.
+        df = df.loc[_session_bar_mask(df)].copy()
         # Ensure numeric types
         for col in ("open", "high", "low", "close", "volume"):
             df[col] = pd.to_numeric(df[col], errors="coerce")

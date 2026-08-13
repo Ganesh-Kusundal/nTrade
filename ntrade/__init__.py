@@ -15,7 +15,6 @@ from ntrade.domain.market.candles import CandleSeries
 from ntrade.domain.market.depth import DepthLevel, MarketDepth
 from ntrade.domain.market.quote import Quote, Tick
 from ntrade.domain.analytics.greeks import Greeks
-from ntrade.facade import Market
 from ntrade.factories import InstrumentFactory
 from ntrade.registry import BrokerRegistry, SymbolMaster
 from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType, TradeType
@@ -42,7 +41,6 @@ from ntrade.events.lifecycle import (
     SessionStartedEvent, SessionStoppedEvent,
 )
 from ntrade.kernel.session import TradingKernel
-from ntrade.kernel.resilient import ResilientKernel
 from ntrade.kernel.runner import StrategyRunner
 from ntrade.kernel.trading_session import TradingSession
 from ntrade.engines.strategy_engine import Strategy
@@ -53,7 +51,6 @@ from ntrade.execution.costs import (
 )
 from ntrade.execution.simulator import SimulatedExecution
 from ntrade.storage.event_store import EventStore
-from ntrade.replay.replay_engine import ReplayEngine
 from ntrade.backtest.simulator import BacktestResult, BacktestSimulator
 from ntrade.backtest.fills import BarAwareExecution, FillPolicy
 from ntrade.sources.market_feed import MarketFeedSource, SimulatedFeedSource
@@ -79,7 +76,7 @@ __all__ = [
     # State
     "MarketState", "SessionState",
     # Factory
-    "Market", "InstrumentFactory", "BrokerRegistry", "SymbolMaster",
+    "InstrumentFactory", "BrokerRegistry", "SymbolMaster",
     # Events
     "Event",
     "TickEvent", "QuoteEvent", "DepthEvent", "CandleClosedEvent",
@@ -96,14 +93,14 @@ __all__ = [
     # Strategy
     "Strategy",
     # Kernel
-    "TradingKernel", "ResilientKernel", "StrategyRunner",
+    "TradingKernel", "StrategyRunner",
     # Execution
     "SimulatedExecution", "BrokerExecution",
     # Costs
     "FixedSlippage", "PercentageSlippage", "FlatCommission", "PercentageCommission",
     "IndianStatutoryCosts",
     # Storage / Backtest
-    "EventStore", "ReplayEngine", "BacktestSimulator", "BacktestResult", "FillPolicy",
+    "EventStore", "BacktestSimulator", "BacktestResult", "FillPolicy",
     "BarAwareExecution",
     # Feed sources
     "MarketFeedSource", "SimulatedFeedSource", "SyntheticMarketFeedSource",

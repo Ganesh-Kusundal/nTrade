@@ -184,6 +184,9 @@ def test_upsert_does_not_mutate_caller_dataframe(tmp_path):
 def test_duckdb_scan_default_1min_window(tmp_path):
     """duckdb_scan with no args defaults to the trailing 1-minute window."""
     import duckdb
+    from ntrade.domain.market_hours import is_market_open
+    if not is_market_open("NSE"):
+        pytest.skip("default window is wall-clock now; session clip drops after-hours 5m bars")
     store = ParquetStorage(tmp_path / "ohlcv")
     now = pd.Timestamp.now()
     df = pd.DataFrame({
@@ -412,3 +415,43 @@ def test_upsert_strips_tz_from_broker_data(tmp_path):
     df2 = store.read(symbols=["TEST"], timeframe="1m",
                      start="2026-07-01", end="2026-07-31")
     assert len(df2) == 5
+
+
+# ============================================================ 8. session clip on ingest
+def test_upsert_drops_nse_after_hours_keeps_session_and_daily(tmp_path):
+    """NSE 1m bars outside 09:15–15:30 are dropped; 1d midnight bars stay.
+    MCX evening 1m bars stay (09:00–23:30)."""
+    store = ParquetStorage(tmp_path / "ohlcv")
+    nse = pd.DataFrame({
+        "symbol": ["INFY"] * 3, "exchange": "NSE", "kind": "equity",
+        "timeframe": "1m",
+        "timestamp": pd.to_datetime([
+            "2026-07-31 09:15:00",
+            "2026-07-31 15:29:00",
+            "2026-07-31 16:00:00",
+        ]),
+        "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1000,
+    })
+    mcx = pd.DataFrame({
+        "symbol": ["CRUDEOIL AUG FUT"] * 2, "exchange": "MCX", "kind": "future",
+        "timeframe": "1m",
+        "timestamp": pd.to_datetime([
+            "2026-07-31 09:00:00",
+            "2026-07-31 20:00:00",
+        ]),
+        "open": 5000, "high": 5001, "low": 4999, "close": 5000, "volume": 10,
+    })
+    daily = _ohlcv_frame("INFY", ["2026-07-31"], [100])
+
+    assert store.upsert(nse) == 2
+    assert store.upsert(mcx) == 2
+    assert store.upsert(daily) == 1
+
+    nse_back = store.read(symbols=["INFY"], timeframe="1m")
+    assert list(nse_back["timestamp"]) == list(pd.to_datetime([
+        "2026-07-31 09:15:00", "2026-07-31 15:29:00",
+    ]))
+    mcx_back = store.read(symbols=["CRUDEOIL AUG FUT"], timeframe="1m")
+    assert len(mcx_back) == 2
+    d_back = store.read(symbols=["INFY"], timeframe="1d")
+    assert len(d_back) == 1

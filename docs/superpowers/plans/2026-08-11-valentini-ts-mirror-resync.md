@@ -578,22 +578,24 @@ Expected: FAIL — no reversal trade fires in the second test.
 
 Add `/** Starting realized day PnL (white-box; the mirror has no broker fills, so tests seed it — mirrors Python's `_day_pnl = 5000.0` white-box setup). */` + `initialDayPnl?: number` to `ValentiniOptions`.
 
-Add `let dayPnl = opts.initialDayPnl ?? 0` (reset on day change at `valentini.ts:246`). In the trade-management block, after a trade closes, accumulate realized PnL:
+Add `let dayPnl = opts.initialDayPnl ?? 0` (reset on day change at `valentini.ts:246`). Settle each closed trade's PnL **exactly once** — a naive "if last.exit !== null, add PnL" block would re-add the same PnL on every subsequent bar (the `if (active)` block `continue`s past it on the closing bar, and `last.exit` stays non-null forever). Track how many trades have been settled with a counter:
 
 ```ts
-      if (active === null && trades.length > 0) {
-        const last = trades[trades.length - 1]
-        if (last.exit !== null) {
-          dayPnl += last.side === 'BUY'
-            ? (last.exit - last.entry) * qtyAt(last.entryIndex)
-            : (last.entry - last.exit) * qtyAt(last.entryIndex)
-        }
-      }
+  let dayPnlSettled = 0
 ```
 
-Where `qtyAt` returns a fixed 1 for the mirror (the TS mirror has no position
-sizing; PnL sign matters for the gate, not magnitude). Add it as a module-level
-helper: `const qtyAt = () => 1`.
+Add the settlement loop AFTER the `if (active)` block (i.e. after its `continue` at line 394, before the warm-up gate):
+
+```ts
+    // Settle any closed trades' PnL once (the reversal gate reads dayPnl).
+    while (dayPnlSettled < trades.length && trades[dayPnlSettled].exit !== null) {
+      const t = trades[dayPnlSettled]
+      dayPnl += t.side === 'BUY' ? (t.exit! - t.entry) : (t.entry - t.exit!)
+      dayPnlSettled++
+    }
+```
+
+Reset `dayPnlSettled = 0` alongside `dayPnl = opts.initialDayPnl ?? 0` on day change.
 
 Add the reversal check before the continuation chain (insert after the
 `if (i < warmup || !inSession(i)) continue` gate at `valentini.ts:295`):

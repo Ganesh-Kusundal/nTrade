@@ -116,7 +116,7 @@ class EventStore:
                     data = json.loads(line)
                 except json.JSONDecodeError:
                     # A crash mid-append leaves a torn final line; skip it
-                    # rather than failing the whole store — ResilientKernel
+                    # rather than failing the whole store — crash recovery
                     # recovery reads exactly when a crash happened.
                     logger.warning("event store %s: skipping torn line", self.path)
                     continue

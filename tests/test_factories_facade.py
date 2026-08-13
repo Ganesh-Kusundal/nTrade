@@ -1,11 +1,10 @@
-"""Tests for factories, registry (flyweight) and the Market facade."""
+"""Tests for factories, registry (flyweight)."""
 
 from datetime import date
 
 import pytest
 
 from ntrade.brokers.paper import PaperBroker
-from ntrade.facade import Market
 from ntrade.factories import InstrumentFactory, OptionFactory
 from ntrade.registry import BrokerRegistry, SymbolMaster
 
@@ -52,33 +51,3 @@ def test_broker_registry():
     assert broker.name == "paper"
     with pytest.raises(KeyError):
         BrokerRegistry.get("no_such_broker")
-
-
-def test_market_facade_paper():
-    m = Market(broker="paper")
-    assert m.broker.name == "paper"
-    rel = m.equity("RELIANCE")
-    assert rel.broker_adapter is m.broker
-    rel.refresh()
-    assert rel.market.ltp() >= 0
-    assert m.balance() == 100_000.0
-
-
-def test_market_facade_chain():
-    m = Market(broker="paper")
-    nifty = m.index("NIFTY")
-    nifty._quote = nifty._quote.with_update(ltp=24550.0)
-    chain = m.chain(nifty, num_strikes=7)
-    assert len(chain) == 14
-
-
-def test_market_default_paper():
-    m = Market()
-    assert m.broker.name == "paper"
-
-
-def test_flyweight_via_factory_shared():
-    m = Market(broker="paper")
-    a = m.equity("RELIANCE")
-    b = m.equity("RELIANCE")
-    assert a is b

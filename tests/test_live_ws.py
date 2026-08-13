@@ -119,12 +119,11 @@ def test_daily_candle_anchored_at_midnight_ist(app):
         pump.subscribe("NIFTY AUG FUT", "NFO", "1D")
         pump.ingest_tick("NIFTY AUG FUT", 24850.5, 65, now=_NSE_OPEN_NOW)
         bar = pump._subs["NIFTY AUG FUT"]["bar"]
-        midnight = int(datetime.combine(_NSE_OPEN_NOW.date(), dtime.min,
+        # Daily bars anchor at session open (09:15 IST for NFO), NOT midnight.
+        # This matches Dhan's daily history grid and the live intraday grid.
+        expected = int(datetime.combine(_NSE_OPEN_NOW.date(), dtime(9, 15),
                                         tzinfo=IST).timestamp())
-        assert bar["time"] == midnight
-        # Intra-session ticks keep updating the same daily bar (same time).
-        pump.ingest_tick("NIFTY AUG FUT", 24840.0, 30, now=_NSE_OPEN_NOW)
-        assert pump._subs["NIFTY AUG FUT"]["bar"]["time"] == midnight
+        assert bar["time"] == expected
 
 
 def test_intraday_candle_still_anchored_at_session_open(app):

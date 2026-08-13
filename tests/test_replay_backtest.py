@@ -1,4 +1,4 @@
-"""EventStore, ReplayEngine, zero-parity replay and backtest tests (Slice D)."""
+"""EventStore, zero-parity replay and backtest tests (Slice D)."""
 
 from datetime import datetime, timedelta
 
@@ -12,7 +12,6 @@ from ntrade.events.risk import SignalApprovedEvent, SignalGeneratedEvent
 from ntrade.engines.strategy_engine import Strategy
 from ntrade.kernel.clock import ReplayClock
 from ntrade.kernel.session import TradingKernel
-from ntrade.replay.replay_engine import ReplayEngine
 from ntrade.storage.event_store import EventStore
 
 
@@ -54,7 +53,7 @@ def test_event_store_nested_events_roundtrip(tmp_path):
     assert approved.signal.quantity == 10
 
 
-# ------------------------------------------------------------------ ReplayEngine
+# ------------------------------------------------------------------ zero parity
 class BuyOnFirstTick(Strategy):
     name = "buy_first"
 
@@ -67,17 +66,6 @@ class BuyOnFirstTick(Strategy):
             self.emit_signal(symbol=event.symbol, exchange=event.exchange,
                              side="BUY", quantity=5, price=100.0)
             self.done = True
-
-
-def test_replay_engine_runs_from_event_store():
-    store = EventStore()
-    store.append(TickEvent(ts=_ts(0), symbol="NIFTY", exchange="NSE", price=100.0))
-    store.append(TickEvent(ts=_ts(1), symbol="NIFTY", exchange="NSE", price=101.0))
-    engine = ReplayEngine()
-    engine.kernel.register(Equity("NIFTY"))
-    engine.run(store.replay())
-    assert engine.kernel.ctx.instrument("NIFTY").market.ltp() == 101.0
-    assert engine.clock.now() == _ts(1)  # clock follows the events
 
 
 def test_zero_parity_replay_and_live_identical_fills():
@@ -244,8 +232,8 @@ def test_backtest_market_orders_ignore_policy():
 
 def test_event_store_tolerates_torn_final_line(tmp_path):
     """A crash mid-append leaves a truncated final JSONL line; _load must
-    skip it rather than fail — ResilientKernel recovery reads exactly when
-    a crash happened."""
+    skip it rather than fail — crash recovery reads exactly when a crash
+    happened."""
     import json
 
     path = tmp_path / "torn.jsonl"

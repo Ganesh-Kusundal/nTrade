@@ -137,16 +137,6 @@ def test_paper_orderbook_and_tradebook():
     assert report["orders"] == 2
 
 
-def test_facade_books_work_on_paper():
-    from ntrade.facade import Market
-    m = Market(broker="paper")
-    rel = m.equity("RELIANCE")
-    rel.order.buy(quantity=10, price=100.0)
-    assert len(m.orderbook()) == 1
-    assert len(m.tradebook()) == 1
-    assert m.order_report()["orders"] == 1
-
-
 def test_dhan_orderbook_passthrough():
     broker = make_broker(get_orderbook=lambda debug="NO": [{"orderId": "1"}],
                          get_trade_book=lambda debug="NO": [{"tradeId": "1"}],
@@ -217,12 +207,6 @@ def test_portfolio_live_pnl_falls_back_to_calculated():
     broker = PaperBroker()
     port = Portfolio.from_broker(broker)
     assert port.live_pnl == 0.0
-
-
-def test_facade_live_pnl():
-    from ntrade.facade import Market
-    m = Market(broker="paper")
-    assert m.live_pnl() == 0.0
 
 
 def test_margin_calculator_capability():

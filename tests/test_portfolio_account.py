@@ -39,15 +39,6 @@ def test_account_holding_lookup():
     assert acct.holding("NOPE") is None
 
 
-def test_market_facade_account_and_portfolio():
-    from ntrade.facade import Market
-    m = Market(broker="paper")
-    acct = m.account()
-    assert acct.balance == 100_000.0
-    assert len(m.portfolio()) == 0
-    assert m.positions() == []
-
-
 def test_portfolio_from_broker_empty():
     broker = PaperBroker()
     port = Portfolio.from_broker(broker)

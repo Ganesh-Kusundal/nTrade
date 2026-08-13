@@ -16,6 +16,8 @@ _NSE_OPEN, _NSE_CLOSE = time(9, 15), time(15, 30)
 # MCX non-agri (crude/gold/silver) evening session: 09:00 – 23:30 IST
 _MCX_OPEN, _MCX_CLOSE = time(9, 0), time(23, 30)
 
+DAILY_TIMEFRAMES = frozenset({"1d", "d", "day"})
+
 
 def session_open(exchange: str) -> time:
     """Opening time (IST) for the given exchange segment."""

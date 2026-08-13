@@ -86,7 +86,7 @@ const VWAP_BAND = 'rgba(245, 158, 11, 0.35)'
 // lifetime — the registry is the single source of truth, so adding a new
 // indicator only requires registering it; ChartPanel reads it here by key).
 const VWAP_RUN = indicators['vwap'].run as (candles: Candle[]) => VwapSeriesResult
-const ABSORB_RUN = indicators['absorption'].run as (candles: Candle[]) => Absorption[]
+const ABSORB_RUN = indicators['absorptions'].run as (candles: Candle[]) => Absorption[]
 const VP_RUN = indicators['volume_profile'].run as (candles: Candle[], step?: number) => VolumeProfile
 
 interface PrevRef {

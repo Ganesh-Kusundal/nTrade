@@ -1,8 +1,10 @@
 """Live candle stream — ``/ws/market`` + :class:`LiveCandlePump`.
 
 With ``--provider dhan`` the pump subscribes to Dhan's MarketFeed websocket
-and forms in-progress candles from real LTP/LTQ. Synthetic/parquet keep the
-1Hz random walk for offline demos.
+and forms in-progress candles from real LTP/LTQ only. There is no synthetic
+walk: without a real feed ``subscribe()`` returns ``off`` and the pump never
+fabricates a candle. A watchdog emits ``live_status: stale`` when an open
+sub stops receiving ticks, and the feed is rebuilt on disconnect.
 
 Bars are anchored to the exchange session open (NSE 09:15 / MCX 09:00 IST).
 Streaming is gated by :mod:`api.market_hours`.
@@ -11,10 +13,8 @@ Streaming is gated by :mod:`api.market_hours`.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
-import random
 import threading
 from datetime import datetime
 from typing import Callable
@@ -22,7 +22,7 @@ from typing import Callable
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ntrade.domain.market_hours import IST, is_market_open, session_open
-from api.marketdata import MarketDataService, _base_price
+from api.marketdata import MarketDataService
 
 log = logging.getLogger("api.live")
 
@@ -56,6 +56,9 @@ class LiveCandlePump:
         self._real_feed = False
         self._feed = None
         self._sec_map: dict = {}
+        self._tick_listeners: list[Callable[[str, str, float, int, datetime], None]] = []
+        self._quote_listeners: list = []
+        self._desired_wires: list = []
 
     # ------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -71,6 +74,16 @@ class LiveCandlePump:
     def attach_broker_feed(self) -> None:
         """Form live candles from Dhan MarketFeed ticks instead of the RNG walk."""
         self._real_feed = True
+
+    def on_tick(self, fn: Callable[[str, str, float, int, datetime], None]) -> Callable[[], None]:
+        """Register a callback invoked on every real tick; returns unsubscribe."""
+        self._tick_listeners.append(fn)
+        return lambda: self._tick_listeners.remove(fn)
+
+    def on_quote(self, fn) -> Callable[[], None]:
+        """Register a callback invoked on every real quote; returns unsubscribe."""
+        self._quote_listeners.append(fn)
+        return lambda: self._quote_listeners.remove(fn)
 
     async def stop(self) -> None:
         if self._task is not None:
@@ -103,6 +116,10 @@ class LiveCandlePump:
             return {"symbol": symbol, "exchange": exchange, "interval": interval,
                     "status": "off", "source": self._service.name,
                     "reason": "live streaming disabled"}
+        if not self._real_feed:
+            return {"symbol": symbol, "exchange": exchange, "interval": interval,
+                    "status": "off", "source": self._service.name,
+                    "reason": f"no real live feed (provider={self._service.name})"}
         if symbol not in self._subs and len(self._subs) >= _MAX_SUBS:
             raise ValueError(f"subscription limit ({_MAX_SUBS}) reached")
         state = self._subs.get(symbol)
@@ -127,38 +144,44 @@ class LiveCandlePump:
         return self._subs.pop(symbol.strip().upper(), None) is not None
 
     def _new_state(self, symbol: str, exchange: str, interval: str) -> dict:
-        span_s = _SPAN_MIN.get(interval, 1) * 60
-        # Synthetic walk seeds from last close. Broker feed waits for the
-        # first real tick — do not pull 90d of history just to seed a price.
-        price = 0.0
-        rng = None
-        if not self._real_feed:
-            last = self._service.candles(symbol=symbol, exchange=exchange,
-                                         interval=interval, limit=1)
-            price = float(last[-1]["close"]) if last else _base_price(symbol)
-            rng = random.Random(_seed(symbol, interval))
         return {
             "symbol": symbol,
             "exchange": exchange,
             "interval": interval,
-            "span_s": span_s,
-            "price": price,
-            "rng": rng,
+            "span_s": _SPAN_MIN.get(interval, 1) * 60,
             "bar_start": None,
             "bar": None,
+            "last_tick": None,
+            "stale_emitted": False,
         }
 
     # ------------------------------------------------------------ pump loop
+    _STALE_S = 5.0
+
     async def _run(self) -> None:
         while True:
             await asyncio.sleep(self._tick_s)
-            if self._real_feed or not self._subs or not self._clients:
+            if not self._real_feed:
                 continue
             now = self._clock()
-            for state in list(self._subs.values()):
-                msg = self._tick(state, now)
-                if msg is not None:
-                    await self._broadcast(msg)
+            for symbol, state in list(self._subs.items()):
+                if not is_market_open(state["exchange"], now):
+                    continue
+                last = state.get("last_tick")
+                if last is None:
+                    continue
+                age = (now - last).total_seconds()
+                if age > self._STALE_S and not state.get("stale_emitted"):
+                    state["stale_emitted"] = True
+                    await self._broadcast({"type": "live_status", "symbol": symbol,
+                                           "exchange": state["exchange"], "status": "stale",
+                                           "source": self._service.name,
+                                           "reason": f"no ticks for {int(age)}s"})
+                elif age <= self._STALE_S and state.get("stale_emitted"):
+                    state["stale_emitted"] = False
+                    await self._broadcast({"type": "live_status", "symbol": symbol,
+                                           "exchange": state["exchange"], "status": "streaming",
+                                           "source": self._service.name})
 
     def ingest_tick(self, symbol: str, price: float, quantity: int = 0,
                     now: datetime | None = None) -> dict | None:
@@ -166,19 +189,19 @@ class LiveCandlePump:
         state = self._subs.get(symbol.strip().upper())
         if state is None:
             return None
-        msg = self._apply_tick(state, float(price), int(quantity or 0),
-                               now or self._clock())
+        now = now or self._clock()
+        state["last_tick"] = now
+        state["stale_emitted"] = False
+        msg = self._apply_tick(state, float(price), int(quantity or 0), now)
         if msg is not None:
             self._emit(msg)
+        for fn in self._tick_listeners:
+            try:
+                fn(state["symbol"], state["exchange"], float(price),
+                   int(quantity or 0), now)
+            except Exception:  # noqa: BLE001 — a listener never breaks ingestion
+                log.exception("tick listener failed")
         return msg
-
-    def _tick(self, state: dict, now: datetime) -> dict | None:
-        """Synthetic 1Hz walk (offline providers only)."""
-        rng = state.get("rng")
-        if rng is None:
-            return None
-        price = max(state["price"] * (1.0 + rng.uniform(-0.0006, 0.0006)), 0.01)
-        return self._apply_tick(state, price, rng.randint(1, 25), now)
 
     def _apply_tick(self, state: dict, price: float, qty: int, now: datetime) -> dict | None:
         if price <= 0 or not is_market_open(state["exchange"], now):
@@ -198,7 +221,6 @@ class LiveCandlePump:
         bar["low"] = min(bar["low"], price)
         bar["close"] = price
         bar["volume"] = int(bar.get("volume", 0)) + max(qty, 0)
-        state["price"] = price
         return {
             "type": "candle",
             "symbol": state["symbol"],
@@ -222,7 +244,12 @@ class LiveCandlePump:
         sec = int(contract.security_id)
         self._sec_map[sec] = (symbol, exchange)
         self._sec_map[str(sec)] = (symbol, exchange)
-        wire = (_segment(contract.exchange), str(sec), _full_mode())
+        wire = (_segment(contract.exchange), str(sec),
+                _quote_mode() if contract.exchange == "INDEX" else _full_mode())
+        if not self._desired_wires:
+            self._desired_wires = [wire]
+        elif wire not in self._desired_wires:
+            self._desired_wires.append(wire)
         try:
             if self._feed is None:
                 # dhanhq MarketFeed.__init__ calls set_event_loop — must not
@@ -249,8 +276,8 @@ class LiveCandlePump:
         self._feed = MarketFeed(
             DhanContext(client_id, token), instruments, version="v2",
             on_message=self._on_dhan_message,
-            on_error=lambda _f, err: log.error("dhan feed error: %s", err),
-            on_close=lambda _f: log.warning("dhan feed closed"),
+            on_error=self._on_feed_closed,
+            on_close=self._on_feed_closed,
         )
         self._feed.start()
 
@@ -261,6 +288,25 @@ class LiveCandlePump:
         for event in dhan_payload_to_events(payload, self._sec_map, self._clock()):
             if isinstance(event, TickEvent) and event.price > 0:
                 self.ingest_tick(event.symbol, event.price, event.quantity)
+
+    def _on_feed_closed(self, _f=None, _err=None) -> None:
+        log.warning("dhan live feed lost — scheduling reconnect")
+        self._feed = None
+        if not self._desired_wires:
+            return
+        threading.Thread(target=self._reconnect, daemon=True).start()
+
+    def _reconnect(self) -> None:
+        import time as _time
+        for _ in range(10):  # 5s * 10 ≈ 50s of retries
+            if self._feed is not None:
+                return
+            try:
+                self._start_dhan_feed(list(self._desired_wires))
+                return
+            except Exception as exc:  # noqa: BLE001
+                log.warning("dhan feed reconnect failed: %s", exc)
+            _time.sleep(5.0)
 
     async def _broadcast(self, msg: dict) -> None:
         dead: list[WebSocket] = []
@@ -318,11 +364,6 @@ async def ws_market(ws: WebSocket) -> None:
         pump.remove_client(ws)
 
 
-def _seed(*parts: str) -> int:
-    digest = hashlib.md5("|".join(parts).encode()).digest()[:8]
-    return int.from_bytes(digest, "big")
-
-
 def _segment(exchange: str) -> int:
     from dhanhq import MarketFeed
     e = (exchange or "").upper()
@@ -340,3 +381,8 @@ def _segment(exchange: str) -> int:
 def _full_mode() -> int:
     from dhanhq import MarketFeed
     return int(getattr(MarketFeed, "Full", 21))
+
+
+def _quote_mode() -> int:
+    from dhanhq import MarketFeed
+    return int(getattr(MarketFeed, "Quote", 17))

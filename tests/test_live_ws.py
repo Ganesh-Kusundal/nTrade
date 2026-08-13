@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, time as dtime
+from datetime import datetime, timedelta, time as dtime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -55,6 +55,8 @@ def test_market_hours_nse_vs_mcx():
 
 def test_subscribe_receives_live_candles(app):
     with TestClient(app) as c:
+        pump = app.state.pump
+        pump._real_feed = True
         with c.websocket_connect("/ws/market") as ws:
             ws.send_json({"type": "subscribe", "symbol": "NIFTY AUG FUT",
                           "exchange": "NFO", "interval": "1m"})
@@ -63,6 +65,7 @@ def test_subscribe_receives_live_candles(app):
             assert status["status"] == "streaming"
             assert status["source"] == "synthetic"
 
+            pump.ingest_tick("NIFTY AUG FUT", 24300.0, 25, now=_NSE_OPEN_NOW)
             msg = _receive_until(ws, "candle", "NIFTY AUG FUT")
             candle = msg["candle"]
             assert set(candle) == {"time", "open", "high", "low", "close", "volume"}
@@ -73,10 +76,14 @@ def test_subscribe_receives_live_candles(app):
 def test_candle_bar_updates_in_place(app):
     """The in-progress bar keeps its time; a new bar starts at the boundary."""
     with TestClient(app) as c:
+        pump = app.state.pump
+        pump._real_feed = True
         with c.websocket_connect("/ws/market") as ws:
             ws.send_json({"type": "subscribe", "symbol": "NIFTY AUG FUT", "interval": "1m"})
             ws.receive_json()  # live_status
+            pump.ingest_tick("NIFTY AUG FUT", 24300.0, 10, now=_NSE_OPEN_NOW)
             first = _receive_until(ws, "candle", "NIFTY AUG FUT")
+            pump.ingest_tick("NIFTY AUG FUT", 24310.0, 20, now=_NSE_OPEN_NOW)
             second = _receive_until(ws, "candle", "NIFTY AUG FUT")
             # Same session bar (same minute) unless a boundary tick happened
             assert abs(second["candle"]["time"] - first["candle"]["time"]) <= 60
@@ -97,15 +104,20 @@ def test_ping_pong_and_bad_messages(app):
 
 def test_unsubscribe_stops_stream(app):
     with TestClient(app) as c:
+        pump = app.state.pump
+        pump._real_feed = True
         with c.websocket_connect("/ws/market") as ws:
             ws.send_json({"type": "subscribe", "symbol": "NIFTY AUG FUT", "interval": "1m"})
             ws.receive_json()  # live_status
+            pump.ingest_tick("NIFTY AUG FUT", 24300.0, 10, now=_NSE_OPEN_NOW)
             _receive_until(ws, "candle", "NIFTY AUG FUT")
             ws.send_json({"type": "unsubscribe", "symbol": "NIFTY AUG FUT"})
-            # Give the pump a couple of ticks; no candle should arrive
             ws.send_json({"type": "ping"})
-            msg = ws.receive_json()
-            assert msg["type"] == "pong"
+            # the pong proves the server processed the unsubscribe in order
+            assert ws.receive_json() == {"type": "pong"}
+            assert "NIFTY AUG FUT" not in pump._subs
+            # a late tick finds no sub state — nothing can fabricate a candle
+            assert pump.ingest_tick("NIFTY AUG FUT", 24305.0, 10, now=_NSE_OPEN_NOW) is None
 
 
 def test_daily_candle_anchored_at_midnight_ist(app):
@@ -151,6 +163,8 @@ def test_nse_off_mcx_streams_after_hours(tmp_path):
     ]
     app = create_app("synthetic", master=_master(tmp_path, rows), tick_s=0.05, live_stream=True)
     app.state.pump._clock = lambda: _NSE_CLOSED_NOW
+    pump = app.state.pump
+    pump._real_feed = True  # MCX must stream — real feed is required before subscribe
 
     with TestClient(app) as c:
         with c.websocket_connect("/ws/market") as ws:
@@ -164,6 +178,7 @@ def test_nse_off_mcx_streams_after_hours(tmp_path):
                           "exchange": "MCX", "interval": "1m"})
             crude = ws.receive_json()
             assert crude["status"] == "streaming"
+            pump.ingest_tick("CRUDEOIL AUG FUT", 6400.0, 10, now=_NSE_CLOSED_NOW)
             msg = _receive_until(ws, "candle", "CRUDEOIL AUG FUT")
             assert msg["exchange"] == "MCX"
 
@@ -207,3 +222,50 @@ def test_live_stream_disabled_reports_off_and_never_streams(tmp_path):
             for _ in range(3):
                 ws.send_json({"type": "ping"})
                 assert ws.receive_json() == {"type": "pong"}
+
+
+def test_synthetic_provider_never_streams(tmp_path):
+    app = create_app("synthetic", master=_master(tmp_path), tick_s=0.02, live_stream=True)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/market") as ws:
+            ws.send_json({"type": "subscribe", "symbol": "NIFTY AUG FUT",
+                          "exchange": "NFO", "interval": "1m"})
+            live_status = ws.receive_json()
+            assert live_status["type"] == "live_status"
+            assert live_status["status"] == "off"
+            assert "no real live feed" in live_status["reason"]
+            # the guard must not even create a sub state — nothing can be fabricated later
+            assert "NIFTY AUG FUT" not in app.state.pump._subs
+            # WS stays alive; only pong replies, never a candle
+            for _ in range(3):
+                ws.send_json({"type": "ping"})
+                assert ws.receive_json() == {"type": "pong"}
+
+
+def test_real_feed_ingest_tick_and_stale(tmp_path):
+    app = create_app("synthetic", master=_master(tmp_path), tick_s=0.05, live_stream=True)
+    pump = app.state.pump
+    pump._real_feed = True              # test seam: no real socket needed
+    pump._STALE_S = 0.1                 # small window so the test fires quickly
+    clock_holder = {"now": _NSE_OPEN_NOW}
+    pump._clock = lambda: clock_holder["now"]
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/market") as ws:
+            ws.send_json({"type": "subscribe", "symbol": "NIFTY AUG FUT",
+                          "exchange": "NFO", "interval": "1m"})
+            status = ws.receive_json()
+            assert status["status"] == "streaming"
+            for price in (24300.0, 24310.0, 24305.0):
+                pump.ingest_tick("NIFTY AUG FUT", price, 25, now=clock_holder["now"])
+            # deterministic pump-state form (each tick broadcasts its own candle,
+            # so the in-progress bar asserts the aggregated OHLC/volume instead)
+            bar = pump._subs["NIFTY AUG FUT"]["bar"]
+            assert bar["high"] == 24310.0
+            assert bar["low"] == 24300.0
+            assert bar["volume"] == 75
+            assert is_market_open("NFO", clock_holder["now"])
+            # stop feeding; advance the clock beyond _STALE_S → watchdog emits stale
+            clock_holder["now"] = _NSE_OPEN_NOW + timedelta(seconds=1.0)
+            stale = _receive_until(ws, "live_status", "NIFTY AUG FUT", timeout_s=3.0)
+            assert stale["status"] == "stale"
+            assert "no ticks" in stale["reason"]

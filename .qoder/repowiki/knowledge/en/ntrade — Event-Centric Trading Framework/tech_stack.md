@@ -1,1 +1,0 @@
-Python ≥3.10 with pandas/numpy for data, python-dotenv for config, and Dhan-Tradehull≥3.3.2 as the live broker transport. Optional UI extras use FastAPI + uvicorn + websockets + pywebview. Build uses setuptools with `include = ["ntrade*"]`; tests run under pytest with `testpaths = ["tests"]`.

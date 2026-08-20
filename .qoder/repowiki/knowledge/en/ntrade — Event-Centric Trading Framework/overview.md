@@ -1,1 +1,0 @@
-An institutional-grade, object-oriented trading framework that exposes rich market domain objects (Equity, Option, Index…) behind a clean facade, with an event-centric kernel driving live, replay, and backtest modes over Dhan-Tradehull.

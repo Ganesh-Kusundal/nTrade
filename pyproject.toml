@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ntrade"
-version = "0.1.0"
+version = "0.2.0"
 description = "Institutional-grade object-oriented trading framework — rich market domain objects on top of Dhan-Tradehull"
 requires-python = ">=3.10"
 dependencies = [
@@ -21,7 +21,7 @@ dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.2",   # M-4: a hung websocket/retry can never wedge CI
     "pytest-cov>=5.0",       # M-4: coverage floor on ntrade/
-    "httpx2>=0.27",          # starlette TestClient (api/ endpoint + WS tests)
+    "httpx>=0.27",          # starlette TestClient (api/ endpoint + WS tests)
 ]
 ui = [
     "fastapi>=0.110",
@@ -43,3 +43,4 @@ source = ["ntrade"]
 [tool.coverage.report]
 fail_under = 90  # measured 92% at adoption — regressions below this fail CI
 show_missing = true
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]

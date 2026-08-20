@@ -23,7 +23,10 @@ Dependencies/
 
 # Generated graph output
 graphify-out/
-
+.qoder/repowiki/
+data/ohlcv/
+Dependencies/
+.ntrade_cache/
 
 # Scratch / local artifacts
 ui/.vite/

@@ -1,6 +1,0 @@
-- Domain objects own their state and behaviour (Tell, Don't Ask): quote access, history, subscriptions, and order placement are methods on `Instrument` rather than free functions or god services.
-- All cross-layer communication goes through frozen dataclass events in `events/` published to a synchronous `EventBus`; strategies subscribe via MRO-based handler registration instead of polling.
-- Broker adapters implement the `BrokerAdapter` ABC and are injected into domain objects via constructor parameters, keeping the domain layer broker-agnostic and testable with `PaperBroker`.
-- Broker-specific features are added through the `@capability` decorator and resolved at call time via `BrokerExtensionFacade`, so new brokers extend without editing base instrument code.
-- Every engine and component is wired through `TradingKernel` with interchangeable `TradingClock` (Live/Replay/Simulation) and execution target, enforcing zero parity across live, replay, and backtest modes.
-- Public API is re-exported centrally from `ntrade/__init__.py` and `facade.py`; internal modules are not part of the stable surface and are accessed only through these entry points.

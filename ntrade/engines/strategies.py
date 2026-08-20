@@ -30,14 +30,18 @@ class HalfTrendStrategy(Strategy):
 
     name = "halftrend"
 
-    def __init__(self, symbol: str | None = None,
+    def __init__(self, symbol: str | None = None, exchange: str | None = None,
                  amplitude: int = 2, channel_deviation: int = 2,
-                 atr_period: int = 100):
+                 atr_period: int = 100, lot_size: int = 1,
+                 strategy_params: dict | None = None):
         super().__init__()
         self.symbol = symbol
+        self.exchange = exchange
+        self.lot_size = int(lot_size)
         self.amplitude = int(amplitude)
         self.channel_deviation = int(channel_deviation)
         self.atr_period = int(atr_period)
+        self.strategy_params = dict(strategy_params or {})
         self._ht: list[float] = []
         self._trend: list[int] = []
         self._buy: list[bool] = []

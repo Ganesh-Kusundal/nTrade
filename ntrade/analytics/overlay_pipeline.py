@@ -240,7 +240,8 @@ def build_overlays(
 
     if strategy_id:
         if strategy_id == "halftrend":
-            dto.strategy = _build_halftrend(df, strategy_params)
+            dto.strategy = _build_halftrend(df, strategy_params) or {
+                "id": "halftrend", "markers": [], "series": {"ht": [], "trend": [], "atrHigh": [], "atrLow": []}}
 
     return dto
 

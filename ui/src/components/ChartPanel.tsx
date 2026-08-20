@@ -330,6 +330,7 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     stratLinesRef.current = []
     if (!toggles.strategy || !strategy) return
     const sigs = strategy.signals
+    if (!sigs) return
     const entries = sigs.filter((s) => !s.exit_reason)
     const open = entries[entries.length - 1]
     if (!open) return

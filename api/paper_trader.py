@@ -257,12 +257,16 @@ class PaperTraderService:
         # Resolve the strategy by id through the registry — no hardcoded class
         # import. The spec carries the constructor defaults; _strategy_classes
         # maps the spec id to the concrete implementation.
+        self._lot_size = self._resolve_lot_size(symbol, lot_size)
         strategy_id = (strategy or "halftrend").strip()
         spec = _strategy_reg.get(strategy_id)
         cls = _strategy_classes[spec.id]
+        kw: dict = {}
         kw.setdefault("amplitude", 2)
         kw.setdefault("channel_deviation", 2)
         kw.setdefault("atr_period", 100)
+        if strategy_params:
+            kw.update(strategy_params)
         inst = cls(symbol=symbol, exchange=exchange, lot_size=self._lot_size, **kw)
         session = TradingSession.paper(initial_cash=self._initial_cash,
                                        session_id=f"paper-{symbol}",

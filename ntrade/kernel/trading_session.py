@@ -10,7 +10,7 @@ strategy management into a single cohesive API::
     session = TradingSession.paper()
     tcs = session.stock("TCS")
     session.register(tcs)
-    session.register_strategy(EmaCrossStrategy())
+    session.register_strategy(HalfTrendStrategy())
     session.start()
 """
 

@@ -157,7 +157,7 @@ export function TerminalSidePanel({
       <div className="tpanel px-3 py-2.5">
         <div className="flex items-center justify-between">
           <SideLabel>
-            {strategyId === 'morning_vah_val' ? 'VAH/VAL' : strategyId === 'valentini' ? 'Valentini' : strategyId}
+            {strategyLabel(strategyId)}
           </SideLabel>
           <span className="text-[10px] text-muted/70">signals{open > 0 ? ` · ${open} open` : ''}</span>
         </div>
@@ -199,9 +199,7 @@ export function TerminalSidePanel({
         )}
         {strategyResult && trades.length === 0 && (
           <div className="mt-2 rounded-md border border-line/40 bg-panel2/30 px-2.5 py-1.5 text-[11px] text-muted/80">
-            {strategyId === 'morning_vah_val'
-              ? 'No signals yet — awaiting setup'
-              : 'Awaiting absorption + VWAP signal…'}
+            Awaiting signal…
           </div>
         )}
 
@@ -240,4 +238,8 @@ function phaseCls(p: string): string {
 
 function commandify(s: string | undefined): string {
   return s ? s.toUpperCase() : '—'
+}
+
+function strategyLabel(id: string): string {
+  return id === 'halftrend' ? 'HalfTrend' : id
 }

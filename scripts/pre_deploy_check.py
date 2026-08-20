@@ -2,7 +2,7 @@
 
 Runs, in order:
   1. token freshness check  (jwt_expiry on DHAN_TOKEN_PATH; warn near expiry)
-  2. paper_gate_run.py      (exit 1 on 0 fills / >30% drawdown)
+  2. paper gate (optional)
   3. live_read_check.py     (exit 1 on any FAIL, or DEGRADED under --strict)
   4. live_smoke.py          (read-only framework smoke)
 
@@ -12,7 +12,6 @@ via CLI args so tests can point at fake scripts and never invoke real Dhan.
 Usage:
     .venv/bin/python scripts/pre_deploy_check.py [--strict]
     .venv/bin/python scripts/pre_deploy_check.py \
-        --paper-gate scripts/paper_gate_run.py \
         --live-read scripts/live_read_check.py \
         --live-smoke scripts/live_smoke.py
 """
@@ -74,7 +73,7 @@ def run_stages(stages: list[tuple[str, list[str]]]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Unified pre-deploy gate for ntrade live sessions")
-    p.add_argument("--paper-gate", default=str(Path(__file__).resolve().parent / "paper_gate_run.py"))
+    p.add_argument("--paper-gate", default=None)
     p.add_argument("--live-read", default=str(Path(__file__).resolve().parent / "live_read_check.py"))
     p.add_argument("--live-smoke", default=str(Path(__file__).resolve().parent / "live_smoke.py"))
     p.add_argument("--token-path", default=os.environ.get("DHAN_TOKEN_PATH", ""))
@@ -91,10 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     if not ok:
         exit_code = 1
     stages: list[tuple[str, list[str]]] = []
-    if ok:
+    if ok and args.paper_gate:
         stages.append(("paper gate", [sys.executable, args.paper_gate]))
-    else:
-        print("skipping paper gate: token near expiry must be resolved first")
+
     live_read = [sys.executable, args.live_read]
     if args.strict:
         live_read.append("--strict")

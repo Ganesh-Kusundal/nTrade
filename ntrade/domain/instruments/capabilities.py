@@ -21,8 +21,8 @@ from ntrade.domain.constants import QUOTE_MAX_AGE_S
 if TYPE_CHECKING:
     import pandas as pd
 
-    from ntrade.domain.instruments.base import Instrument
     from ntrade.domain.instruments.chain import OptionChain
+    from ntrade.domain.instruments.protocols import InstrumentProtocol as Instrument
     from ntrade.domain.market.depth import MarketDepth
     from ntrade.domain.market.history import HistoricalSeries
     from ntrade.domain.market.quote import Quote, Tick

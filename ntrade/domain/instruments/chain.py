@@ -12,7 +12,7 @@ from ntrade.domain.instruments.derivatives import Option
 from ntrade.domain.instruments.expiry import Expiry, OptionPair
 
 if TYPE_CHECKING:
-    from ntrade.domain.instruments.base import Instrument
+    from ntrade.domain.instruments.protocols import InstrumentProtocol
 
 
 class OptionChain:
@@ -27,7 +27,7 @@ class OptionChain:
 
     def __init__(
         self,
-        underlying: "Instrument",
+        underlying: "InstrumentProtocol",
         options: list[Option] | None = None,
         *,
         expiry: date | None = None,
@@ -53,7 +53,7 @@ class OptionChain:
 
     # ------------------------------------------------------------------ build
     @classmethod
-    def fetch(cls, underlying: "Instrument", expiry: int = 0, num_strikes: int = 10, **kwargs) -> "OptionChain":
+    def fetch(cls, underlying: "InstrumentProtocol", expiry: int = 0, num_strikes: int = 10, **kwargs) -> "OptionChain":
         """Fetch a live chain through the underlying's broker adapter."""
         broker = underlying.broker_adapter
         if broker is None:

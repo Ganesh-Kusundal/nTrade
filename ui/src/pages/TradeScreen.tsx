@@ -26,8 +26,7 @@ import { useChartStore } from '../store/chartStore'
 import type { Candle, ChartOverlays, StrategyPayload, WsMessage } from '../types/market'
 
 const STRATEGY_IDS = [
-  { id: 'morning_vah_val', label: 'VAH/VAL', sub: 'Mukul · 09:30–11:00' },
-  { id: 'valentini', label: 'Valentini', sub: 'Fabio · VWAP + absorption' },
+  { id: 'halftrend', label: 'HalfTrend', sub: 'Momentum · ATR(100)/2' },
 ] as const
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -38,6 +37,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </label>
   )
 }
+
+export { Field }
 
 export const TradeScreen = memo(function TradeScreen() {
   const {
@@ -76,13 +77,15 @@ export const TradeScreen = memo(function TradeScreen() {
   const symbol = contract?.symbol ?? ''
   // Strategy selection lives above the WS effect + chart fetch so the live
   // subscribe and the historical chart request both read the current id.
-  const [strategyId, setStrategyId] = usePersistedState<string>('ntrade.strategy', 'morning_vah_val')
+  const [strategyId, setStrategyId] = usePersistedState<string>('ntrade.strategy', 'halftrend')
+  const _setStrategyId = setStrategyId
   const symbolRef = useRef(symbol)
   const modeRef = useRef(mode)
   const strategyRef = useRef(strategyId)
   symbolRef.current = symbol
   modeRef.current = mode
   strategyRef.current = strategyId
+  _setStrategyId('halftrend')
 
   useEffect(() => {
     const s = new MarketSocket()
@@ -98,7 +101,7 @@ export const TradeScreen = memo(function TradeScreen() {
         flush(msg.candle)
       } else if (msg.type === 'overlays' && modeRef.current === 'live') {
         // Same backend pipeline as /api/market/chart — fold in live patches so
-        // VWAP/VP/absorptions/strategy markers stay in lockstep with the feed.
+        // VWAP/VP/HalfTrend markers stay in lockstep with the feed.
         setLiveOverlays(msg.overlays ?? null)
         setLiveStrategy(msg.strategy ?? null)
       }
@@ -122,11 +125,9 @@ export const TradeScreen = memo(function TradeScreen() {
     setLiveStrategy(null)
   }, [symbol, interval, mode])
 
-  // --- historical chart (candles + every overlay + strategy) ----------
   // Fetched from the backend's single calc path (/api/market/chart). The FE
-  // renders it verbatim — VWAP / volume profile / absorptions / strategy math
-  // is owned by the backend (zero-parity with paper/live). Range bars are
-  // built server-side too, so no client derivation remains.
+  // renders it verbatim — VWAP / volume profile / HalfTrend math is owned by
+  // the backend (zero-parity with paper/live).
   const chartDays = CHART_DAYS
   const [rangeTicks, setRangeTicks] = usePersistedState<number | null>('ntrade.rangeTicks', null)
   const { candles, overlays, strategy, status, error, reason, source, reload } = useChart(
@@ -209,7 +210,6 @@ export const TradeScreen = memo(function TradeScreen() {
   const [indicatorsToggles, setIndicators] = usePersistedState<IndicatorToggles>('ntrade.indicators', {
     vwap: true,
     volumeProfile: true,
-    absorptions: true,
     strategy: true,
   })
 
@@ -352,11 +352,6 @@ export const TradeScreen = memo(function TradeScreen() {
                 </button>
               ))}
             </div>
-            {strategyId !== 'morning_vah_val' && (
-              <span className="text-[10px] text-muted/70 ml-1" title="Paper trading only supports Morning VAH/VAL on the backend">
-                paper: VAH/VAL
-              </span>
-            )}
           </div>
         </div>
 

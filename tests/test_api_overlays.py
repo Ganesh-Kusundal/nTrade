@@ -45,28 +45,18 @@ def test_chart_endpoint_returns_overlays(client):
     assert ov["vwap"] is not None and len(ov["vwap"]) == len(body["candles"])
     assert ov["volume_profile"] is not None
     assert {"poc", "vah", "val", "levels"} <= set(ov["volume_profile"])
-    assert ov["absorptions"] is not None
 
 
 def test_chart_endpoint_with_strategy(client):
     r = client.get("/api/market/chart", params={
         "symbol": "NIFTY AUG FUT", "exchange": "NFO", "interval": "1m",
-        "limit": 120, "strategy": "valentini",
+        "limit": 120, "strategy": "halftrend",
     })
     assert r.status_code == 200
     body = r.json()
     assert body["strategy"] is not None
-    assert body["strategy"]["id"] == "valentini"
-
-
-def test_chart_range_interval_builds_range_bars(client):
-    r = client.get("/api/market/chart", params={
-        "symbol": "NIFTY AUG FUT", "exchange": "NFO", "interval": "Range", "limit": 60,
-    })
-    assert r.status_code == 200
-    body = r.json()
-    assert "range_bars" in body
-    assert isinstance(body["range_bars"], list)
+    assert body["strategy"]["id"] == "halftrend"
+    assert body["strategy"]["markers"] is not None or body["strategy"]["series"] is not None
 
 
 def test_catalog_endpoint(client):
@@ -74,6 +64,6 @@ def test_catalog_endpoint(client):
     assert r.status_code == 200
     body = r.json()
     ids = {i["id"] for i in body["indicators"]}
-    assert {"vwap", "volume_profile", "absorptions"} <= ids
+    assert {"vwap", "volume_profile", "halftrend"} <= ids
     strat_ids = {s["id"] for s in body["strategies"]}
-    assert {"valentini", "morning_vah_val", "ema_cross"} <= strat_ids
+    assert {"halftrend"} <= strat_ids

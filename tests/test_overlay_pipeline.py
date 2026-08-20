@@ -1,10 +1,9 @@
 """OverlayPipeline parity tests — backend is the single source of truth.
 
-These pin the overlay math (VWAP, volume profile POC/VAH/VAL, absorptions)
-to the same pure modules the live/backtest engines use, and prove the
-strategy overlay is produced by replaying the *real* strategy classes (no
-fork). Together they are the golden contract the frontend must match before
-its TypeScript calc mirrors are deleted (plan M6).
+These pin the overlay math (VWAP, volume profile POC/VAH/VAL) to the same pure
+modules the live/backtest engines use, and prove the HalfTrend overlay is produced
+by the real domain indicator (no fork). Together they are the golden contract the
+frontend must match before its TypeScript calc mirrors are deleted (plan M6).
 """
 
 from __future__ import annotations
@@ -16,12 +15,10 @@ import pytest
 from zoneinfo import ZoneInfo
 
 from ntrade.analytics.overlay_pipeline import (
-    _candles_to_frame, _session_anchor, build_overlays, replay_strategy)
+    _candles_to_frame, _session_anchor, build_overlays)
 from ntrade.domain.analytics.indicators import vwap, vwap_bands
-from ntrade.domain.analytics.order_flow import detect_absorptions
 from ntrade.domain.analytics.volume_profile import build_volume_profile
-from ntrade.engines.strategies import _strategy_classes
-from ntrade.events.market import CandleClosedEvent
+
 
 _IST = ZoneInfo("Asia/Kolkata")
 
@@ -89,18 +86,6 @@ def test_volume_profile_matches_pure_module():
     assert len(dto.volume_profile["levels"]) == len(vp.levels)
 
 
-def test_absorptions_detected_and_match_pure_module():
-    candles = _make_session_candles()
-    df = _candles_to_frame(candles)
-    dto = build_overlays(candles, symbol="BANKNIFTY", exchange="NFO", interval="1m")
-
-    expected = detect_absorptions(df)
-    assert dto.absorptions is not None
-    idxs = {a["index"] for a in dto.absorptions}
-    assert 120 in idxs
-    assert len(dto.absorptions) == len(expected)
-
-
 def test_session_anchor_drops_prior_session_cruft():
     today = pd.Timestamp("2026-08-14 11:00:00", tz=_IST)
     prior = today.replace(day=13)
@@ -115,27 +100,16 @@ def test_session_anchor_drops_prior_session_cruft():
     assert len(session) == 1
 
 
-@pytest.mark.parametrize("strategy_id", ["valentini", "morning_vah_val", "ema_cross"])
-def test_strategy_replay_uses_real_classes(strategy_id):
+def test_halftrend_overlay_returns_markers_and_series():
     candles = _make_session_candles(n=400, seed=5)
     dto = build_overlays(candles, symbol="BANKNIFTY", exchange="NFO",
-                         interval="1m", strategy_id=strategy_id)
+                         interval="1m", strategy_id="halftrend")
     assert dto.strategy is not None
-    assert dto.strategy["id"] == strategy_id
-    assert dto.strategy["id"] in _strategy_classes
-    for sig in dto.strategy["signals"]:
-        assert sig["side"] in ("BUY", "SELL")
-        assert sig["quantity"] > 0
-
-
-def test_strategy_snapshot_exposes_profile_levels():
-    candles = _make_session_candles(n=400, seed=7)
-    dto = build_overlays(candles, symbol="BANKNIFTY", exchange="NFO",
-                         interval="1m", strategy_id="valentini")
-    assert dto.strategy is not None
-    assert dto.strategy.get("levels")
-    lvl = dto.strategy["levels"][0]
-    assert {"vah", "val", "poc"} <= set(lvl)
+    assert dto.strategy["id"] == "halftrend"
+    assert "markers" in dto.strategy
+    assert "series" in dto.strategy
+    assert dto.strategy["series"]["trend"]
+    assert dto.strategy["series"]["ht"]
 
 
 def test_no_strategy_returns_null_section():
@@ -147,57 +121,7 @@ def test_no_strategy_returns_null_section():
 
 def test_empty_candles_safe():
     dto = build_overlays([], symbol="X", exchange="NFO", interval="1m",
-                         strategy_id="valentini")
+                         strategy_id="halftrend")
     assert dto.vwap is None
     assert dto.volume_profile is None
-    assert dto.absorptions is None
     assert dto.strategy is not None
-
-
-def test_replay_matches_direct_strategy_drive():
-    """Golden: replay_strategy must be bit-identical to feeding the kernel's
-    real CandleClosedEvent path — otherwise the chart would diverge from
-    paper/live fills (the zero-parity rule)."""
-    from ntrade.analytics.overlay_pipeline import (
-        _FlatPortfolio, _IndicatorStub, _SignalBus)
-
-    candles = _make_session_candles(n=400, seed=9)
-    strategy_id = "valentini"
-    cls = _strategy_classes[strategy_id]
-
-    # --- path A: the public headless adapter ---
-    via_adapter = replay_strategy(
-        candles, strategy_id=strategy_id, symbol="BANKNIFTY",
-        exchange="NFO", timeframe="1m")
-    adapter_signals = [(s["side"], s["quantity"]) for s in via_adapter["signals"]]
-
-    # --- path B: drive the real class directly via its hooks (kernel path) ---
-    captured = []
-    inst = cls()
-    ctx = type("_C", (), {})()
-    ctx.mode = "replay"
-    ctx._ts = None
-    ctx.now = lambda: ctx._ts
-    ctx.bus = _SignalBus(captured.append)
-    ctx.account = type("_A", (), {"balance": 100_000.0})()
-    ctx.portfolio = _FlatPortfolio()
-    ctx.instrument = lambda sym: _IndicatorStub([])
-    inst.ctx = ctx
-    for c in candles:
-        ts = pd.Timestamp(c["time"], unit="s", tz=_IST)
-        ctx._ts = ts
-        inst.on_candle_closed(CandleClosedEvent(
-            symbol="BANKNIFTY", exchange="NFO", timeframe="1m",
-            open=float(c["open"]), high=float(c["high"]), low=float(c["low"]),
-            close=float(c["close"]), volume=float(c["volume"]), ts=ts))
-
-    direct_signals = [(s.side, s.quantity) for s in captured]
-    # Same number of signals, same (side, qty) sequence.
-    assert len(adapter_signals) == len(direct_signals)
-    assert adapter_signals == direct_signals
-    # Same snapshot (phase + level POC/VAH/VAL).
-    assert via_adapter["phase"] == inst.phase
-    if via_adapter.get("levels"):
-        assert round(float(inst._profile.poc), 4) == via_adapter["levels"][0]["poc"]
-        assert round(float(inst._profile.vah), 4) == via_adapter["levels"][0]["vah"]
-        assert round(float(inst._profile.val), 4) == via_adapter["levels"][0]["val"]

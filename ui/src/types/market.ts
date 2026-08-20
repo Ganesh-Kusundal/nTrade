@@ -143,22 +143,11 @@ export interface VolumeProfilePayload {
   levels: VolumeProfileLevel[]
 }
 
-export interface AbsorptionPayload {
-  index: number
-  time: number
-  price: number
-  volume: number
-  side: 'BUY' | 'SELL'
-  strength: number
-}
-
 export interface ChartOverlays {
   vwap: VwapPoint[] | null
   vwap_upper: VwapPoint[] | null
   vwap_lower: VwapPoint[] | null
   volume_profile: VolumeProfilePayload | null
-  absorptions: AbsorptionPayload[] | null
-  range_bars?: unknown[] | null
 }
 
 /** A strategy signal produced by the backend replay (entry or exit marker). */
@@ -181,9 +170,28 @@ export interface StrategyLevel {
   poc: number
 }
 
+export interface HalfTrendMarker {
+  index: number
+  time: number
+  side: 'BUY' | 'SELL'
+  price: number
+  ht: number | null
+  trend: number
+}
+
+export interface HalfTrendSeries {
+  ht: (number | null)[]
+  trend: number[]
+  atrHigh: (number | null)[]
+  atrLow: (number | null)[]
+}
+
 export interface StrategyPayload {
   id: string
-  signals: StrategySignal[]
+  kind?: string
+  markers?: HalfTrendMarker[]
+  series?: HalfTrendSeries
+  signals?: StrategySignal[]
   levels?: StrategyLevel[]
   phase?: string | null
   bias?: string | null

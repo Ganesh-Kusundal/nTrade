@@ -315,8 +315,8 @@ def test_silent_feed_is_force_restarted():
 
 def test_live_overlays_emitted_on_bar_close(app):
     """Plan M4: when a live candle closes, the pump rebroadcasts overlays
-    (VWAP/VP/absorptions + optional strategy) from the same backend pipeline
-    the chart + paper use — the FE never recomputes them."""
+    (VWAP/VP + optional HalfTrend) from the same backend pipeline the chart +
+    paper use — the FE never recomputes them."""
     with TestClient(app) as c:
         pump = app.state.pump
         pump._real_feed = True
@@ -330,7 +330,7 @@ def test_live_overlays_emitted_on_bar_close(app):
         with c.websocket_connect("/ws/market") as ws:
             ws.send_json({"type": "subscribe", "symbol": "NIFTY AUG FUT",
                           "exchange": "NFO", "interval": "1m",
-                          "strategy": "valentini"})
+                          "strategy": "halftrend"})
             ws.receive_json()  # live_status
             # Two ticks in different minutes → the first closes a bar and
             # triggers the overlay recompute/broadcast.
@@ -348,4 +348,4 @@ def test_live_overlays_emitted_on_bar_close(app):
             assert ov["overlays"]["volume_profile"] is not None
             # Strategy markers come from the same pipeline (zero-parity).
             assert ov["strategy"] is not None
-            assert ov["strategy"]["id"] == "valentini"
+            assert ov["strategy"]["id"] == "halftrend"

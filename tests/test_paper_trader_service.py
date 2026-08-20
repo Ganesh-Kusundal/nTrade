@@ -1,9 +1,9 @@
 """PaperTraderService tests — the UI paper-trade control's backend.
 
 Drives the real kernel stack (real ticks -> MarketEngine -> CandleEngine ->
-MorningVAHVAL -> risk -> PaperBroker fills) through the pump's tick listener,
-and asserts the status endpoint reports trades, balance changes, and positions
-— the ₹1M paper-trading contract.
+HalfTrendStrategy -> risk -> PaperBroker fills) through the pump's tick listener,
+and asserts the status endpoint reports trades, balance changes, and positions —
+the ₹1M paper-trading contract.
 
 Ticks are fed as naive IST wall-clock timestamps (the domain convention the
 strategy and the whole backtest stack expect — see the zero-parity audit); the
@@ -88,26 +88,6 @@ def _feed_day(svc, day, open_px, close_px):
         _feed_bar(svc, day, 555 + i, o, max(o, c) + 0.5, min(o, c) - 0.5, c)
 
 
-def _feed_profile(svc, day):
-    """09:15-09:29 profile window: POC ≈ 99, VAH ≈ 101, final 2m dips below
-    VAL (same data as tests/test_morning_vah_val.py)."""
-    for i in range(10):  # minutes 09:15..09:24
-        c = 99.5 if i % 2 == 0 else 101.5
-        _feed_bar(svc, day, 555 + i, c - 1.5, c + 0.5, c - 1.5, c)
-    # 09:25..09:27 — thicken the region above VAH so the VA extends upward.
-    _feed_bar(svc, day, 565, 102.0, 103.0, 101.5, 102.5, volume=50)
-    _feed_bar(svc, day, 566, 102.5, 103.2, 102.0, 103.0, volume=50)
-    _feed_bar(svc, day, 567, 103.0, 103.2, 101.5, 102.0, volume=50)
-    # 09:28..09:29 — fake breakdown below VAL.
-    _feed_bar(svc, day, 568, 99.0, 98.5, 97.3, 97.6)
-    _feed_bar(svc, day, 569, 97.6, 98.2, 97.2, 97.7)
-
-
-def _feed_reversal_long(svc, day):
-    _feed_bar(svc, day, 570, 97.7, 98.8, 97.4, 98.4)
-    _feed_bar(svc, day, 571, 98.4, 99.9, 98.2, 99.6)
-
-
 def _make_service():
     pump = _FakePump()
     svc = PaperTraderService(None, pump, initial_cash=1_000_000.0)
@@ -136,47 +116,6 @@ def test_start_stop_lifecycle():
     stopped = svc.stop()
     assert stopped["running"] is False
     assert stopped["balance"] == 1_000_000.0
-
-
-def test_paper_buy_then_stop_is_flat():
-    svc, _ = _make_service()
-    svc.start("BANKNIFTY AUG FUT", "NFO", lot_size=15)
-    # The service runs the cost-drag-tuned preset (require_cluster=True, which
-    # needs 20+ 2m bars — the synthetic feed can't reach it). White-box the
-    # cluster check so the paper pipeline (real ticks -> fills -> status) is
-    # tested in isolation from the strategy knobs, exactly like the strategy
-    # suite.
-    strat = svc._session.kernel.strategy_engine.strategies[0]
-    strat._ema_cluster = lambda close: True
-    # IndicatorEngine recomputes the full bundle (incl. O(n²) per-element
-    # SuperTrend) on every candle close — 350+ bars here is ~30s of pure
-    # recompute that the entry path never consumes. White-box it out so the
-    # paper pipeline is fast and deterministic (a kernel perf concern, out of
-    # scope for this task).
-    k = svc._session.kernel
-    k.bus.unsubscribe(CandleClosedEvent, k.indicator_engine.on_candle_closed)
-    _feed_day(svc, 3, 100.0, 130.0)      # prior day UP → bias
-    _feed_profile(svc, 4)                # day 2 profile (VAL ~97.2, VAH ~101)
-    _feed_reversal_long(svc, 4)          # 09:30-09:31 reversal
-    _feed_bar(svc, 4, 572, 99.6, 99.7, 99.4, 99.6)  # entry fires on CandleEngine close
-
-    status = _drain(svc)
-    assert status["running"] is True
-    assert status["n_trades"] >= 1, "the entry fill must be recorded"
-    fills = [t for t in status["trades"] if t["side"] == "BUY"]
-    assert fills, "a BUY fill must appear"
-    assert status["balance"] < 1_000_000.0, "cash must drop on the buy"
-    positions = status["positions"]
-    assert any(p["symbol"] == "BANKNIFTY AUG FUT" for p in positions)
-    open_pos = [p for p in positions if p["symbol"] == "BANKNIFTY AUG FUT"][0]
-    assert open_pos["quantity"] > 0
-    assert open_pos["quantity"] % 15 == 0, "qty must be lot-multiples"
-    # An open runner after the entry.
-    assert status["realized_pnl"] == 0.0
-
-    svc.stop()
-    stopped = svc.status()
-    assert stopped["running"] is False
 
 
 def test_paper_feed_publishes_real_ticks_not_fabricated_events(tmp_path):

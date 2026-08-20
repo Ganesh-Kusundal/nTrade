@@ -258,13 +258,29 @@ class BacktestSimulator:
         return round(self.kernel.ctx.account.balance + position_value, 2)
 
     # ------------------------------------------------------------------ results
-    def results(self) -> BacktestResult:
+    def results(self, *, include_halftrend_markers: bool = False) -> BacktestResult:
         fills = self._fills
         trades = [{
             "order_id": f.order_id, "symbol": f.symbol, "side": f.side,
             "quantity": f.quantity, "fill_price": f.fill_price,
             "commission": f.commission, "statutory": f.statutory, "ts": f.ts.isoformat(),
         } for f in fills]
+        if include_halftrend_markers:
+            try:
+                from ntrade.domain.analytics.halftrend import halftrend as _ht
+                inst = self.kernel.ctx.instrument(self.symbol)
+                series = inst._indicators.get("halftrend_series")
+                if series is not None and not series.empty:
+                    last = series.iloc[-1]
+                    for t in trades:
+                        t["halftrend_ht"] = None
+                        t["halftrend_trend"] = int(last.get("trend", 0)) if pd.notna(last.get("trend")) else None
+                        if last.get("buySignal"):
+                            t["halftrend_signal"] = "BUY"
+                        elif last.get("sellSignal"):
+                            t["halftrend_signal"] = "SELL"
+            except Exception:  # noqa: BLE001 — marker sourcing is non-fatal
+                pass
         curve = pd.DataFrame(self._curve_rows, columns=["ts", "equity"])
         final = float(curve["equity"].iloc[-1]) if len(curve) else self.initial_cash
         commissions_total = round(sum(float(f.commission or 0.0) for f in fills), 4)
@@ -284,3 +300,23 @@ class BacktestSimulator:
             commissions_total=commissions_total, statutory_total=statutory_total,
             futures_costs_total=futures_costs_total, max_drawdown_pct=max_drawdown_pct,
         )
+
+    def run_halftrend(self, data: pd.DataFrame,
+                      amplitude: int = 2, channel_deviation: int = 2,
+                      atr_period: int = 100) -> BacktestResult:
+        """Run a HalfTrend-only backtest: indicators computed in-sim, signals
+        replayed via the same kernel path as the chart overlay."""
+        from ntrade.domain.analytics.halftrend import halftrend as _ht
+        inst = self.kernel.ctx.instrument(self.symbol)
+        bundle = _ht(data, amplitude=amplitude,
+                     channel_deviation=channel_deviation,
+                     atr_period=atr_period)
+        if not bundle.empty and pd.notna(bundle["ht"].iloc[-1]):
+            inst._indicators["halftrend_ht"] = float(bundle["ht"].iloc[-1])
+        from ntrade.engines.strategies import HalfTrendStrategy
+        self.register_strategy(HalfTrendStrategy(
+            symbol=self.symbol, amplitude=amplitude,
+            channel_deviation=channel_deviation, atr_period=atr_period))
+        if not bundle.empty:
+            inst._indicators["halftrend_series"] = bundle
+        return self.run(data)

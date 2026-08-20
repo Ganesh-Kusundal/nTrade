@@ -23,7 +23,6 @@ type LineSeries = ISeriesApi<'Line'>
 export interface IndicatorToggles {
   vwap: boolean
   volumeProfile: boolean
-  absorptions: boolean
   /** Strategy entries/exits (computed from the revealed bars). */
   strategy: boolean
 }
@@ -40,7 +39,7 @@ interface ChartPanelProps {
   /** Server-computed overlays (VWAP ±σ, volume profile, absorptions).
    *  Single source of truth — the FE never recomputes them. */
   overlays?: ChartOverlays | null
-  /** Server-computed strategy markers (signals + frozen VAH/VAL/POC levels). */
+  /** Server-computed HalfTrend markers (signals + trend channels). */
   strategy?: StrategyPayload | null
   /** Symbol + interval for the chart's aria-label (last OHLCV readout). */
   symbol?: string
@@ -54,8 +53,8 @@ interface ChartPanelProps {
 
 const UP = 'rgba(38, 166, 154, 0.45)'
 const DOWN = 'rgba(239, 83, 80, 0.45)'
-const DIM = 'rgba(148, 163, 184, 0.30)'
-const DIM_VOL = 'rgba(148, 163, 184, 0.22)'
+const HALFTREND_UP = '#4caf50'
+const HALFTREND_DOWN = '#ff5722'
 const VWAP = '#F59E0B'
 const VWAP_BAND = 'rgba(245, 158, 11, 0.35)'
 
@@ -96,15 +95,14 @@ const shift = (p: { time: number; value: number | null }): { time: UTCTimestamp;
  */
 export function ChartPanel({ candles, context, indicators: indicatorsProp, onIndicators, overlays, strategy, symbol, interval, exchange, root, className }: ChartPanelProps) {
   const toggles: IndicatorToggles = indicatorsProp ?? {
-    vwap: true, volumeProfile: true, absorptions: true, strategy: true,
+    vwap: true, volumeProfile: true, strategy: true,
   }
   // On-chart legend — derived from the registry so adding an overlay only
   // requires registering its ``plot`` spec; no hardcoded list here.
   const LEGEND: { key: keyof IndicatorToggles; label: string }[] = [
     { key: 'vwap', label: indicators['vwap'].label },
     { key: 'volumeProfile', label: indicators['volume_profile'].label },
-    { key: 'absorptions', label: indicators['absorptions'].label },
-    { key: 'strategy', label: strategies['morning_vah_val'].label },
+    { key: 'strategy', label: strategies['halftrend'].label },
   ]
   const last = candles[candles.length - 1]
   const ariaLabel = last
@@ -114,8 +112,8 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<CandleSeries | null>(null)
   const volRef = useRef<VolumeSeries | null>(null)
-  const contextRef = useRef<CandleSeries | null>(null)
-  const contextVolRef = useRef<VolumeSeries | null>(null)
+  const ctxRef = useRef<CandleSeries | null>(null)
+  const ctxVolRef = useRef<VolumeSeries | null>(null)
   const vwapRef = useRef<LineSeries | null>(null)
   const vwapUpperRef = useRef<LineSeries | null>(null)
   const vwapLowerRef = useRef<LineSeries | null>(null)
@@ -124,7 +122,6 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
   const vwapPrevRef = useRef<{ n: number; lastTime: number } | null>(null)
   const absMarkersRef = useRef<string>('')
   const stratLinesRef = useRef<IPriceLine[]>([])
-  const levelLinesRef = useRef<IPriceLine[]>([])
   const profileLinesRef = useRef<IPriceLine[]>([])
   const profileOwnerRef = useRef<CandleSeries | null>(null)
   const profileLenRef = useRef(-1)
@@ -188,10 +185,11 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
       priceFormat: { type: 'volume' },
       priceScaleId: 'volume',
     })
-    const contextCandles = chart.addCandlestickSeries({
-      upColor: DIM, downColor: DIM, borderUpColor: DIM, borderDownColor: DIM, wickUpColor: DIM, wickDownColor: DIM,
+    const ctxCandles = chart.addCandlestickSeries({
+      upColor: UP, downColor: 'transparent', borderUpColor: UP, borderDownColor: '#EF5350',
+      wickUpColor: UP, wickDownColor: '#EF5350',
     })
-    const contextVolume = chart.addHistogramSeries({
+    const ctxVolume = chart.addHistogramSeries({
       priceFormat: { type: 'volume' }, priceScaleId: 'volume',
     })
     const vwap = chart.addLineSeries({
@@ -207,8 +205,8 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     chartRef.current = chart
     candleRef.current = candles
     volRef.current = volume
-    contextRef.current = contextCandles
-    contextVolRef.current = contextVolume
+    ctxRef.current = ctxCandles
+    ctxVolRef.current = ctxVolume
     vwapRef.current = vwap
     vwapUpperRef.current = vwapUpper
     vwapLowerRef.current = vwapLower
@@ -218,15 +216,14 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
       chartRef.current = null
       candleRef.current = null
       volRef.current = null
-      contextRef.current = null
-      contextVolRef.current = null
+      ctxRef.current = null
+      ctxVolRef.current = null
       vwapRef.current = null
       vwapUpperRef.current = null
       vwapLowerRef.current = null
       prevRef.current = null
       vwapPrevRef.current = null
       stratLinesRef.current = []
-      levelLinesRef.current = []
       profileLinesRef.current = []
       profileOwnerRef.current = null
     }
@@ -234,11 +231,11 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
 
   useEffect(() => {
     const ctx = context ?? []
-    const cs = contextRef.current
-    const vs = contextVolRef.current
+    const cs = ctxRef.current
+    const vs = ctxVolRef.current
     if (!chartRef.current || !cs || !vs) return
     cs.setData(ctx.map(bar))
-    vs.setData(ctx.map((c) => ({ time: istChartTime(c.time) as UTCTimestamp, value: c.volume, color: DIM_VOL })))
+    vs.setData(ctx.map((c) => ({ time: istChartTime(c.time) as UTCTimestamp, value: c.volume, color: [0.58, 0.64, 0.72, 0.22] })))
     if (ctx.length > 0) chartRef.current.timeScale().fitContent()
   }, [context])
 
@@ -295,7 +292,7 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     vwapPrevRef.current = { n: series.length, lastTime }
   }, [overlays, toggles.vwap])
 
-  // Absorption + strategy markers — both come from the server.
+  // HalfTrend + server overlays — both come from the server.
   useEffect(() => {
     const cs = candleRef.current
     if (!cs) return
@@ -306,29 +303,14 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
       return istChartTime(t) as UTCTimestamp
     }
     const markers: SeriesMarker<UTCTimestamp>[] = []
-    const ov = overlaysRef.current
-    if (toggles.absorptions && ov?.absorptions) {
-      for (const a of ov.absorptions) {
-        markers.push({
-          time: timeOf(a.time),
-          position: a.side === 'BUY' ? 'belowBar' : 'aboveBar',
-          shape: a.side === 'BUY' ? 'arrowUp' : 'arrowDown',
-          color: a.side === 'BUY' ? '#26A69A' : '#EF5350',
-        })
-      }
-    }
     const strat = strategyRef.current
-    if (toggles.strategy && strat?.signals) {
-      for (const s of strat.signals) {
-        const t = s.reference_price ?? s.intent_price ?? 0
-        const label = s.exit_reason ? s.exit_reason.toUpperCase() : s.side
+    if (toggles.strategy && strat && strat.kind === 'halftrend' && strat.markers) {
+      for (const m of strat.markers) {
         markers.push({
-          time: timeOf(t),
-          position: s.side === 'BUY' ? 'belowBar' : 'aboveBar',
-          shape: s.exit_reason ? 'square' : 'circle',
-          color: s.exit_reason === 'target' ? '#26A69A'
-            : s.exit_reason === 'stop' ? '#EF5350' : s.side === 'BUY' ? '#26A69A' : '#EF5350',
-          text: label,
+          time: timeOf(m.time),
+          position: m.side === 'BUY' ? 'belowBar' : 'aboveBar',
+          shape: m.side === 'BUY' ? 'arrowUp' : 'arrowDown',
+          color: m.side === 'BUY' ? HALFTREND_UP : HALFTREND_DOWN,
         })
       }
     }
@@ -338,9 +320,9 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
       absMarkersRef.current = key
       cs.setMarkers(markers)
     }
-  }, [overlays, strategy, toggles.absorptions, toggles.strategy])
+  }, [strategy, toggles.strategy])
 
-  // Open-trade SL/TP price lines from the latest strategy signal pair.
+  // HalfTrend SL/TP price lines from the latest strategy signal pair.
   useEffect(() => {
     const cs = candleRef.current
     if (!cs) return
@@ -361,21 +343,6 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
         price: open.tp, color: '#26A69A', lineWidth: 1, lineStyle: LineStyle.Dashed, title: 'TP', axisLabelVisible: true,
       }))
     }
-  }, [strategy, toggles.strategy])
-
-  // Frozen morning VAH/VAL/POC lines.
-  useEffect(() => {
-    const cs = candleRef.current
-    if (!cs) return
-    for (const line of levelLinesRef.current) cs.removePriceLine(line)
-    levelLinesRef.current = []
-    if (!toggles.strategy || !strategy?.levels || strategy.levels.length === 0) return
-    const lvl = strategy.levels[strategy.levels.length - 1]
-    if (!(lvl.vah > lvl.val && lvl.vah > 0)) return
-    levelLinesRef.current = [
-      cs.createPriceLine({ price: lvl.vah, color: 'rgba(245, 158, 11, 0.8)', lineWidth: 1, lineStyle: LineStyle.Dashed, title: 'VAH', axisLabelVisible: true }),
-      cs.createPriceLine({ price: lvl.val, color: 'rgba(148, 163, 184, 0.8)', lineWidth: 1, lineStyle: LineStyle.Dashed, title: 'VAL', axisLabelVisible: true }),
-    ]
   }, [strategy, toggles.strategy])
 
   // Volume profile histogram + POC/VAH/VAL lines — from the server payload.

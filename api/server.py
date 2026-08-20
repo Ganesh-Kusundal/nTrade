@@ -75,7 +75,7 @@ def create_app(provider: str | None = None, env: dict | None = None,
     if live_stream and service.name == "dhan":
         app.state.pump.attach_broker_feed()
 
-    # Paper trading: MorningVAHVAL on a ₹1M PaperBroker session fed by the
+    # Paper trading: HalfTrend on a ₹1M PaperBroker session fed by the
     # live candle pump (UI start/stop/status control). The seed cash mirrors
     # the real broker balance when streaming live Dhan (paper must be sized to
     # reality, not a fixed ₹1M).

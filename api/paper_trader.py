@@ -1,6 +1,6 @@
 """Paper trading service + REST routes.
 
-Runs ``MorningVAHVAL`` on a ₹1M ``PaperBroker`` session fed by the live
+Runs ``halftrend`` on a ₹1M ``PaperBroker`` session fed by the live
 candle pump — a UI control ("paper trade on the selected symbol") that
 exercises the real kernel pipeline (real ``TickEvent`` → MarketEngine →
 CandleEngine → strategy → risk → paper fills) with zero real orders.
@@ -46,7 +46,7 @@ class PaperStartRequest(BaseModel):
     symbol: str
     exchange: str = "NFO"
     lot_size: int | None = None
-    strategy: str | None = None  # registered strategy id (default morning_vah_val)
+    strategy: str | None = None  # registered strategy id (default halftrend)
     strategy_params: dict | None = None
 
 
@@ -191,19 +191,16 @@ class PaperTraderService:
         inst = self._strategy_inst
         if inst is not None:
             snap: dict = {"id": self._strategy_id}
-            for attr in ("phase", "bias", "_day_pnl"):
+            for attr in ("phase", "bias"):
                 try:
                     val = getattr(inst, attr)
                     snap[attr.lstrip("_")] = val
                 except Exception:  # noqa: BLE001
                     pass
-            profile = getattr(inst, "_profile", None)
-            if profile is not None and profile.levels:
-                snap["levels"] = [{
-                    "vah": round(float(profile.vah), 4),
-                    "val": round(float(profile.val), 4),
-                    "poc": round(float(profile.poc), 4),
-                }]
+            ht = getattr(inst, "_ht", None)
+            if ht is not None and len(ht) > 0:
+                snap["ht"] = round(float(ht[-1]), 4) \
+                    if ht[-1] == ht[-1] else None
             active = getattr(inst, "_active", None)
             if active is not None:
                 snap["open_trade"] = {
@@ -259,33 +256,18 @@ class PaperTraderService:
 
         # Resolve the strategy by id through the registry — no hardcoded class
         # import. The spec carries the constructor defaults; _strategy_classes
-        # maps the spec id to the concrete implementation. Default = tuned
-        # morning_vah_val (kept for backward-compat callers that omit strategy).
-        strategy_id = (strategy or "morning_vah_val").strip()
+        # maps the spec id to the concrete implementation.
+        strategy_id = (strategy or "halftrend").strip()
         spec = _strategy_reg.get(strategy_id)
         cls = _strategy_classes[spec.id]
-
-        self._lot_size = self._resolve_lot_size(symbol, lot_size)
+        kw.setdefault("amplitude", 2)
+        kw.setdefault("channel_deviation", 2)
+        kw.setdefault("atr_period", 100)
+        inst = cls(symbol=symbol, exchange=exchange, lot_size=self._lot_size, **kw)
         session = TradingSession.paper(initial_cash=self._initial_cash,
                                        session_id=f"paper-{symbol}",
                                        store=self._store)
         session.register(session.stock(symbol))
-        # The tuned preset's sl_pad is absolute points calibrated for ~₹76k
-        # index-futures notional; scale it to this symbol's price so a ₹100
-        # stock doesn't get a 30% stop pad.
-        kw = dict(getattr(cls, "TUNED", {}))
-        ref = getattr(cls, "TUNED_REF_PRICE", 0.0) or 0.0
-        try:
-            state = self._pump._subs.get(symbol) or {}
-            bar = state.get("bar") or {}
-            px = float(bar.get("close") or 0.0)
-        except Exception:  # noqa: BLE001 — fall back to the reference price
-            px = 0.0
-        if px > 0 and ref > 0:
-            kw["sl_pad"] = kw.get("sl_pad", 0.0) * (px / ref)
-        if strategy_params:
-            kw.update(strategy_params)
-        inst = cls(symbol=symbol, exchange=exchange, lot_size=self._lot_size, **kw)
         session.register_strategy(inst, risk={
             # Sizing is the strategy's risk budget; these are sanity ceilings.
             "max_quantity": 10_000,

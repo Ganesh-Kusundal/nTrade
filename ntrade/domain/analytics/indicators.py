@@ -233,6 +233,10 @@ indicator.register("st", IndicatorSpec(
 # Chart overlays produced by OverlayPipeline (not compute_bundle): registered
 # here so /api/market/catalog mirrors the FE's render ids (vwap already above).
 # The contract is metadata-only; the calc lives in overlay_pipeline.py.
+indicator.register("halftrend", IndicatorSpec(
+    id="halftrend", label="HalfTrend",
+    params={"amplitude": 2, "channel_deviation": 2, "atr_period": 100},
+    series=False, plot=PlotSpec(series_key="halftrend", pane="overlay", color="#4caf50")))
 indicator.register("volume_profile", IndicatorSpec(
     id="volume_profile", label="Volume Profile", params={},
     series=True, plot=PlotSpec(series_key="volume_profile", pane="overlay", color="#ffb300")))

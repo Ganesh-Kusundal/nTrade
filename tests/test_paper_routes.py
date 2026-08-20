@@ -111,17 +111,17 @@ def test_paper_accepts_strategy_id_and_reports_snapshot(tmp_path):
     app.state.paper._pump.enabled = True
     c = TestClient(app)
     st = c.post("/api/paper/start", json={
-        "symbol": "NIFTY AUG FUT", "exchange": "NFO", "strategy": "valentini",
+        "symbol": "NIFTY AUG FUT", "exchange": "NFO", "strategy": "halftrend",
     }).json()
     assert st["running"] is True
     assert st["strategy"] is not None
-    assert st["strategy"]["id"] == "valentini"
-    # Backward-compat: omitting strategy still defaults to morning_vah_val.
+    assert st["strategy"]["id"] == "halftrend"
+    # Backward-compat: omitting strategy still defaults to halftrend.
     c.post("/api/paper/stop")
     st2 = c.post("/api/paper/start", json={
         "symbol": "NIFTY AUG FUT", "exchange": "NFO",
     }).json()
-    assert st2["strategy"]["id"] == "morning_vah_val"
+    assert st2["strategy"]["id"] == "halftrend"
 
 
 def test_paper_status_strategy_snapshot_on_idle(tmp_path):

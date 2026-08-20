@@ -81,47 +81,16 @@ export const indicators: Record<string, IndicatorSpec> = {
 // ---------------------------------------------------------------------------------------
 
 export const strategies: Record<string, StrategySpec> = {
-  valentini: {
-    id: 'valentini',
-    label: 'Valentini Scalper (Fabio)',
-    category: 'scalper',
+  halftrend: {
+    id: 'halftrend',
+    label: 'HalfTrend',
+    category: 'momentum',
     defaultParams: {
-      warmup: 15,
-      absVolumeMult: 1.5,
-      absRangeThreshold: 0.5,
-      absLookback: 5,
-      tpMultiplier: 2.0,
-      minRr: 1.5,
-      sessionStart: '09:15',
-      sessionEnd: '15:25',
-      fadeExtended: true,
-      requireCvd: true,
-      cvdConfirm: 3,
-      directionVolumeMult: 1.0,
-      legImpulseMult: 2.0,
-      accumVolumeMult: 1.5,
-      trailArmMult: 1.0,
-      divergenceVolumeMult: 0.6,
-      reverseExtensionMult: 2.0,
+      amplitude: 2,
+      channelDeviation: 2,
+      atrPeriod: 100,
     },
-    indicators: ['vwap', 'volume_profile', 'absorptions'],
-  },
-  morning_vah_val: {
-    id: 'morning_vah_val',
-    label: 'Morning VAH/VAL (Mukul)',
-    category: 'scalper',
-    defaultParams: {
-      sessionStart: '09:15',
-      sessionEnd: '15:30',
-      profileEnd: '09:30',
-      entryStart: '09:30',
-      entryEnd: '11:00',
-      emaFastPeriod: 10,
-      emaSlowPeriod: 20,
-      emaMinDistPct: 0.5,
-      frvpDistPct: 1.5,
-    },
-    indicators: ['vwap', 'volume_profile'],
+    indicators: [],
   },
 }
 

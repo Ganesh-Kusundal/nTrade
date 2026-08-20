@@ -28,6 +28,7 @@ data/
 .ntrade_cache/
 
 # Scratch / local artifacts
+.commandcode/
 ui/.vite/
 *.ipynb
 ntrade.egg-info

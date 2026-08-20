@@ -53,6 +53,9 @@ class BrokerDataError(RuntimeError):
     """
 
 
+_quiet_lock = threading.Lock()
+
+
 @contextlib.contextmanager
 def _quiet_tsl_prints():
     """Suppress Tradehull's raw ``print()`` noise on transient failures.
@@ -64,12 +67,14 @@ def _quiet_tsl_prints():
     noise. The library's ``logger.exception`` calls are NOT suppressed — they
     go to its own log file (``basicConfig(filename=...)``), untouched.
 
-    Note: ``redirect_stdout`` swaps the process-global ``sys.stdout``, so this
-    is only safe for short, single-threaded windows (each use is one brief
-    library call) — same tradeoff ``dhan_auth`` already accepts.
+    Thread-safety: ``redirect_stdout`` swaps the process-global ``sys.stdout``.
+    Under ``ParallelHistoryFetcher``'s 4 workers this races and can suppress or
+    leak prints across threads. Serializing with ``_quiet_lock`` keeps the
+    suppression while preventing cross-thread stdout swaps.
     """
-    with contextlib.redirect_stdout(io.StringIO()):
-        yield
+    with _quiet_lock:
+        with contextlib.redirect_stdout(io.StringIO()):
+            yield
 
 
 class DhanTransport:

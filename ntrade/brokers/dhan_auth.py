@@ -21,9 +21,12 @@ import contextlib
 import io
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+_quiet_lock = threading.Lock()
 
 from ntrade.execution.rate_limit import Quota
 from ntrade.execution._guard import TotpCooldownGuard, TotpRateLimitError
@@ -225,8 +228,9 @@ def _login_ok_status(tsl, gate=None) -> tuple[bool, bool]:
     try:
         if gate is not None:
             gate.acquire(Quota.QUOTE)
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            data = tsl.get_ltp_data(names=["NIFTY"])
+        with _quiet_lock:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                data = tsl.get_ltp_data(names=["NIFTY"])
         blob = out.getvalue() + err.getvalue()
         if _invalid_token_signal(payload=blob):
             return False, True
@@ -245,10 +249,11 @@ def _login_ok_status(tsl, gate=None) -> tuple[bool, bool]:
     try:
         if gate is not None:
             gate.acquire(Quota.DATA)
-        with contextlib.redirect_stdout(out2), contextlib.redirect_stderr(err2):
-            df = tsl.get_historical_data(
-                tradingsymbol="RELIANCE", exchange="NSE", timeframe="5",
-            )
+        with _quiet_lock:
+            with contextlib.redirect_stdout(out2), contextlib.redirect_stderr(err2):
+                df = tsl.get_historical_data(
+                    tradingsymbol="RELIANCE", exchange="NSE", timeframe="5",
+                )
         blob = out2.getvalue() + err2.getvalue()
         if _invalid_token_signal(payload=blob):
             return False, True
@@ -270,8 +275,9 @@ def _login_ok(tsl, gate=None) -> bool:
 
 def _try_access_token(client_code: str, token: str):
     """Build Tradehull with an access token; suppress renew-noise on stderr."""
-    with contextlib.redirect_stderr(io.StringIO()):
-        return Tradehull(client_code, token, mode="access_token")
+    with _quiet_lock:
+        with contextlib.redirect_stderr(io.StringIO()):
+            return Tradehull(client_code, token, mode="access_token")
 
 
 def get_tradehull(env: dict | None = None, env_path: str = ".env", gate=None):
@@ -333,8 +339,9 @@ def get_tradehull(env: dict | None = None, env_path: str = ".env", gate=None):
     if _cooldown_active(cooldown_path):
         raise ConnectionError(f"Dhan TOTP login is on cooldown (see {cooldown_path}). Wait ~90s.")
     try:
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            tsl = Tradehull(client_code, mode="pin_totp", pin=pin, totp_secret=totp_secret)
+        with _quiet_lock:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                tsl = Tradehull(client_code, mode="pin_totp", pin=pin, totp_secret=totp_secret)
     except Exception as exc:
         _arm_cooldown(cooldown_path)  # M-5: a failed mint arms the cooldown too
         raise ConnectionError(f"Dhan PIN+TOTP mint raised: {exc}") from exc

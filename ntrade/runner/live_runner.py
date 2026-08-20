@@ -9,8 +9,9 @@ kill switch when the risk engine halts. Everything else is just events.
 from __future__ import annotations
 
 import logging
-import time
 import signal
+import threading
+import time
 
 from ntrade.events.lifecycle import (HeartbeatEvent, FeedDisconnectedEvent,
                                      RunnerStartedEvent, RunnerStoppedEvent)
@@ -123,14 +124,20 @@ class LiveRunner:
         """Drive the loop until `duration` seconds have elapsed (or forever)."""
         if not self.started:
             self.start()
-        original_sigterm = signal.getsignal(signal.SIGTERM)
-        original_sigint = signal.getsignal(signal.SIGINT)
 
         def _handle_signal(signum, frame):
             self.stop(reason=f"signal {signum}")
 
-        signal.signal(signal.SIGTERM, _handle_signal)
-        signal.signal(signal.SIGINT, _handle_signal)
+        is_main = threading.current_thread() is threading.main_thread()
+        if is_main:
+            original_sigterm = signal.getsignal(signal.SIGTERM)
+            original_sigint = signal.getsignal(signal.SIGINT)
+            signal.signal(signal.SIGTERM, _handle_signal)
+            signal.signal(signal.SIGINT, _handle_signal)
+        else:
+            original_sigterm = None
+            original_sigint = None
+            logger.debug("LiveRunner.run: skipping signal handlers (not main thread)")
         try:
             target = duration if duration is not None else self.duration
             start_t = self._timer()
@@ -146,8 +153,9 @@ class LiveRunner:
             if self.started:
                 self.stop()
         finally:
-            signal.signal(signal.SIGTERM, original_sigterm)
-            signal.signal(signal.SIGINT, original_sigint)
+            if is_main:
+                signal.signal(signal.SIGTERM, original_sigterm)
+                signal.signal(signal.SIGINT, original_sigint)
 
     def stop(self, reason: str = "") -> None:
         if not self.started:

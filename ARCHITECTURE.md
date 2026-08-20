@@ -417,26 +417,29 @@ OHLCV    ──► BacktestSimulator ──► TickEvent ──► EventBus
 ```
 ntrade/
   __init__.py          # public API surface
-  facade.py            # Market (legacy wrapper over TradingSession)
   factories.py         # InstrumentFactory, OptionFactory
   registry.py          # SymbolMaster (flyweight), BrokerRegistry
   data/                # parallel historical fetch + Parquet storage + gap detection
     __init__.py        # exports ParallelHistoryFetcher, ParquetStorage, GapDetector, ScannerLoader, load_universe
     history_pipeline.py   # ParallelHistoryFetcher (+ fetch_missing)
-    parquet_store.py      # ParquetStorage (Hive partition + upsert + duckdb_scan)
+    parquet_store.py      # ParquetStorage (Hive partition + upsert + duckdb_scan) — 310 LOC
     gap_detector.py       # GapDetector
     scanner_loader.py     # ScannerLoader
     universe.py           # load_universe (Nifty CSV → Equity)
+    orb_screener.py       # ORB screener
   domain/
     session.py         # MarketState, SessionState
     scanner.py         # Scanner / ScannerFacade / ScannerResult
+    screener.py        # ScreenerFacade
     portfolio.py       # Portfolio / Account read model
     ports.py           # BrokerAdapter ABC + capability registry/facade (ports)
-    instruments/       # base, cash, derivatives, chain, capabilities
+    market_hours.py    # session open/close helpers
+    instruments/       # base, cash, derivatives, chain, capabilities, expiry
         base.py         # Instrument (composition root)
         capabilities.py # Market/Stream/Analytics/Derivatives capability objects
+        cash.py, derivatives.py, chain.py, expiry.py
     market/            # quote, depth, history, stream, candles
-    analytics/         # greeks, indicators, surface
+    analytics/         # greeks, indicators, surface, order_flow, range_bars, volume_profile
     orders/            # order, book
   brokers/
     base.py            # re-exports BrokerAdapter from domain/ports.py
@@ -448,24 +451,30 @@ ntrade/
     dhan_mapper.py     # Dhan wire→domain mapping (DhanMapper, chain_from_dhan_df)
     dhan_transport.py  # DhanTransport (BrokerRateGate choke point + retry)
   events/              # canonical event model (market/order/portfolio/risk/lifecycle)
-  kernel/              # TradingKernel, ResilientKernel, StrategyRunner, EventBus,
-                       # TradingClock, TradingContext, LiveRunner, trading_session
+  kernel/              # TradingKernel, StrategyRunner, EventBus, TradingClock, TradingContext
+    __init__.py
+    kernel/trading_session.py  # TradingSession (primary facade — replaces legacy facade.py)
+    kernel/session.py          # TradingKernel / session state
+    kernel/runner.py           # StrategyRunner
+    kernel/clock.py            # TradingClock (Live/Replay/Sim)
+    event_bus.py       # EventBus
+    context.py         # TradingContext
   engines/             # market, candle, indicator, strategy(+strategy_engine), risk,
                        # order (OMS), portfolio, position-sync, strategies (reuse)
+    strategies.py      # reusable strategies (888 LOC)
   execution/           # ExecutionRouter, SimulatedExecution, BrokerExecution, costs, retry
   storage/             # EventStore (append-only JSONL, recovery_events)
-  replay/              # ReplayEngine
   backtest/            # BacktestSimulator, fills (FillPolicy, BarAwareExecution)
   sources/             # MarketFeedSource ABC, SimulatedFeedSource, DhanMarketFeedSource,
-                       # SyntheticMarketFeedSource
-  sim/                 # tick_simulator (synthesize_1m_ticks, SimTick)
+                       # SyntheticMarketFeedSource, dhan_feed, synthetic_feed
+  sim/                 # tick_simulator (synthesize_1m_ticks, SimTick), depth_simulator
   scanners/            # builtin scanners
-  runner/              # LiveRunner (live orchestration harness)
+  runner/              # LiveRunner (live orchestration harness) — live_runner.py, feeds, gate, bench
+  analytics/           # overlay_pipeline
 scripts/               # live_runner_run, paper_gate_run, benchmark_latency, backfill_parquet,
                        # download_nifty_universe, live_read_check, pre_deploy_check,
                        # ema_cross_run, benchmark_fetch
-tests/                 # ~638 offline test functions across 63 files (kernel/backtest/replay/
-                       # source/live/contract suites)
+tests/                 # ~1118+ offline test functions
 ```
 
 ## 10. Extensibility guidelines (open/closed)
@@ -507,7 +516,7 @@ tests/                 # ~638 offline test functions across 63 files (kernel/bac
 ## 12. Knowledge graph (graphify)
 
 The codebase is mapped into a persistent knowledge graph under `graphify-out/`.
-Latest run (2026-08-04, from commit `2424757`):
+Latest run (2026-08-20, from commit `2424757`):
 
 - **6896 nodes · 12321 edges · 393 communities** (91 % EXTRACTED, 9 % INFERRED).
 - **God nodes** (most connected): `Equity` (307 edges), `PaperBroker` (172),

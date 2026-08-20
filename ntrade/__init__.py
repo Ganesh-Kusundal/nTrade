@@ -62,6 +62,13 @@ from ntrade.domain.constants import Exchange, Timeframe, DEFAULT_TIMEFRAME
 
 __version__ = "0.2.0"
 
+try:
+    import importlib.metadata
+    _dist_version = importlib.metadata.version("ntrade")
+    assert _dist_version == __version__, f"version drift: pyproject {_dist_version} != __init__ {__version__}"
+except Exception:
+    pass
+
 __all__ = [
     # Session
     "TradingSession",

@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ntrade.domain.market_hours import IST, is_market_open
+from api.live import LiveCandlePump
 from api.marketdata import FuturesMaster
 from api.server import create_app
 
@@ -269,3 +270,82 @@ def test_real_feed_ingest_tick_and_stale(tmp_path):
             stale = _receive_until(ws, "live_status", "NIFTY AUG FUT", timeout_s=3.0)
             assert stale["status"] == "stale"
             assert "no ticks" in stale["reason"]
+
+
+def test_silent_feed_is_force_restarted():
+    """CLOSE_WAIT zombie feeds never fire on_close — subscribe must recreate."""
+    from types import SimpleNamespace
+
+    contract = SimpleNamespace(security_id=58072, exchange="NFO")
+    svc = SimpleNamespace(
+        name="dhan",
+        master=SimpleNamespace(resolve=lambda s: contract),
+        provider=SimpleNamespace(feed_auth=lambda: ("id", "tok")),
+    )
+    pump = LiveCandlePump(svc, enabled=True, clock=lambda: _NSE_OPEN_NOW)
+    pump.attach_broker_feed()
+    pump._FEED_SILENT_RESTART_S = 0.01
+
+    class Zombie:
+        def subscribe_symbols(self, _):
+            raise AssertionError("zombie must not be reused")
+
+        def close_connection(self):
+            self.closed = True
+
+    zombie = Zombie()
+    pump._feed = zombie
+    pump._feed_started_at = 0.0  # long ago → silent
+    pump._last_feed_msg_at = None
+    assert pump._feed_needs_restart() is True
+
+    started = {"n": 0}
+
+    def fake_start(instruments):
+        started["n"] += 1
+        pump._feed = object()
+        pump._feed_started_at = time.time()
+        pump._last_feed_msg_at = time.time()
+
+    pump._start_dhan_feed = fake_start  # type: ignore[method-assign]
+    assert pump._ensure_dhan_sub("NIFTY AUG FUT", "NFO") is True
+    assert started["n"] == 1
+    assert getattr(zombie, "closed", False) is True
+
+
+def test_live_overlays_emitted_on_bar_close(app):
+    """Plan M4: when a live candle closes, the pump rebroadcasts overlays
+    (VWAP/VP/absorptions + optional strategy) from the same backend pipeline
+    the chart + paper use — the FE never recomputes them."""
+    with TestClient(app) as c:
+        pump = app.state.pump
+        pump._real_feed = True
+
+        # Seed the parquet store with a prior bar so the overlay window is
+        # non-empty (mirrors a real live session that has been persisting).
+        prior = {"time": int(_NSE_OPEN_NOW.timestamp()) - 60, "open": 24300.0,
+                 "high": 24310.0, "low": 24290.0, "close": 24305.0, "volume": 100}
+        pump._service.candles = lambda **kw: [prior]  # type: ignore[method-assign]
+
+        with c.websocket_connect("/ws/market") as ws:
+            ws.send_json({"type": "subscribe", "symbol": "NIFTY AUG FUT",
+                          "exchange": "NFO", "interval": "1m",
+                          "strategy": "valentini"})
+            ws.receive_json()  # live_status
+            # Two ticks in different minutes → the first closes a bar and
+            # triggers the overlay recompute/broadcast.
+            t0 = _NSE_OPEN_NOW
+            t1 = _NSE_OPEN_NOW + timedelta(minutes=1)
+            pump.ingest_tick("NIFTY AUG FUT", 24305.0, 25, now=t0)
+            _receive_until(ws, "candle", "NIFTY AUG FUT")  # bar at t0
+            pump.ingest_tick("NIFTY AUG FUT", 24308.0, 30, now=t1)
+            # The pump broadcasts overlays BEFORE the next candle message when
+            # the t0 bar closes — collect overlays, then the candle.
+            ov = _receive_until(ws, "overlays", "NIFTY AUG FUT", timeout_s=5.0)
+            _receive_until(ws, "candle", "NIFTY AUG FUT")  # bar at t1
+            assert ov["symbol"] == "NIFTY AUG FUT"
+            assert ov["overlays"]["vwap"] is not None
+            assert ov["overlays"]["volume_profile"] is not None
+            # Strategy markers come from the same pipeline (zero-parity).
+            assert ov["strategy"] is not None
+            assert ov["strategy"]["id"] == "valentini"

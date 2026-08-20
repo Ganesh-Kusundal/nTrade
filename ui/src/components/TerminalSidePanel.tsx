@@ -1,7 +1,5 @@
 import { PaperTradeControl } from './PaperTradeControl'
-import { isMorningVahValResult, isValentiniResult } from '../lib/registry'
-import type { ValentiniResult, ValentiniTrade } from '../lib/valentini'
-import type { MorningVahValResult, MorningVahValTrade } from '../lib/morningVahVal'
+import type { StrategyPayload, StrategySignal } from '../types/market'
 
 function SideLabel({ children }: { children: React.ReactNode }) {
   return <span className="treadout-label">{children}</span>
@@ -11,21 +9,50 @@ function SideValue({ children }: { children: React.ReactNode }) {
   return <span className="font-mono text-sm text-ink">{children}</span>
 }
 
-function TradeRow({
-  trade,
-  index,
-  open,
-}: {
-  trade: ValentiniTrade | MorningVahValTrade
-  index: number
-  open: boolean
-}) {
+/** Pair flat entry/exit signals into trade rows for display (no client math):
+ *  each entry opens a position; the next signal with an `exit_reason` closes it.
+ *  Matching is positional — the backend emits them in bar order. */
+interface SignalTrade {
+  side: 'BUY' | 'SELL'
+  entry: number
+  sl: number | null
+  tp: number | null
+  exit: number | null
+  exitReason: string | null
+  qty: number
+}
+
+function toTrades(signals: StrategySignal[]): SignalTrade[] {
+  const trades: SignalTrade[] = []
+  const open: SignalTrade[] = []
+  for (const s of signals) {
+    if (s.exit_reason) {
+      const t = open.shift()
+      if (t) {
+        t.exit = s.intent_price ?? s.reference_price ?? null
+        t.exitReason = s.exit_reason
+        trades.push(t)
+      }
+    } else {
+      open.push({
+        side: s.side,
+        entry: s.reference_price ?? s.intent_price ?? 0,
+        sl: s.sl ?? null,
+        tp: s.tp ?? null,
+        exit: null,
+        exitReason: null,
+        qty: s.quantity,
+      })
+    }
+  }
+  // Any still-open positions render as open trades.
+  for (const t of open) trades.push(t)
+  return trades
+}
+
+function TradeRow({ trade, index, open }: { trade: SignalTrade; index: number; open: boolean }) {
   const sideCls = trade.side === 'BUY' ? 'text-accent' : 'text-danger'
-  const held = open ? 'open' : `${trade.exitIndex == null ? 0 : trade.exitIndex - trade.entryIndex} bars`
-
-  const reasonLabel = trade.reason ?? '—'
-  const exit = trade.exit
-
+  const reasonLabel = trade.exitReason ?? '—'
   return (
     <div
       className={`rounded-md border border-line/60 bg-panel2/40 px-2.5 py-1.5 text-[11px] ${
@@ -33,24 +60,17 @@ function TradeRow({
       }`}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className={`font-mono font-semibold ${sideCls}`}>
-          {trade.side}
-        </span>
+        <span className={`font-mono font-semibold ${sideCls}`}>{trade.side}</span>
         <span className="text-muted/70">#{index + 1}</span>
-        <span className="text-muted/70">{held}</span>
+        <span className="text-muted/70">{open ? 'open' : 'closed'}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono">
         <span>E {trade.entry.toFixed(2)}</span>
-        <span>SL {trade.sl.toFixed(2)}</span>
-        {open && 'tslActive' in trade && trade.tslActive && trade.slNow != null && trade.slNow !== trade.sl && (
-          <span className="text-amber-300/90">TSL {trade.slNow.toFixed(2)}</span>
-        )}
-        <span className="text-muted/70">
-          {trade.tp != null ? `TP ${trade.tp.toFixed(2)}` : 'runner'}
-        </span>
-        {!open && exit != null && (
+        {trade.sl != null && <span>SL {trade.sl.toFixed(2)}</span>}
+        {trade.tp != null && trade.tp > 0 && <span>TP {trade.tp.toFixed(2)}</span>}
+        {!open && trade.exit != null && (
           <>
-            <span>X {exit.toFixed(2)}</span>
+            <span>X {trade.exit.toFixed(2)}</span>
             <span className="text-muted/70">{reasonLabel}</span>
           </>
         )}
@@ -73,16 +93,19 @@ export function TerminalSidePanel({
   symbol: string
   exchange: string
   strategyId: string
-  strategyResult: import('../components/ChartPanel').StrategyOverlay | null
+  strategyResult: StrategyPayload | null
   mode: string
 }) {
-  const morning = strategyResult && isMorningVahValResult(strategyResult)
-  const valentini = strategyResult && isValentiniResult(strategyResult)
-
   const price = quote?.ltp ?? null
   const change = quote?.change ?? (price != null && quote ? price - quote.prev_close : 0)
   const changePct = quote?.change_pct ?? 0
   const up = (change ?? 0) >= 0
+
+  const trades = strategyResult?.signals ? toTrades(strategyResult.signals) : []
+  const open = trades.filter((t) => t.exit == null).length
+  const lastLevel = strategyResult?.levels?.[strategyResult.levels.length - 1]
+  const bias = strategyResult?.bias ?? null
+  const phase = strategyResult?.phase ?? null
 
   return (
     <aside className="flex min-w-0 flex-col gap-2 overflow-y-auto px-2 py-2 sm:w-[300px]">
@@ -136,110 +159,45 @@ export function TerminalSidePanel({
           <SideLabel>
             {strategyId === 'morning_vah_val' ? 'VAH/VAL' : strategyId === 'valentini' ? 'Valentini' : strategyId}
           </SideLabel>
-          <span className="text-[10px] text-muted/70">signals</span>
+          <span className="text-[10px] text-muted/70">signals{open > 0 ? ` · ${open} open` : ''}</span>
         </div>
 
-        {/* status line — narrowed by guard */}
-        {valentini && (() => {
-          const vr = strategyResult as ValentiniResult
-          return (
-            <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] font-mono">
-              <span className="text-muted">phase</span>
-              <span
-                className={`rounded-md border px-1.5 py-0.5 text-xs font-medium ${
-                  vr.phase === 'signal'
-                    ? 'border-accent/70 bg-accent/10 text-accent'
-                    : vr.phase === 'accumulating'
-                      ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'
-                      : 'border-line/60 bg-panel2/60 text-muted'
-                }`}
-              >
-                {vr.phase}
-              </span>
-              {vr.lastAbsorption != null && (
-                <span className="text-muted/70">
-                  abs at {vr.lastAbsorption.barIndex}
-                </span>
-              )}
-            </div>
-          )
-        })()}        {morning && (() => {
-          const sr = strategyResult as MorningVahValResult
-          const lastBias = sr.bias.length > 0 ? sr.bias[sr.bias.length - 1] : null
-          const b = lastBias?.bias ?? '—'
-          const cls = b === 'UP'
-            ? 'border-accent/70 bg-accent/10 text-accent'
-            : b === 'DOWN'
-              ? 'border-danger/70 bg-danger/10 text-danger'
-              : b === 'SIDEWAYS'
-                ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'
-                : 'border-line/60 bg-panel2/60 text-muted'
-          const lastLevels = sr.levels.length > 0 ? sr.levels[sr.levels.length - 1] : null
-          const st = sr.state
-          const setupKnown = st.profileReady && b !== '—'
-          let statusText: string
-          let statusCls = 'text-muted/80'
-          if (!st.profileReady) {
-            statusText = 'awaiting 09:30 FRVP freeze…'
-            statusCls = 'text-amber-300'
-          } else if (b === '—') {
-            statusText = 'awaiting prior-day bias…'
-            statusCls = 'text-amber-300'
-          } else if (b === 'SIDEWAYS') {
-            statusText = 'SIDEWAYS — no trades today'
-          } else if (st.windowClosed) {
-            statusText = 'entry window closed — no setup'
-          } else if (!st.inEntryWindow) {
-            statusText = 'setup window 09:30–11:00 IST'
-          } else {
-            statusText = b === 'UP' ? 'awaiting VAL dip + reversal (long)' : 'awaiting VAH rejection (short)'
-            statusCls = 'text-amber-300'
-          }
-          return (
-            <>
-              <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] font-mono">
+        {strategyResult && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] font-mono">
+            {bias && (
+              <>
                 <span className="text-muted">bias</span>
-                <span className={`rounded-md border px-1.5 py-0.5 text-xs font-medium ${cls}`}>
-                  {b}
+                <span className={`rounded-md border px-1.5 py-0.5 text-xs font-medium ${biasCls(bias)}`}>
+                  {bias}
                 </span>
-                {lastLevels && (
-                  <>
-                    <span className="text-muted/70">
-                      POC {lastLevels.poc.toFixed(0)}
-                    </span>
-                    <span className="text-muted/70">
-                      VAH {lastLevels.vah.toFixed(0)}
-                    </span>
-                    <span className="text-muted/70">
-                      VAL {lastLevels.val.toFixed(0)}
-                    </span>
-                  </>
-                )}
-              </div>
-              {setupKnown && (
-                <div className="mb-2 flex items-center gap-1.5 text-[11px] font-mono">
-                  <span className="text-muted">state</span>
-                  <span className={statusCls}>{statusText}</span>
-                </div>
-              )}
-            </>
-          )
-        })()}
+              </>
+            )}
+            {phase && (
+              <>
+                <span className="text-muted">phase</span>
+                <span className={`rounded-md border px-1.5 py-0.5 text-xs font-medium ${phaseCls(phase)}`}>
+                  {phase}
+                </span>
+              </>
+            )}
+            {lastLevel && (
+              <>
+                <span className="text-muted/70">POC {lastLevel.poc.toFixed(0)}</span>
+                <span className="text-muted/70">VAH {lastLevel.vah.toFixed(0)}</span>
+                <span className="text-muted/70">VAL {lastLevel.val.toFixed(0)}</span>
+              </>
+            )}
+          </div>
+        )}
 
-        {/* trades list — union of trade shapes, narrowed field access */}
-        {strategyResult && strategyResult.trades && strategyResult.trades.length > 0 && (
+        {trades.length > 0 && (
           <div className="mt-2 space-y-1.5">
-            {strategyResult.trades.map((t, i) => (
-              <TradeRow
-                key={i}
-                trade={t as ValentiniTrade}
-                index={i}
-                open={t.exitIndex == null}
-              />
+            {trades.map((t, i) => (
+              <TradeRow key={i} trade={t} index={i} open={t.exit == null} />
             ))}
           </div>
         )}
-        {strategyResult && (!strategyResult.trades || strategyResult.trades.length === 0) && (
+        {strategyResult && trades.length === 0 && (
           <div className="mt-2 rounded-md border border-line/40 bg-panel2/30 px-2.5 py-1.5 text-[11px] text-muted/80">
             {strategyId === 'morning_vah_val'
               ? 'No signals yet — awaiting setup'
@@ -265,6 +223,19 @@ export function TerminalSidePanel({
       </div>
     </aside>
   )
+}
+
+function biasCls(b: string): string {
+  if (b === 'UP') return 'border-accent/70 bg-accent/10 text-accent'
+  if (b === 'DOWN') return 'border-danger/70 bg-danger/10 text-danger'
+  if (b === 'SIDEWAYS') return 'border-amber-500/50 bg-amber-500/10 text-amber-300'
+  return 'border-line/60 bg-panel2/60 text-muted'
+}
+
+function phaseCls(p: string): string {
+  if (p === 'signal') return 'border-accent/70 bg-accent/10 text-accent'
+  if (p === 'reversal') return 'border-amber-500/50 bg-amber-500/10 text-amber-300'
+  return 'border-line/60 bg-panel2/60 text-muted'
 }
 
 function commandify(s: string | undefined): string {

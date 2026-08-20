@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,6 +15,8 @@ from api.live import LiveCandlePump, ws_router
 from api.marketdata import FuturesMaster, build_service
 from api.paper_trader import PaperTraderService, paper_router
 from api.routes import router
+
+log = logging.getLogger("api.server")
 
 
 class _UiStaticFiles(StaticFiles):
@@ -72,9 +76,24 @@ def create_app(provider: str | None = None, env: dict | None = None,
         app.state.pump.attach_broker_feed()
 
     # Paper trading: MorningVAHVAL on a ₹1M PaperBroker session fed by the
-    # live candle pump (UI start/stop/status control).
+    # live candle pump (UI start/stop/status control). The seed cash mirrors
+    # the real broker balance when streaming live Dhan (paper must be sized to
+    # reality, not a fixed ₹1M).
+    initial_cash = 1_000_000.0
+    paper_store = None
+    if os.environ.get("NTRADE_EVENT_STORE"):
+        from ntrade.storage.event_store import EventStore
+        paper_store = EventStore("data/events/paper")
+    if live_stream and service.name == "dhan":
+        try:
+            broker_balance = float(service.provider.get_balance())
+            if broker_balance > 0:
+                initial_cash = broker_balance
+        except Exception:  # noqa: BLE001 — a balance fetch must not block paper
+            log.warning("broker balance unavailable; keeping paper default")
     app.state.paper = PaperTraderService(service, app.state.pump,
-                                         initial_cash=1_000_000.0)
+                                         initial_cash=initial_cash,
+                                         store=paper_store)
 
     app.include_router(router)
     app.include_router(paper_router)

@@ -9,7 +9,7 @@ from ntrade.brokers.paper import PaperBroker
 from ntrade.domain.instruments.cash import Equity
 from ntrade.domain.market.history import HistoricalSeries
 from ntrade.domain.market.quote import Tick
-from ntrade.domain.market.stream import LiveStream, SubscriptionState
+from ntrade.domain.market.stream import SubscriptionState
 
 
 def test_history_series_empty():
@@ -24,6 +24,7 @@ def test_history_df_property_is_defensive_copy():
     """D-019: external readers of ``.df`` get a copy — in-place mutation via
     the property must not corrupt the instrument's cached frame."""
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     h = rel._history.fetch(timeframe="5m")
     leaked = h.df
@@ -43,6 +44,7 @@ def test_history_clock_drives_freshness():
             return self.t
 
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     clock = FakeClock()
     h = HistoricalSeries(rel, clock=clock)
@@ -70,6 +72,7 @@ def test_kernel_register_wires_history_clock():
 
 def test_history_fetch_sets_state():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     h = rel._history.fetch(timeframe="5m")
     assert h.cached
@@ -79,6 +82,7 @@ def test_history_fetch_sets_state():
 
 def test_history_download_forces_fresh():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     first = rel._history.fetch(timeframe="5m")
     downloaded = rel._history.download(timeframe="5m")
@@ -87,6 +91,7 @@ def test_history_download_forces_fresh():
 
 def test_history_to_df_copy():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     h = rel._history.fetch(timeframe="5m")
     df = h.to_df()
@@ -96,6 +101,7 @@ def test_history_to_df_copy():
 
 def test_history_resample():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     h = rel._history.fetch(timeframe="5m")
     coarse = h.resample("15min")
@@ -207,6 +213,7 @@ def test_resample_implementations_share_right_edge_convention():
 
 def test_history_live_merge_preserves_schema():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     h = rel._history.fetch(timeframe="5m")
     before = len(h)

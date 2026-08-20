@@ -126,13 +126,13 @@ def _drain(svc, timeout=3.0):
 
 def test_start_stop_lifecycle():
     svc, pump = _make_service()
-    st = svc.start("BANKNIFTY AUG FUT", "NFO")
+    st = svc.start("BANKNIFTY AUG FUT", "NFO", lot_size=15)
     assert st["running"] is True
     assert st["symbol"] == "BANKNIFTY AUG FUT"
     assert st["initial_cash"] == 1_000_000.0
     assert ("BANKNIFTY AUG FUT", "NFO", "1m") in pump.subscribed
     # Idempotent start while running.
-    assert svc.start("BANKNIFTY AUG FUT")["running"] is True
+    assert svc.start("BANKNIFTY AUG FUT", lot_size=15)["running"] is True
     stopped = svc.stop()
     assert stopped["running"] is False
     assert stopped["balance"] == 1_000_000.0
@@ -181,8 +181,9 @@ def test_paper_buy_then_stop_is_flat():
 
 def test_paper_feed_publishes_real_ticks_not_fabricated_events(tmp_path):
     from tests.test_api_market import _sample_master
+    from api.marketdata import FuturesMaster
 
-    app = create_app("synthetic", master=_sample_master(tmp_path), live_stream=False)
+    app = create_app("synthetic", master=FuturesMaster(_sample_master(tmp_path)), live_stream=False)
     service = app.state.paper
     service._pump._real_feed = True
     service._pump.enabled = True

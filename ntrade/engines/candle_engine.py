@@ -19,7 +19,7 @@ _INTERVAL_SECONDS = {
 
 
 class CandleEngine:
-    def __init__(self, context, timeframe: str = DEFAULT_TIMEFRAME, *, max_candles: int = 10_000):
+    def __init__(self, context, timeframe: str = DEFAULT_TIMEFRAME, *, max_candles: int = 10_000, mode: str = "live"):
         if timeframe not in _INTERVAL_SECONDS:
             raise ValueError(f"Unsupported timeframe {timeframe!r}; expected one of {sorted(_INTERVAL_SECONDS)}")
         self.ctx = context
@@ -31,11 +31,17 @@ class CandleEngine:
         # last bucket seeded from a bar-shaped QuoteEvent (backtest only); the
         # paired close tick sharing that bucket is skipped to avoid double volume
         self._bar_seeded: dict[str, int] = {}
+        self._mode = mode
         context.bus.subscribe(TickEvent, self.on_tick)
         context.bus.subscribe(QuoteEvent, self.on_quote)
 
     # ------------------------------------------------------------------ ingest
     def _bucket(self, ts: datetime) -> int:
+        if ts.tzinfo is not None:
+            # Pump emits IST-aware ticks; convert to UTC before bucketing so
+            # candle labels and all downstream code (which uses naive-UTC per
+            # domain convention) stay consistent.
+            ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)  # naive -> UTC-pinned epoch
         epoch = int(ts.timestamp())
@@ -46,12 +52,12 @@ class CandleEngine:
         # for its bucket; the paired close tick (and any extra same-bucket
         # ticks from a future multi-trade backtest source) is intentionally
         # skipped so volume is not double-counted.
-        if self._bar_seeded.get(event.symbol) == self._bucket(event.ts):
+        if self._mode == "backtest" and self._bar_seeded.get(event.symbol) == self._bucket(event.ts):
             return
         self._ingest(event.symbol, event.exchange, event.price, event.ts, volume=event.quantity)
 
     def on_quote(self, event: QuoteEvent) -> None:
-        if self.ctx.mode != "backtest":
+        if self._mode != "backtest":
             return  # live/replay quotes carry day-session OHLCV, not bars
         self._ingest_bar(event.symbol, event.exchange, event.open, event.high,
                          event.low, event.ltp, event.volume, event.ts)

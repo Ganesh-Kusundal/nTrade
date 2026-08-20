@@ -44,18 +44,20 @@ class Strategy:
     # --------------------------------------------------------------- helpers
     def emit_signal(self, *, symbol, exchange: str = Exchange.CASH, side: str,
                     quantity: int, price: float = 0.0, reference_price: float = 0.0,
-                    **metadata) -> SignalGeneratedEvent:
+                    order_type: str = "MARKET", **metadata) -> SignalGeneratedEvent:
         """Emit a trade signal; RiskEngine screens it before it becomes an order.
 
         ``reference_price`` is the bar-close price that triggered a signal
         (carried through to fills for zero-parity across backtest/replay/
-        paper); 0.0 means "use the live LTP".
+        paper); 0.0 means "use the live LTP". ``order_type`` lets the
+        strategy express fill intent (LIMIT at bar close, or MARKET).
         """
         if reference_price:
             metadata["reference_price"] = reference_price
         signal = SignalGeneratedEvent(
             symbol=symbol, exchange=exchange, side=side, quantity=quantity,
-            price=price, strategy=self.name, metadata=metadata, ts=self.ctx.now(),
+            price=price, order_type=order_type, strategy=self.name,
+            metadata=metadata, ts=self.ctx.now(),
         )
         self.ctx.bus.publish(signal)
         return signal

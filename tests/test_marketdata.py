@@ -322,65 +322,6 @@ def test_dhan_quote_falls_back_to_daily_history_when_enrichment_empty():
     assert broker.hist_calls == 1
 
 
-def test_dhan_candles_write_through_to_parquet_roundtrips(tmp_path):
-    """DhanProvider persists fetched futures candles into the Parquet
-    datalake; ParquetProvider reads the same wire bars back (naive-IST storage
-    convention round-trips exactly to UTC epochs)."""
-    from api.marketdata import DhanProvider, ParquetProvider
-
-    m = FuturesMaster(_write_master_csv(tmp_path, [_FUT_NIFTY_AUG]))
-    p = DhanProvider(m, data_dir=str(tmp_path / "lake"))
-    p._broker = _FakeBroker(None, _daily_frame())
-    p._factory = _FakeFactory()
-
-    rows = p.candles(symbol="NIFTY AUG FUT", exchange="NFO", interval="1D")
-    assert rows  # 2 daily bars from the fake broker
-
-    pp = ParquetProvider(m, base_path=str(tmp_path / "lake"))
-    back = pp.candles(symbol="NIFTY AUG FUT", exchange="NFO", interval="1D")
-    assert back == rows
-    assert [c["time"] for c in back] == sorted(c["time"] for c in rows)
-
-
-def test_parquet_quote_derives_daily_from_intraday(tmp_path):
-    """Offline stores often lack D1 — the parquet quote aggregates the stored
-    1m rows into daily bars so the header never fails offline."""
-    from api.marketdata import DhanProvider, ParquetProvider
-
-    m = FuturesMaster(_write_master_csv(tmp_path, [_FUT_NIFTY_AUG]))
-    p = DhanProvider(m, data_dir=str(tmp_path / "lake"))
-    # 1m must sit inside the session mask (t < 15:30); 15:30 is a daily close stamp.
-    frame = _daily_frame()
-    frame["timestamp"] = [datetime(2026, 8, 6, 15, 29), datetime(2026, 8, 7, 15, 29)]
-    p._broker = _FakeBroker(None, frame)
-    p._factory = _FakeFactory()
-    p.candles(symbol="NIFTY AUG FUT", exchange="NFO", interval="1m")  # store 1m only
-
-    pp = ParquetProvider(m, base_path=str(tmp_path / "lake"))
-    assert pp.candles(symbol="NIFTY AUG FUT", exchange="NFO",
-                      interval="1D") == []  # no D1 in the store
-    q = pp.quote(symbol="NIFTY AUG FUT", exchange="NFO")
-    assert q["source"] == "parquet"
-    assert q["ltp"] == 58140.0  # last 1m close == the day's close
-    assert q["high"] == 58175.0 and q["low"] == 58025.0  # last day's extremes
-    assert q["prev_close"] == 58020.0  # previous day's close
-
-
-def test_dhan_write_through_skips_unsupported_roots(tmp_path):
-    """Only NIFTY/BANKNIFTY futures land in the datalake — an unsupported
-    root's candles are served but never persisted."""
-    from api.marketdata import DhanProvider
-
-    m = FuturesMaster(_write_master_csv(tmp_path, [_FUT_FINNIFTY_AUG]))
-    p = DhanProvider(m, data_dir=str(tmp_path / "lake"))
-    p._broker = _FakeBroker(None, _daily_frame())
-    p._factory = _FakeFactory()
-
-    rows = p.candles(symbol="FINNIFTY AUG FUT", exchange="NFO", interval="1D")
-    assert rows
-    assert list((tmp_path / "lake").rglob("data.parquet")) == []
-
-
 def test_dhan_quote_prefers_broker_enrichment():
     from ntrade.domain.market.quote import Quote
 

@@ -56,11 +56,17 @@ class LiveCandlePump:
         self._loop: asyncio.AbstractEventLoop | None = None
         # True when live bars must come from broker ticks (dhan), not RNG.
         self._real_feed = False
+        self._stopped = False  # <-- added: prevents reconnect after pump.stop()
         self._feed = None
         self._sec_map: dict = {}
         self._tick_listeners: list[Callable[[str, str, float, int, datetime], None]] = []
         self._quote_listeners: list = []
         self._desired_wires: list = []
+        # Feed liveness — MarketFeed can sit in CLOSE_WAIT with no on_close.
+        # Subscribe must restart when no payload arrives for this long (s).
+        self._last_feed_msg_at: float | None = None
+        self._feed_started_at: float | None = None
+        self._feed_error: str | None = None
 
     # ------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -95,13 +101,8 @@ class LiveCandlePump:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        feed = self._feed
-        self._feed = None
-        if feed is not None:
-            try:
-                feed.close_connection()
-            except Exception:
-                pass
+        self._stopped = True  # <-- added
+        self._close_feed()
 
     # ------------------------------------------------------------ clients
     def add_client(self, ws: WebSocket) -> None:
@@ -111,7 +112,9 @@ class LiveCandlePump:
         self._clients.discard(ws)
 
     # ------------------------------------------------------------ subs
-    def subscribe(self, symbol: str, exchange: str, interval: str) -> dict:
+    def subscribe(self, symbol: str, exchange: str, interval: str,
+                   strategy: str | None = None, strategy_params: dict | None = None,
+                   tick_size: float | None = None) -> dict:
         symbol = symbol.strip().upper()
         exchange = str(exchange or "NFO").upper()
         if not self.enabled:
@@ -131,16 +134,28 @@ class LiveCandlePump:
         state["exchange"] = exchange
         state["interval"] = interval
         state["span_s"] = _SPAN_MIN.get(interval, 1) * 60
+        # Live overlay context — same pipeline the chart + paper use.
+        state["strategy"] = strategy
+        state["strategy_params"] = strategy_params
+        state["tick_size"] = tick_size
+        feed_ok = True
         if self._real_feed and self._service.name == "dhan":
-            self._ensure_dhan_sub(symbol, exchange)
+            feed_ok = self._ensure_dhan_sub(symbol, exchange)
         now = self._clock()
         open_ = is_market_open(exchange, now)
-        return {
+        if not open_:
+            status, reason = "off", f"{exchange} market closed"
+        elif not feed_ok:
+            status, reason = "off", self._feed_error or "dhan feed not connected"
+        else:
+            status, reason = "streaming", None
+        out = {
             "symbol": symbol, "exchange": exchange, "interval": interval,
-            "status": "streaming" if open_ else "off",
-            "source": self._service.name,
-            **({} if open_ else {"reason": f"{exchange} market closed"}),
+            "status": status, "source": self._service.name,
         }
+        if reason:
+            out["reason"] = reason
+        return out
 
     def unsubscribe(self, symbol: str) -> bool:
         return self._subs.pop(symbol.strip().upper(), None) is not None
@@ -155,6 +170,7 @@ class LiveCandlePump:
             "bar": None,
             "last_tick": None,
             "stale_emitted": False,
+            "feed_stale": False,
         }
 
     # ------------------------------------------------------------ pump loop
@@ -175,12 +191,14 @@ class LiveCandlePump:
                 age = (now - last).total_seconds()
                 if age > self._STALE_S and not state.get("stale_emitted"):
                     state["stale_emitted"] = True
+                    state["feed_stale"] = True
                     await self._broadcast({"type": "live_status", "symbol": symbol,
                                            "exchange": state["exchange"], "status": "stale",
                                            "source": self._service.name,
                                            "reason": f"no ticks for {int(age)}s"})
                 elif age <= self._STALE_S and state.get("stale_emitted"):
                     state["stale_emitted"] = False
+                    state["feed_stale"] = False
                     await self._broadcast({"type": "live_status", "symbol": symbol,
                                            "exchange": state["exchange"], "status": "streaming",
                                            "source": self._service.name})
@@ -244,8 +262,13 @@ class LiveCandlePump:
         session_start = datetime.combine(now.date(), open_t, tzinfo=IST)
         elapsed = max((now - session_start).total_seconds(), 0.0)
         bar_start = int(session_start.timestamp()) + (int(elapsed) // span_s) * span_s
+        # P0-2: reject out-of-order ticks — if this tick's bar window is before
+        # the current bar's start, it's stale and would corrupt OHLCV
+        prev_bar_start = state.get("bar_start")
+        if prev_bar_start is not None and bar_start < prev_bar_start:
+            return None
         bar = state["bar"]
-        if bar is None or bar_start != state["bar_start"]:
+        if bar is None or bar_start != prev_bar_start:
             completed = state["bar"]
             bar = {"time": bar_start, "open": price, "high": price,
                    "low": price, "close": price, "volume": 0}
@@ -253,6 +276,7 @@ class LiveCandlePump:
             state["bar"] = bar
             if completed is not None:
                 self._persist_bar(state, completed)
+                self._emit_overlays(state, completed)
         bar["high"] = max(bar["high"], price)
         bar["low"] = min(bar["low"], price)
         bar["close"] = price
@@ -266,17 +290,88 @@ class LiveCandlePump:
             "ts": now.isoformat(),
         }
 
+    # ponytail: overlay recompute is bounded to completed-bar events (1m ->
+    # once/min/symbol). If many symbols subscribe, raise _OVERLAY_LIMIT or
+    # throttle to <=1 Hz; the window fetch (last N candles) is O(N) parquet.
+    _OVERLAY_WINDOW = 240
+
+    def _emit_overlays(self, state: dict, completed_bar: dict) -> None:
+        """Recompute overlays for a symbol after a candle closes and broadcast.
+
+        Reads the trailing window from the parquet store (append the just-
+        closed bar so it's included), runs the OverlayPipeline, and emits a
+        single ``overlays`` message. Cheap, gated to bar closes only.
+        """
+        try:
+            from ntrade.analytics.overlay_pipeline import build_overlays
+            candles = self._service.candles(
+                symbol=state["symbol"], exchange=state["exchange"],
+                interval=state["interval"], limit=self._OVERLAY_WINDOW)
+            candles = candles + [{
+                "time": int(completed_bar["time"]),
+                "open": float(completed_bar["open"]),
+                "high": float(completed_bar["high"]),
+                "low": float(completed_bar["low"]),
+                "close": float(completed_bar["close"]),
+                "volume": float(completed_bar.get("volume", 0)),
+            }]
+            payload = build_overlays(
+                candles, symbol=state["symbol"], exchange=state["exchange"],
+                interval=state["interval"], strategy_id=state.get("strategy"),
+                strategy_params=state.get("strategy_params"),
+                tick_size=state.get("tick_size"),
+            ).to_dict()
+            self._emit({
+                "type": "overlays",
+                "symbol": state["symbol"],
+                "exchange": state["exchange"],
+                "interval": state["interval"],
+                "overlays": payload["overlays"],
+                "strategy": payload["strategy"],
+                "ts": completed_bar.get("time"),
+            })
+        except Exception:  # noqa: BLE001 — overlays are best-effort live extras
+            log.exception("live overlay recompute failed for %s", state["symbol"])
+
     def _emit(self, msg: dict) -> None:
         loop = self._loop
         if loop is None or not loop.is_running():
             return
         asyncio.run_coroutine_threadsafe(self._broadcast(msg), loop)
 
-    def _ensure_dhan_sub(self, symbol: str, exchange: str) -> None:
+    # CLOSE_WAIT zombie feeds produce no on_close; restart if silent this long.
+    _FEED_SILENT_RESTART_S = 30.0
+
+    def _feed_needs_restart(self) -> bool:
+        import time as _time
+        if self._feed is None:
+            return True
+        now = _time.time()
+        last = self._last_feed_msg_at
+        if last is not None:
+            return (now - last) > self._FEED_SILENT_RESTART_S
+        started = self._feed_started_at
+        return started is not None and (now - started) > self._FEED_SILENT_RESTART_S
+
+    def _close_feed(self) -> None:
+        feed = self._feed
+        self._feed = None
+        self._feed_started_at = None
+        if feed is None:
+            return
+        try:
+            feed.close_connection()
+        except Exception:  # noqa: BLE001 — best-effort teardown of a zombie
+            pass
+
+    def _ensure_dhan_sub(self, symbol: str, exchange: str) -> bool:
+        """Subscribe ``symbol`` on the Dhan MarketFeed. Returns True if the
+        feed object is up after this call (not a guarantee of ticks yet)."""
         contract = self._service.master.resolve(symbol)
         if contract is None or not contract.security_id:
-            log.warning("no security_id for %s — live ticks skipped", symbol)
-            return
+            self._feed_error = f"no security_id for {symbol}"
+            log.warning("%s — live ticks skipped", self._feed_error)
+            return False
         sec = int(contract.security_id)
         self._sec_map[sec] = (symbol, exchange)
         self._sec_map[str(sec)] = (symbol, exchange)
@@ -287,26 +382,38 @@ class LiveCandlePump:
         elif wire not in self._desired_wires:
             self._desired_wires.append(wire)
         try:
-            if self._feed is None:
+            if self._feed_needs_restart():
+                # Drop zombie CLOSE_WAIT sockets that never fire on_close.
+                if self._feed is not None:
+                    log.warning("dhan live feed silent — forcing restart for %s", symbol)
+                self._close_feed()
                 # dhanhq MarketFeed.__init__ calls set_event_loop — must not
                 # run on the FastAPI asyncio thread.
                 err: list[BaseException] = []
                 def boot():
                     try:
-                        self._start_dhan_feed([wire])
+                        self._start_dhan_feed(list(self._desired_wires))
                     except BaseException as exc:
                         err.append(exc)
                 t = threading.Thread(target=boot, daemon=True)
                 t.start()
-                t.join(timeout=5)
+                t.join(timeout=8)
                 if err:
                     raise err[0]
+                if self._feed is None:
+                    raise RuntimeError("MarketFeed boot timed out")
             else:
                 self._feed.subscribe_symbols([wire])
+            self._feed_error = None
+            return True
         except Exception as exc:
+            self._feed_error = str(exc)
+            self._close_feed()
             log.warning("dhan live feed subscribe failed for %s: %s", symbol, exc)
+            return False
 
     def _start_dhan_feed(self, instruments: list) -> None:
+        import time as _time
         from dhanhq import DhanContext, MarketFeed
         client_id, token = self._service.provider.feed_auth()
         self._feed = MarketFeed(
@@ -315,34 +422,56 @@ class LiveCandlePump:
             on_error=self._on_feed_closed,
             on_close=self._on_feed_closed,
         )
+        self._feed_started_at = _time.time()
+        self._last_feed_msg_at = None
         self._feed.start()
 
     def _on_dhan_message(self, _instance, payload) -> None:
-        from ntrade.events.market import TickEvent
+        import time as _time
+        from ntrade.events.market import TickEvent, QuoteEvent
         from ntrade.sources.dhan_feed import dhan_payload_to_events
 
+        self._last_feed_msg_at = _time.time()
         for event in dhan_payload_to_events(payload, self._sec_map, self._clock()):
             if isinstance(event, TickEvent) and event.price > 0:
                 self.ingest_tick(event.symbol, event.price, event.quantity)
+            elif isinstance(event, QuoteEvent):
+                for fn in self._quote_listeners:
+                    try:
+                        fn(event)
+                    except Exception:  # noqa: BLE001
+                        log.exception("quote listener failed")
 
     def _on_feed_closed(self, _f=None, _err=None) -> None:
-        log.warning("dhan live feed lost — scheduling reconnect")
+        log.warning("dhan live feed lost — scheduling reconnect (%s)", _err)
         self._feed = None
+        self._feed_started_at = None
+        self._feed_error = f"feed closed: {_err}" if _err else "feed closed"
+        if self._stopped:  # <-- added: pump was explicitly stopped
+            return
         if not self._desired_wires:
             return
         threading.Thread(target=self._reconnect, daemon=True).start()
 
     def _reconnect(self) -> None:
         import time as _time
-        for _ in range(10):  # 5s * 10 ≈ 50s of retries
+        if self._stopped:  # <-- added: pump was explicitly stopped
+            return
+        # Keep trying — a 50s give-up left the UI claiming "streaming" with
+        # a dead CLOSE_WAIT socket until process restart (observed 2026-08-14).
+        delay = 2.0
+        while not self._stopped:
             if self._feed is not None:
                 return
             try:
                 self._start_dhan_feed(list(self._desired_wires))
+                self._feed_error = None
                 return
             except Exception as exc:  # noqa: BLE001
+                self._feed_error = str(exc)
                 log.warning("dhan feed reconnect failed: %s", exc)
-            _time.sleep(5.0)
+            _time.sleep(delay)
+            delay = min(delay * 1.5, 30.0)
 
     async def _broadcast(self, msg: dict) -> None:
         dead: list[WebSocket] = []
@@ -382,6 +511,9 @@ async def ws_market(ws: WebSocket) -> None:
                         symbol,
                         str(msg.get("exchange", "NFO")).upper(),
                         str(msg.get("interval", "1m")),
+                        strategy=msg.get("strategy"),
+                        strategy_params=msg.get("strategy_params"),
+                        tick_size=msg.get("tick_size"),
                     )
                 except ValueError as exc:
                     await ws.send_json({"type": "error", "detail": str(exc)})

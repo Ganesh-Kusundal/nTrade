@@ -16,6 +16,7 @@ class SignalGeneratedEvent(Event):
     side: str            # BUY | SELL
     quantity: int
     price: float = 0.0
+    order_type: str = "MARKET"
     strategy: str = ""
     metadata: dict = field(default_factory=dict)
 

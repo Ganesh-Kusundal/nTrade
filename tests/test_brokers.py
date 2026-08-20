@@ -13,15 +13,14 @@ def test_paper_broker_quote_and_depth():
     rel = Equity("RELIANCE", broker=broker)
     quote = broker.get_quote(rel)
     assert quote.ltp == 2500.0
-    depth = broker.get_depth(rel)
-    assert depth.best_bid() is not None
-    assert depth.best_ask() is not None
-    assert depth.bid_ask_imbalance() != 0.0 or True  # deterministic range check
+    # Paper no longer fabricates depth — the base adapter returns None.
+    assert broker.get_depth(rel) is None
 
 
 def test_paper_broker_history_seeding():
     broker = PaperBroker(seed=7)
     rel = Equity("RELIANCE", broker=broker)
+    broker.seed_history("RELIANCE", rows=200, timeframe="15m")
     df = broker.get_historical(rel, timeframe="15m")
     assert len(df) == 200
     assert {"timestamp", "open", "high", "low", "close", "volume"} <= set(df.columns)

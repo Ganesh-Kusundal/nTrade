@@ -25,6 +25,7 @@ def test_session_is_callable():
 
 def test_statistics():
     broker = PaperBroker(seed=3)
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     rel._history.fetch(timeframe="5m")
     stats = rel.analytics.statistics()
@@ -40,6 +41,7 @@ def test_statistics_empty():
 
 def test_candles_ticks_stream_accessors():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     rel._history.fetch(timeframe="5m")
     assert len(rel.market.candles()) == 200
@@ -51,6 +53,7 @@ def test_candles_ticks_stream_accessors():
 
 def test_supertrend_behavior():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     rel._history.fetch(timeframe="5m")
     signal = rel.analytics.supertrend()
@@ -71,6 +74,7 @@ def test_detect_imbalance():
 
 def test_detect_breakout():
     broker = PaperBroker(seed=5)
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     df = rel._history.fetch(timeframe="5m").df.copy()
     # Force the last close above everything before it.
@@ -101,6 +105,7 @@ def test_future_rollover_links_underlying():
 
 def test_future_continuous():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE FUT", timeframe="5m")
     spot = Equity("RELIANCE", broker=broker)
     fut = Future("RELIANCE FUT", underlying="RELIANCE", expiry=date.today() + timedelta(days=30), broker=broker)
     fut.set_underlying(spot)
@@ -113,6 +118,7 @@ def test_future_continuous():
 
 def test_history_indicators_method():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     rel._history.fetch(timeframe="5m")
     bundle = rel._history.indicators()

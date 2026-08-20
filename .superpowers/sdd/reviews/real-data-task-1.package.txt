@@ -1,0 +1,155 @@
+=== COMMITS ===
+4f16147 feat(api): fail-loud provider selection — synthetic is no longer the default
+
+=== STAT ===
+ api/__main__.py          | 14 ++++++++++----
+ api/marketdata.py        | 15 ++++++++++++---
+ tests/test_marketdata.py | 10 ++++++++++
+ 3 files changed, 32 insertions(+), 7 deletions(-)
+
+=== DIFF ===
+diff --git a/api/__main__.py b/api/__main__.py
+index 9f18b8c..3401ac4 100644
+--- a/api/__main__.py
++++ b/api/__main__.py
+@@ -1,15 +1,15 @@
+ """``python -m api`` — run the market API server locally.
+ 
+ Provider selection: ``--provider synthetic|dhan|parquet`` (env
+-``NTRADE_MARKET_PROVIDER`` works too; default ``synthetic`` so the server is
+-usable offline). The built UI is served from ``ui/dist`` when present.
++``NTRADE_MARKET_PROVIDER`` works too; a provider is required — there is no
++silent synthetic default). The built UI is served from ``ui/dist`` when present.
+ 
+ Live streaming is ON by default and gated by NSE/MCX session hours
+ (:mod:`api.market_hours`). Pass ``--no-live-stream`` for historical-only.
+ """
+ 
+ from __future__ import annotations
+ 
+ import argparse
+ import os
+ 
+@@ -20,34 +20,40 @@ def _env_flag(name: str, default: bool = False) -> bool:
+     raw = os.environ.get(name)
+     if raw is None or raw.strip() == "":
+         return default
+     return raw.strip().lower() in ("1", "true", "yes", "on")
+ 
+ 
+ def main() -> None:
+     parser = argparse.ArgumentParser(description="nTrade market API server")
+     parser.add_argument(
+         "--provider",
+-        default=os.environ.get("NTRADE_MARKET_PROVIDER", "synthetic"),
++        default=os.environ.get("NTRADE_MARKET_PROVIDER", ""),
+         choices=("synthetic", "dhan", "parquet"),
+-        help="market data provider (default: synthetic, offline-safe)",
++        help="market data provider (required unless NTRADE_MARKET_PROVIDER is set)",
+     )
+     parser.add_argument("--host", default="127.0.0.1")
+     parser.add_argument("--port", type=int, default=8000)
+     parser.add_argument(
+         "--live-stream",
+         action=argparse.BooleanOptionalAction,
+         default=_env_flag("NTRADE_LIVE_STREAM", default=True),
+         help="enable live candle pump (default: on; still gated by market hours)",
+     )
+     args = parser.parse_args()
+ 
++    if not args.provider:
++        parser.error(
++            "no market provider configured: pass --provider (dhan|parquet|synthetic) "
++            "or set NTRADE_MARKET_PROVIDER"
++        )
++
+     from api.server import create_app
+ 
+     uvicorn.run(
+         create_app(args.provider, live_stream=args.live_stream),
+         host=args.host, port=args.port,
+     )
+ 
+ 
+ if __name__ == "__main__":
+     main()
+diff --git a/api/marketdata.py b/api/marketdata.py
+index bca5aeb..d10d277 100644
+--- a/api/marketdata.py
++++ b/api/marketdata.py
+@@ -867,28 +867,37 @@ class MarketDataService:
+ 
+     def quote(self, *, symbol: str, exchange: str = Exchange.DERIVATIVES) -> dict:
+         return self.provider.quote(symbol=symbol, exchange=exchange)
+ 
+ 
+ def build_service(provider: str | None = None, env: dict | None = None,
+                   master: FuturesMaster | None = None) -> MarketDataService:
+     """Build a service for ``provider`` (env ``NTRADE_MARKET_PROVIDER``).
+ 
+     Supported: ``dhan`` (live), ``parquet`` (offline store), ``synthetic``
+-    (deterministic offline — the safe default).
++    (deterministic offline — explicit opt-in only, never a silent default).
++
++    Raises :class:`MarketDataError` when no provider is configured so the
++    server can never silently serve fabricated data.
+     """
+-    name = (provider or os.environ.get("NTRADE_MARKET_PROVIDER") or "synthetic").strip().lower()
++    env = env if env is not None else os.environ
++    name = (provider or env.get("NTRADE_MARKET_PROVIDER") or "").strip().lower()
++    if not name:
++        raise MarketDataError(
++            "no market provider configured: set NTRADE_MARKET_PROVIDER or "
++            "pass --provider (dhan|parquet|synthetic)"
++        )
+     master = master or FuturesMaster()
+     if name == "dhan":
+         service = MarketDataService(DhanProvider(master, env=env), master=master)
+     elif name == "parquet":
+-        base = os.environ.get("NTRADE_DATA_DIR", "data/ohlcv")
++        base = env.get("NTRADE_DATA_DIR", "data/ohlcv")
+         service = MarketDataService(ParquetProvider(master, base_path=base), master=master)
+     elif name == "synthetic":
+         service = MarketDataService(SyntheticProvider(master), master=master)
+     else:
+         raise MarketDataError(
+             f"unknown market provider {name!r} (use dhan|parquet|synthetic)"
+         )
+     return service
+ 
+ 
+diff --git a/tests/test_marketdata.py b/tests/test_marketdata.py
+index a521f0f..1ef970b 100644
+--- a/tests/test_marketdata.py
++++ b/tests/test_marketdata.py
+@@ -516,20 +516,30 @@ def test_build_service_synthetic_default():
+     d = svc.describe()
+     assert d["provider"] == "synthetic"
+     assert d["live"] is False
+ 
+ 
+ def test_build_service_unknown_provider():
+     with pytest.raises(MarketDataError):
+         build_service("bogus")
+ 
+ 
++def test_build_service_requires_provider(monkeypatch):
++    monkeypatch.delenv("NTRADE_MARKET_PROVIDER", raising=False)
++    with pytest.raises(MarketDataError):
++        build_service()
++
++def test_build_service_from_env(monkeypatch):
++    monkeypatch.setenv("NTRADE_MARKET_PROVIDER", "synthetic")
++    assert build_service().name == "synthetic"
++
++
+ def test_service_roots_only_nifty_banknifty(tmp_path):
+     """The terminal's root list shows NIFTY/BANKNIFTY only, even when the
+     master carries more index futures (FINNIFTY, ...)."""
+     m = FuturesMaster(_write_master_csv(
+         tmp_path, [_FUT_NIFTY_AUG, _FUT_BANK_AUG, _FUT_FINNIFTY_AUG]))
+     svc = build_service("synthetic", master=m)
+     assert [r["root"] for r in svc.roots()] == ["BANKNIFTY", "NIFTY"]
+ 
+ 
+ def test_service_roots_contracts_and_contract_fields(tmp_path):

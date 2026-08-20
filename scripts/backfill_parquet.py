@@ -93,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="Path to .env for Dhan auth (default: .env)")
     p.add_argument("--data-root", default=None,
                    help="Parquet base path (default: data/ — store lives at data/ohlcv/)")
+    p.add_argument("--out-dir", default="data/ohlcv_synthetic",
+                   help="Synthetic data output dir (default: data/ohlcv_synthetic)")
     p.add_argument("--batch-size", type=int, default=20,
                    help="Symbols to fetch per batch (default: 20)")
     p.add_argument("--workers", type=int, default=4,
@@ -128,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ----- init broker + store + fetcher ----------------------------------- #
     broker = _build_broker(args.broker, env_path=args.env)
-    data_root = Path(args.data_root) if args.data_root else Path("data")
+    data_root = Path(args.out_dir) if args.out_dir else Path("data")
     store = ParquetStorage(data_root)
     fetcher = ParallelHistoryFetcher(broker, max_workers=args.workers)
     gap_detector = GapDetector(store)
@@ -141,6 +143,13 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Seeding PaperBroker with synthetic 1-minute history for %d symbols",
                  len(instruments))
         days = (end - start).days
+        synthetic_dir = Path(args.out_dir) if args.out_dir else Path("data/ohlcv_synthetic")
+        synthetic_dir.mkdir(parents=True, exist_ok=True)
+        import warnings
+        warnings.warn(
+            "Synthetic data writes to `data/ohlcv_synthetic` — never mix with `data/ohlcv`",
+            UserWarning,
+        )
         for inst in instruments:
             broker.seed_history(inst.symbol, rows=days * 390, timeframe="1m", start_price=100.0)
 

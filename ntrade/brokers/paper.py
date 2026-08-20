@@ -14,7 +14,6 @@ import pandas as pd
 from ntrade.brokers.base import BrokerAdapter
 from ntrade.domain.market.candles import CandleSeries
 from ntrade.domain.portfolio import Position
-from ntrade.domain.market.depth import DepthLevel, MarketDepth
 from ntrade.domain.market.quote import Quote, Tick
 from ntrade.domain.orders.book import OrderBook, OrderBookEntry, TradeBook, TradeBookEntry
 from ntrade.domain.orders.order import Order, OrderStatus, OrderType
@@ -39,11 +38,13 @@ class PaperBroker(BrokerAdapter):
     # ------------------------------------------------------------- seeding
     def seed_quote(self, symbol: str, ltp: float, **kw) -> Quote:
         q = Quote(ltp=ltp, bid=ltp - 0.05, ask=ltp + 0.05, prev_close=ltp, timestamp=self._ts(), **kw)
-        self._quotes[symbol] = q
+        self._quotes[symbol.strip().upper()] = q
         return q
 
     def seed_history(self, symbol: str, rows: int = 200, timeframe: str = "5m",
                      start_price: float = 100.0) -> pd.DataFrame:
+        """Synthetic history for tests/replays — explicitly seeded only. Never
+        auto-generated on a read path (data reads must stay honest)."""
         end = self._ts()
         start = end - timedelta(minutes=5 * rows)
         ts = [start + timedelta(minutes=5 * i) for i in range(rows)]
@@ -65,28 +66,22 @@ class PaperBroker(BrokerAdapter):
         return self
 
     def get_quote(self, instrument) -> Quote:
-        """Return the seeded/live quote for a symbol, auto-minting a 100.0
-        placeholder when none exists.
-
-        NOTE: the auto-minted quote is for DATA READS only (history/depth/
-        chain construction and static tests). It is NOT a real market price —
-        order fills must never use it (see ``place_order``).
-        """
-        q = self._quotes.get(instrument.symbol)
+        """Real quote only — the feed's seeded/quote-read price. Raises instead
+        of fabricating a 100.0 placeholder: paper has no market price until a
+        real one exists (see ``place_order`` — never fill a phantom quote)."""
+        symbol = instrument if isinstance(instrument, str) else instrument.symbol
+        q = self._quotes.get(symbol.strip().upper())
         if q is None:
-            q = self.seed_quote(instrument.symbol, 100.0)
+            raise ValueError(
+                f"no live quote for {symbol} (paper requires a real feed)")
         return q
-
-    def get_depth(self, instrument) -> MarketDepth:
-        q = self.get_quote(instrument)
-        bids = tuple(DepthLevel(price=q.ltp - i * 0.05, quantity=self._random.randint(100, 999)) for i in range(1, 6))
-        asks = tuple(DepthLevel(price=q.ltp + i * 0.05, quantity=self._random.randint(100, 999)) for i in range(1, 6))
-        return MarketDepth(symbol=instrument.symbol, bids=bids, asks=asks, timestamp=self._ts())
 
     def get_historical(self, instrument, timeframe="5m", days=None, start=None, end=None) -> CandleSeries:
         key = f"{instrument.symbol}:{timeframe}"
         if key not in self._history:
-            self.seed_history(instrument.symbol, timeframe=timeframe)
+            raise ValueError(
+                f"no seeded history for {instrument.symbol} ({timeframe}); "
+                f"paper requires an explicit seed_history (synthetic data reads)")
         df = self._history[key]
         if start is not None:
             df = df[df["timestamp"] >= start]
@@ -122,21 +117,18 @@ class PaperBroker(BrokerAdapter):
         # signal rather than the (possibly contaminated) next-bar LTP.
         live = getattr(order.instrument, "_quote", None)
         live_ltp = getattr(live, "ltp", 0.0) or 0.0
-        seeded = self._quotes.get(order.instrument.symbol)
+        seated = self._quotes.get(order.instrument.symbol.strip().upper())
         if order.order_type.value != "MARKET" and order.price:
             fill_price = order.price
         elif order.reference_price > 0.0:
             fill_price = order.reference_price  # bar-close reference (zero-parity)
         elif live_ltp > 0.0:
             fill_price = live_ltp
-        elif seeded is not None:
-            fill_price = seeded.ltp  # explicitly seeded quote (real price)
+        elif seated is not None:
+            fill_price = seated.ltp  # explicitly seeded quote (real price)
         else:
-            # Never fill against an auto-minted quote: get_quote mints a 100.0
-            # placeholder for data reads, and a MARKET fill from it would be a
-            # phantom round trip polluting paper PnL and the pre-deploy gate
-            # evidence. A MARKET order needs a real market price (live LTP,
-            # bar-close reference_price, or a deliberately seeded quote).
+            # Never fill with no price: get_quote now raises, so a MARKET
+            # fill with no live/reference/seeded price is a phantom fill.
             raise ValueError(
                 f"no market price available for paper MARKET order on "
                 f"{order.instrument.symbol}")

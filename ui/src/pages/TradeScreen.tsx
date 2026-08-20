@@ -1,22 +1,18 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { shallow } from 'zustand/shallow'
 import { MarketSocket, api } from '../api/client'
-import { ChartPanel, type IndicatorToggles, type StrategyOverlay } from '../components/ChartPanel'
-import { EmptyState, ErrorState, LoadingState } from '../components/ChartStates'
+import { ChartPanel, type IndicatorToggles } from '../components/ChartPanel'
+import { BrokerErrorNotice, EmptyState, ErrorState, FeedNotice, LoadingState, ReplayReadyState } from '../components/ChartStates'
 import { ContractSelector } from '../components/ContractSelector'
 import { IntervalSelector } from '../components/IntervalSelector'
 import { ModeToggle } from '../components/ModeToggle'
 import { SymbolSelector } from '../components/SymbolSelector'
 import { TerminalSidePanel } from '../components/TerminalSidePanel'
 import { ReplayControls } from '../components/ReplayControls'
-import { MORNING_VAH_VAL_TUNED } from '../lib/morningVahVal'
 import { feedKind, type FeedKind } from '../lib/feedStatus'
-import { strategies } from '../lib/registry'
-import { strategySession } from '../lib/marketHours'
-import { useCandles } from '../hooks/useCandles'
+import { useChart } from '../hooks/useChart'
 import { useReplay } from '../hooks/useReplay'
 import {
-  coalesceLatest,
   lastNDays,
   mergeByTime,
   mergeLive,
@@ -27,18 +23,12 @@ import {
 import { CHART_DAYS, fmtISTInput, istInputToEpoch } from '../lib/istTime'
 import { usePersistedState } from '../lib/storage'
 import { useChartStore } from '../store/chartStore'
-import type { Candle, WsMessage } from '../types/market'
+import type { Candle, ChartOverlays, StrategyPayload, WsMessage } from '../types/market'
 
 const STRATEGY_IDS = [
   { id: 'morning_vah_val', label: 'VAH/VAL', sub: 'Mukul · 09:30–11:00' },
   { id: 'valentini', label: 'Valentini', sub: 'Fabio · VWAP + absorption' },
 ] as const
-
-const INDICATOR_UI_KEYS: Record<string, keyof IndicatorToggles> = {
-  vwap: 'vwap',
-  volume_profile: 'volumeProfile',
-  absorptions: 'absorptions',
-}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -51,7 +41,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 export const TradeScreen = memo(function TradeScreen() {
   const {
-    roots, contracts, root, contract, interval, mode, quote, provider, wsStatus,
+    roots, contracts, root, contract, interval, mode, quote, quoteError, provider, wsStatus,
     rootsError, contractsError, selectRoot, selectContract, selectInterval, setMode,
     setWsStatus: setWsStatusStore,
   } = useChartStore(
@@ -64,6 +54,7 @@ export const TradeScreen = memo(function TradeScreen() {
       interval: s.interval,
       mode: s.mode,
       quote: s.quote,
+      quoteError: s.quoteError,
       wsStatus: s.wsStatus,
       rootsError: s.rootsError,
       contractsError: s.contractsError,
@@ -79,12 +70,19 @@ export const TradeScreen = memo(function TradeScreen() {
   // --- live WebSocket -----------------------------------------------
   const socketRef = useRef<MarketSocket | null>(null)
   const [liveCandles, setLiveCandles] = useState<Candle[]>([])
+  const [liveOverlays, setLiveOverlays] = useState<ChartOverlays | null>(null)
+  const [liveStrategy, setLiveStrategy] = useState<StrategyPayload | null>(null)
 
   const symbol = contract?.symbol ?? ''
+  // Strategy selection lives above the WS effect + chart fetch so the live
+  // subscribe and the historical chart request both read the current id.
+  const [strategyId, setStrategyId] = usePersistedState<string>('ntrade.strategy', 'morning_vah_val')
   const symbolRef = useRef(symbol)
   const modeRef = useRef(mode)
+  const strategyRef = useRef(strategyId)
   symbolRef.current = symbol
   modeRef.current = mode
+  strategyRef.current = strategyId
 
   useEffect(() => {
     const s = new MarketSocket()
@@ -92,10 +90,17 @@ export const TradeScreen = memo(function TradeScreen() {
     s.onStatus = (status) => {
       setWsStatusStore(status)
     }
-    const flush = coalesceLatest<Candle>((c) => setLiveCandles((prev) => mergeLive(prev, c)))
+    const flush = (c: Candle) => setLiveCandles((prev) => mergeLive(prev, c))
     s.onMessage((msg: WsMessage) => {
-      if (msg.type === 'candle' && msg.symbol === symbolRef.current && modeRef.current === 'live') {
+      if (msg.type !== 'candle' && msg.type !== 'overlays') return
+      if (msg.symbol !== symbolRef.current) return
+      if (msg.type === 'candle' && modeRef.current === 'live') {
         flush(msg.candle)
+      } else if (msg.type === 'overlays' && modeRef.current === 'live') {
+        // Same backend pipeline as /api/market/chart — fold in live patches so
+        // VWAP/VP/absorptions/strategy markers stay in lockstep with the feed.
+        setLiveOverlays(msg.overlays ?? null)
+        setLiveStrategy(msg.strategy ?? null)
       }
     })
     s.connect()
@@ -107,19 +112,26 @@ export const TradeScreen = memo(function TradeScreen() {
 
   useEffect(() => {
     if (mode !== 'live' || !symbol || interval === 'Range') return
-    socketRef.current?.subscribe(symbol, contract?.exchange ?? 'NFO', interval)
+    socketRef.current?.subscribe(symbol, contract?.exchange ?? 'NFO', interval, strategyRef.current, contract?.tick_size)
     return () => socketRef.current?.unsubscribe(symbol)
-  }, [mode, symbol, interval, contract?.exchange])
+  }, [mode, symbol, interval, contract?.exchange, contract?.tick_size, strategyId])
 
   useEffect(() => {
     setLiveCandles([])
+    setLiveOverlays(null)
+    setLiveStrategy(null)
   }, [symbol, interval, mode])
 
-  // --- historical candles + replay ----------------------------------
+  // --- historical chart (candles + every overlay + strategy) ----------
+  // Fetched from the backend's single calc path (/api/market/chart). The FE
+  // renders it verbatim — VWAP / volume profile / absorptions / strategy math
+  // is owned by the backend (zero-parity with paper/live). Range bars are
+  // built server-side too, so no client derivation remains.
   const chartDays = CHART_DAYS
   const [rangeTicks, setRangeTicks] = usePersistedState<number | null>('ntrade.rangeTicks', null)
-  const { candles, status, error, source, reload } = useCandles(
-    symbol, interval, contract?.tick_size, rangeTicks, contract?.exchange ?? 'NFO', chartDays,
+  const { candles, overlays, strategy, status, error, reason, source, reload } = useChart(
+    symbol, interval, contract?.exchange ?? 'NFO', strategyId, chartDays,
+    contract?.tick_size, rangeTicks,
   )
   const displayAll = useMemo(() => mergeByTime(candles, liveCandles), [candles, liveCandles])
 
@@ -193,8 +205,7 @@ export const TradeScreen = memo(function TradeScreen() {
     if (mode === 'replay') replay.dispatch({ type: 'reset' })
   }, [mode, symbol, interval, windowRange])
 
-  // --- strategy selection -------------------------------------------
-  const [strategyId, setStrategyId] = usePersistedState<string>('ntrade.strategy', 'morning_vah_val')
+  // --- indicator toggles --------------------------------------------
   const [indicatorsToggles, setIndicators] = usePersistedState<IndicatorToggles>('ntrade.indicators', {
     vwap: true,
     volumeProfile: true,
@@ -202,67 +213,25 @@ export const TradeScreen = memo(function TradeScreen() {
     strategy: true,
   })
 
-  // Turn on a strategy's required indicators when the strategy changes
-  // (never turn them off — the user controls that).
-  useEffect(() => {
-    const spec = strategies[strategyId]
-    if (!spec) return
-    setIndicators((cur) => {
-      const next = { ...cur } as IndicatorToggles
-      for (const key of spec.indicators) {
-        const uiKey = INDICATOR_UI_KEYS[key]
-        if (uiKey) next[uiKey] = true
-      }
-      next.strategy = true
-      return next
-    })
-  }, [strategyId, setIndicators])
-
   const displayed = mode === 'replay'
     ? visibleBars(windowed, replay.state.cursor, stepsPerBar, ticksByBar)
     : windowed
 
-  // Strategy runs on completed bars only. In live mode the in-progress bar is
-  // excluded so the state machine stays stable across intra-bar ticks.
-  const strategyCount = mode === 'replay'
-    ? Math.max(0, Math.floor(replay.state.cursor / Math.max(1, stepsPerBar)))
-    : liveCandles.length > 0 ? Math.max(0, windowed.length - 1) : windowed.length
-  const strategyCandles = useMemo(
-    () => windowed.slice(0, strategyCount),
-    [windowed, strategyCount],
-  )
-  // Backend-provided root list (MCX membership from the instrument master,
-  // not the hardcoded legacy set) — threaded into session math.
-  const rootList = useMemo(() => roots.map((r) => r.root), [roots])
-
-  // Liveness gate: in live mode the strategy overlay must only be computed
-  // (and the entry/exit machine trusted) while the feed is genuinely
-  // streaming. Stale/synthetic/offline candles must not silently drive it.
+  // Liveness gate: in live mode the strategy overlay is only trusted while
+  // the feed is genuinely streaming. Stale/synthetic/offline candles must not
+  // silently drive it — but the historical chart (server overlays from the
+  // last load) still renders so the user never sees a blank screen.
   const feed: FeedKind | null = provider
     ? feedKind(mode, provider.provider, provider.live ?? false, wsStatus, wsStatus === 'stale')
     : null
-  const liveIsLive = mode === 'live' && feed === 'streaming'
-  const showStaleOverlay = mode === 'live' && provider != null && feed !== 'streaming'
+  const showFeedNotice = mode === 'live' && provider != null && feed !== 'streaming'
 
-  const strategyResult = useMemo(
-    () => {
-      if (mode === 'live' && !liveIsLive) return {} as StrategyOverlay
-      const spec = strategies[strategyId]
-      if (!spec) return {} as StrategyOverlay
-      const session = strategySession(contract?.exchange, contract?.root ?? root, rootList)
-      const base = {
-        ...(spec.defaultParams ?? {}),
-        ...(strategyId === 'morning_vah_val' ? MORNING_VAH_VAL_TUNED : {}),
-      }
-      return spec.run(strategyCandles, {
-        sessionStart: session.start,
-        sessionEnd: session.end,
-        ...base,
-      }) as StrategyOverlay
-    },
-    [strategyCandles, strategyId, contract?.exchange, contract?.root, root, rootList,
-     mode, liveIsLive],
-  )
+  // Strategy markers come from the backend (single calc path). In live mode,
+  // prefer the latest WS overlay patch once streaming; otherwise the
+  // historical chart payload. While the feed is NOT streaming we still show
+  // the markers from the last chart load (display-only), never recompute them.
+  const strategyResult: StrategyPayload | null =
+    mode === 'live' ? (liveStrategy ?? strategy) : strategy
 
   useEffect(() => {
     if (mode !== 'replay') return
@@ -404,7 +373,7 @@ export const TradeScreen = memo(function TradeScreen() {
 
       {/* chart + side panel */}
       <div className="flex min-h-0 gap-3 flex-1">
-        <div className="min-w-0 flex-1 overflow-hidden">
+        <div className="relative min-w-0 flex-1 overflow-hidden">
           <ChartPanel
             candles={displayed}
             context={mode === 'replay' ? windowed : undefined}
@@ -412,7 +381,7 @@ export const TradeScreen = memo(function TradeScreen() {
             onIndicators={(key) =>
               setIndicators((s) => ({ ...s, [key]: !s[key] }))
             }
-            strategyCandles={strategyCandles}
+            overlays={mode === 'live' ? (liveOverlays ?? overlays) : overlays}
             strategy={strategyResult}
             symbol={contract?.symbol}
             interval={interval}
@@ -423,17 +392,25 @@ export const TradeScreen = memo(function TradeScreen() {
           {status === 'loading' && <LoadingState label={`Loading ${interval} candles…`} />}
           {status === 'error' && <ErrorState message={error ?? 'Unknown error'} onRetry={reload} />}
           {status === 'empty' && liveCandles.length === 0 && (
-            <EmptyState
-              title="No candles for this contract"
-              hint="The provider returned no data for the selected contract and interval. Try another interval or contract."
-            />
+            reason
+              ? <EmptyState
+                  title="No data from broker"
+                  hint={reason}
+                />
+              : <EmptyState
+                  title="No candles for this contract"
+                  hint="The provider returned no data for the selected contract and interval. Try another interval or contract."
+                />
           )}
-          {showStaleOverlay && (
-            <LoadingState
+          {showFeedNotice && status !== 'loading' && (
+            <FeedNotice
               label={feed === 'stale' ? 'Live feed stale — waiting for ticks…' : 'Live feed unavailable — historical only'}
             />
           )}
-          {showReplayReady && <LoadingState label="Replay armed — press Space to play" />}
+          {quoteError && status !== 'loading' && (
+            <BrokerErrorNotice message={quoteError} />
+          )}
+          {showReplayReady && <ReplayReadyState />}
         </div>
         <TerminalSidePanel
           quote={quote}
@@ -441,7 +418,7 @@ export const TradeScreen = memo(function TradeScreen() {
           symbol={symbol}
           exchange={exchange}
           strategyId={strategyId}
-          strategyResult={strategyResult as StrategyOverlay | null}
+          strategyResult={strategyResult}
           mode={mode}
         />
       </div>

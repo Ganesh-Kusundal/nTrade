@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 import pytest
 
@@ -23,7 +24,23 @@ _AS_OF = date(2026, 7, 31)  # last full cash session in the store
 def store() -> ParquetStorage:
     if not _STORE.exists():
         pytest.skip("parquet store missing")
-    return ParquetStorage("data")
+    s = ParquetStorage("data")
+    # This module integrates against REAL equity tape in the store. A data
+    # refresh that drops the equity 1m bars leaves nothing to screen, so skip
+    # instead of erroring (same pattern as the Dependencies/-guarded loader
+    # test): fail-closed behaviour is exercised by unit-level coverage.
+    con = duckdb.connect()
+    s.duckdb_scan(con, start="2020-01-01", end="2099-01-01")
+    n = con.execute(
+        """
+        SELECT COUNT(*) FROM ohlcv
+        WHERE kind = 'equity' AND timeframe = '1m'
+          AND timestamp::TIME = TIME '09:45:00'
+        """
+    ).fetchone()[0]
+    if not n:
+        pytest.skip("parquet store has no equity 09:45 bars (data refresh)")
+    return s
 
 
 def test_fails_closed_when_0945_bar_missing(store):
@@ -36,8 +53,6 @@ def test_fails_closed_when_0945_bar_missing(store):
     # hard-coded future date like 2026-08-11 silently broke once August data
     # landed). Use the day after the last session that actually has a 09:45
     # equity bar — that next calendar day is never in the store.
-    import duckdb
-
     con = duckdb.connect()
     store.duckdb_scan(con, start="2020-01-01", end="2099-01-01")
     last = con.execute(

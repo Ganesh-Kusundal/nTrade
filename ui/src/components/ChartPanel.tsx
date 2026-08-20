@@ -10,41 +10,15 @@ import {
   type SeriesMarker,
   type UTCTimestamp,
 } from 'lightweight-charts'
-import { indicators, strategies, sessionProfileCandles } from '../lib/registry'
-import type { VwapSeriesResult, VolumeProfile, Absorption, VpLevel, VwapPoint } from '../lib/indicators'
+import { indicators, strategies } from '../lib/registry'
+import type { ChartOverlays, StrategyPayload } from '../types/market'
 import { isMcxSession } from '../lib/marketHours'
 import type { Candle } from '../types/market'
 import { fmtIST, IST_OFFSET_S, istChartTime } from '../lib/istTime'
 
-// v4 series handles: addCandlestickSeries / addHistogramSeries / addLineSeries return these.
 type CandleSeries = ISeriesApi<'Candlestick'>
 type VolumeSeries = ISeriesApi<'Histogram'>
 type LineSeries = ISeriesApi<'Line'>
-
-/** Trade shape both strategy overlays expose (Valentini + Morning VAH/VAL). */
-export interface StrategyTrade {
-  side: 'BUY' | 'SELL'
-  entryIndex: number
-  sl: number
-  /** Current stop — equals `sl` until T1, then the trailing stop. */
-  slNow?: number
-  /** True once the runner trails (T1 booked) — draw the TSL line/markers. */
-  tslActive?: boolean
-  /** Stop placements: initial at entry + each ratchet {bar index, price}. */
-  stops?: Array<{ index: number; price: number }>
-  tp: number | null
-  exitIndex: number | null
-  exit: number | null
-  reason: string | null
-  partialIndex?: number | null
-  partial?: number | null
-}
-
-export interface StrategyOverlay {
-  trades: StrategyTrade[]
-  /** Frozen morning VAH/VAL/POC per IST day (Morning VAH/VAL strategy). */
-  levels?: Array<{ date: string; vah: number; val: number; poc: number }>
-}
 
 export interface IndicatorToggles {
   vwap: boolean
@@ -63,12 +37,11 @@ interface ChartPanelProps {
   indicators?: IndicatorToggles
   /** Toggle handler for the on-chart legend (delegated from the page). */
   onIndicators?: (key: keyof IndicatorToggles) => void
-  /** Completed revealed bars for the strategy state machine — the strategy
-   *  reacts to closed bars, so this is `candles` without the in-progress one.
-   *  Precomputed in the page so it stays stable across intra-bar ticks. */
-  strategyCandles?: Candle[]
-  /** Precomputed strategy result (null → computed from strategyCandles). */
-  strategy?: StrategyOverlay | null
+  /** Server-computed overlays (VWAP ±σ, volume profile, absorptions).
+   *  Single source of truth — the FE never recomputes them. */
+  overlays?: ChartOverlays | null
+  /** Server-computed strategy markers (signals + frozen VAH/VAL/POC levels). */
+  strategy?: StrategyPayload | null
   /** Symbol + interval for the chart's aria-label (last OHLCV readout). */
   symbol?: string
   interval?: string
@@ -81,19 +54,10 @@ interface ChartPanelProps {
 
 const UP = 'rgba(38, 166, 154, 0.45)'
 const DOWN = 'rgba(239, 83, 80, 0.45)'
-// Dimmed (ahead-of-cursor / context) palette — neutral slate at low alpha.
 const DIM = 'rgba(148, 163, 184, 0.30)'
 const DIM_VOL = 'rgba(148, 163, 184, 0.22)'
-// Valentini overlay palette: VWAP / POC amber, value area slate.
 const VWAP = '#F59E0B'
 const VWAP_BAND = 'rgba(245, 158, 11, 0.35)'
-
-// Direct references to the registry-wired indicator runners (stable per app
-// lifetime — the registry is the single source of truth, so adding a new
-// indicator only requires registering it; ChartPanel reads it here by key).
-const VWAP_RUN = indicators['vwap'].run as (candles: Candle[]) => VwapSeriesResult
-const ABSORB_RUN = indicators['absorptions'].run as (candles: Candle[]) => Absorption[]
-const VP_RUN = indicators['volume_profile'].run as (candles: Candle[], step?: number) => VolumeProfile
 
 interface PrevRef {
   n: number
@@ -118,22 +82,19 @@ function volBar(c: Candle): Parameters<VolumeSeries['update']>[0] {
   }
 }
 
-const shift = (p: VwapPoint): { time: UTCTimestamp; value: number } => ({
+const shift = (p: { time: number; value: number | null }): { time: UTCTimestamp; value: number | null } => ({
   time: istChartTime(p.time) as UTCTimestamp,
   value: p.value,
 })
 
 /**
- * Candlestick + volume chart with optional Valentini (Fabio) overlays:
- * per-session VWAP ± σ bands, volume profile (POC/VAH/VAL price lines +
- * a horizontal histogram on the left edge), and absorption markers.
- *
- * Data syncing is incremental: a trailing update (same last time, or one
- * appended bar) uses ``series.update()`` (O(1) — smooth replay/live); any
- * other change (seek, interval/contract switch) does a full ``setData()``
- * and refits the time scale. The chart is removed on unmount.
+ * Candlestick + volume chart with backend-computed overlays: per-session VWAP
+ * ± σ bands, volume profile (POC/VAH/VAL + left-edge histogram), absorption
+ * markers, and strategy signals. All of this math is produced by the backend
+ * OverlayPipeline (the same analytics + strategy code paper/live run) and sent
+ * to the FE as plain data — the FE only renders it (zero-parity rule).
  */
-export function ChartPanel({ candles, context, indicators: indicatorsProp, onIndicators, strategyCandles, strategy, symbol, interval, exchange, root, className }: ChartPanelProps) {
+export function ChartPanel({ candles, context, indicators: indicatorsProp, onIndicators, overlays, strategy, symbol, interval, exchange, root, className }: ChartPanelProps) {
   const toggles: IndicatorToggles = indicatorsProp ?? {
     vwap: true, volumeProfile: true, absorptions: true, strategy: true,
   }
@@ -175,14 +136,17 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
   const exchangeRef = useRef(exchange)
   const rootRef = useRef(root)
   const profileKeyRef = useRef('')
+  const overlaysRef = useRef(overlays)
+  const strategyRef = useRef(strategy)
   candlesRef.current = candles
   contextDataRef.current = context
   indicatorsRef.current = toggles
   intervalRef.current = interval
   exchangeRef.current = exchange
   rootRef.current = root
+  overlaysRef.current = overlays
+  strategyRef.current = strategy
 
-  // One chart for the component lifetime; removed on unmount (no leak).
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -206,9 +170,6 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
         secondsVisible: false,
         rightOffset: 4,
       },
-      // Series times are shifted by +05:30 (see istChartTime) so the v4 axis
-      // — drawn in UTC wall-clock — shows IST. The crosshair receives the same
-      // shifted epoch, so undo the shift and format the true instant in IST.
       localization: {
         timeFormatter: (time: UTCTimestamp) =>
           typeof time === 'number' ? fmtIST(time - IST_OFFSET_S, { year: true }) : String(time),
@@ -217,8 +178,6 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     })
     const candles = chart.addCandlestickSeries({
       upColor: '#26A69A',
-      // Hollow bearish so direction reads without relying on color alone
-      // (colorblind-safe: filled up vs outline down).
       downColor: 'transparent',
       borderUpColor: '#26A69A',
       borderDownColor: '#EF5350',
@@ -229,40 +188,22 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
       priceFormat: { type: 'volume' },
       priceScaleId: 'volume',
     })
-    // Dimmed context series (rendered first → drawn beneath the live series).
     const contextCandles = chart.addCandlestickSeries({
-      upColor: DIM,
-      downColor: DIM,
-      borderUpColor: DIM,
-      borderDownColor: DIM,
-      wickUpColor: DIM,
-      wickDownColor: DIM,
+      upColor: DIM, downColor: DIM, borderUpColor: DIM, borderDownColor: DIM, wickUpColor: DIM, wickDownColor: DIM,
     })
     const contextVolume = chart.addHistogramSeries({
-      priceFormat: { type: 'volume' },
-      priceScaleId: 'volume',
+      priceFormat: { type: 'volume' }, priceScaleId: 'volume',
     })
-    // Valentini overlays: VWAP line + ±σ band lines (dashed, translucent).
     const vwap = chart.addLineSeries({
-      color: VWAP,
-      lineWidth: 1,
-      priceLineVisible: false,
-      lastValueVisible: true,
-      crosshairMarkerVisible: false,
+      color: VWAP, lineWidth: 1, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
     })
     const bandOpts = {
-      color: VWAP_BAND,
-      lineWidth: 1 as const,
-      lineStyle: LineStyle.Dashed,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
+      color: VWAP_BAND, lineWidth: 1 as const, lineStyle: LineStyle.Dashed,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
     }
     const vwapUpper = chart.addLineSeries(bandOpts)
     const vwapLower = chart.addLineSeries(bandOpts)
-    chart.priceScale('volume').applyOptions({
-      scaleMargins: { top: 0.82, bottom: 0 },
-    })
+    chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } })
     chartRef.current = chart
     candleRef.current = candles
     volRef.current = volume
@@ -291,181 +232,144 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     }
   }, [])
 
-  // Context (dimmed background) is static for the lifetime of its dataset —
-  // set once per change, never per replay tick. Declared before the candles
-  // effect so the first fitContent sees the full window. Refit on change
-  // (entering replay / editing the window) — a plain setData keeps the stale
-  // viewport, and the foreground is empty at cursor 0 so nothing else refits.
   useEffect(() => {
-    const chart = chartRef.current
+    const ctx = context ?? []
     const cs = contextRef.current
     const vs = contextVolRef.current
-    if (!chart || !cs || !vs) return
-    const ctx = context ?? []
+    if (!chartRef.current || !cs || !vs) return
     cs.setData(ctx.map(bar))
-    vs.setData(ctx.map((c) => ({
-      time: istChartTime(c.time) as UTCTimestamp,
-      value: c.volume,
-      color: DIM_VOL,
-    })))
-    if (ctx.length > 0) chart.timeScale().fitContent()
+    vs.setData(ctx.map((c) => ({ time: istChartTime(c.time) as UTCTimestamp, value: c.volume, color: DIM_VOL })))
+    if (ctx.length > 0) chartRef.current.timeScale().fitContent()
   }, [context])
 
-  // --- Valentini overlays ------------------------------------------------
+  // --- server overlays ------------------------------------------------
 
-  // VWAP + bands: incremental like the candles — an in-progress bar tick only
-  // revises the last point, so update in place instead of rebuilding.
   useEffect(() => {
     const v = vwapRef.current
     const u = vwapUpperRef.current
     const l = vwapLowerRef.current
     if (!v || !u || !l) return
-    if (!toggles.vwap) {
-      v.setData([])
-      u.setData([])
-      l.setData([])
-      vwapPrevRef.current = null
+    const ov = overlaysRef.current
+    if (!toggles.vwap || !ov || !ov.vwap) {
+      v.setData([]); u.setData([]); l.setData([]); vwapPrevRef.current = null
       return
     }
-    const data = VWAP_RUN(candles)
-    const last = data.vwap[data.vwap.length - 1]
+    const series = ov.vwap
+    const last = series[series.length - 1]
     const lastTime = last ? last.time : -1
     const prev = vwapPrevRef.current
-    // In-place update only when both series are non-empty and the last point
-    // is genuinely the same bar (a 0===0 && -1===-1 empty-series match must
-    // not reach update(undefined)).
-    if (prev && data.vwap.length > 0 && data.vwap.length === prev.n && lastTime === prev.lastTime) {
-      v.update(shift(last))
-      u.update(shift(data.upper[data.upper.length - 1]))
-      l.update(shift(data.lower[data.lower.length - 1]))
-    } else {
-      v.setData(data.vwap.map(shift))
-      u.setData(data.upper.map(shift))
-      l.setData(data.lower.map(shift))
+    // VWAP ±σ bands: the backend sends a single end-of-session value (one
+    // non-null point), so render them as a constant line across the whole
+    // window — a band pinned only at the last bar would be a single dot.
+    const bandValueAt = (p: { time: number; value: number | null } | undefined): number | null => {
+      if (!p || p.value == null) return null
+      return p.value
     }
-    vwapPrevRef.current = { n: data.vwap.length, lastTime }
-  }, [candles, toggles.vwap])
+    const upperConst = bandValueAt(ov.vwap_upper?.[ov.vwap_upper.length - 1])
+    const lowerConst = bandValueAt(ov.vwap_lower?.[ov.vwap_lower.length - 1])
+    // Band only valid from the first in-session bar (where VWAP starts).
+    const firstValid = series.findIndex((p) => p.value != null)
+    const bandSpan = firstValid >= 0 ? series.slice(firstValid) : []
+    const uppers = upperConst != null && bandSpan.length > 0
+      ? bandSpan.map((p) => ({ time: p.time, value: upperConst }))
+      : []
+    const lowers = lowerConst != null && bandSpan.length > 0
+      ? bandSpan.map((p) => ({ time: p.time, value: lowerConst }))
+      : []
+    // VWAP is undefined before the session opens (backend sends value:null
+    // for those bars). lightweight-charts rejects null in a line series, so
+    // map nulls to whitespace (gap) rather than {time, value:null}.
+    const vwapData = series.map((p) =>
+      p.value == null
+        ? { time: istChartTime(p.time) as UTCTimestamp }
+        : { time: istChartTime(p.time) as UTCTimestamp, value: p.value as number })
+    if (prev && series.length > 0 && series.length === prev.n && lastTime === prev.lastTime) {
+      if (last.value != null) v.update({ time: istChartTime(last.time) as UTCTimestamp, value: last.value as number })
+      if (uppers.length) v.update(shift(uppers[uppers.length - 1]))
+      if (lowers.length) v.update(shift(lowers[lowers.length - 1]))
+    } else {
+      v.setData(vwapData)
+      u.setData(uppers.map(shift))
+      l.setData(lowers.map(shift))
+    }
+    vwapPrevRef.current = { n: series.length, lastTime }
+  }, [overlays, toggles.vwap])
 
-  // Absorption + strategy markers on the candle series. Absorption: BUY
-  // below-bar arrows / SELL above. Strategy: circles at entries (BUY below /
-  // SELL above), squares at exits (colored by reason) — both share the
-  // marker layer, so they are merged into one set.
+  // Absorption + strategy markers — both come from the server.
   useEffect(() => {
     const cs = candleRef.current
     if (!cs) return
-    const src = strategyCandles ?? candles
+    const src = candlesRef.current
+    const timeOf = (t: number) => {
+      const idx = src.findIndex((c) => c.time === t)
+      if (idx >= 0) return istChartTime(src[idx].time) as UTCTimestamp
+      return istChartTime(t) as UTCTimestamp
+    }
     const markers: SeriesMarker<UTCTimestamp>[] = []
-    if (toggles.absorptions) {
-      for (const a of ABSORB_RUN(src)) {
-        if (a.barIndex < 0 || a.barIndex >= src.length) continue
+    const ov = overlaysRef.current
+    if (toggles.absorptions && ov?.absorptions) {
+      for (const a of ov.absorptions) {
         markers.push({
-          time: istChartTime(src[a.barIndex].time) as UTCTimestamp,
+          time: timeOf(a.time),
           position: a.side === 'BUY' ? 'belowBar' : 'aboveBar',
           shape: a.side === 'BUY' ? 'arrowUp' : 'arrowDown',
           color: a.side === 'BUY' ? '#26A69A' : '#EF5350',
         })
       }
     }
-    if (toggles.strategy && strategy) {
-      for (const t of strategy.trades) {
-        if (t.entryIndex < 0 || t.entryIndex >= src.length) continue
+    const strat = strategyRef.current
+    if (toggles.strategy && strat?.signals) {
+      for (const s of strat.signals) {
+        const t = s.reference_price ?? s.intent_price ?? 0
+        const label = s.exit_reason ? s.exit_reason.toUpperCase() : s.side
         markers.push({
-          time: istChartTime(src[t.entryIndex].time) as UTCTimestamp,
-          position: t.side === 'BUY' ? 'belowBar' : 'aboveBar',
-          shape: 'circle',
-          color: t.side === 'BUY' ? '#26A69A' : '#EF5350',
-          text: t.side === 'BUY' ? 'BUY' : 'SELL',
+          time: timeOf(t),
+          position: s.side === 'BUY' ? 'belowBar' : 'aboveBar',
+          shape: s.exit_reason ? 'square' : 'circle',
+          color: s.exit_reason === 'target' ? '#26A69A'
+            : s.exit_reason === 'stop' ? '#EF5350' : s.side === 'BUY' ? '#26A69A' : '#EF5350',
+          text: label,
         })
-        // T1 partial book (Morning VAH/VAL: 50% at the opposite VA level).
-        if (t.partialIndex != null && t.partialIndex >= 0 && t.partialIndex < src.length) {
-          markers.push({
-            time: istChartTime(src[t.partialIndex].time) as UTCTimestamp,
-            position: t.side === 'BUY' ? 'aboveBar' : 'belowBar',
-            shape: 'square',
-            color: '#F59E0B',
-            text: '½',
-          })
-        }
-        // Trailing-stop ratchet steps (Morning VAH/VAL: T1 breakeven then the
-        // candle/chandelier trail) — small arrows where the stop moved.
-        if (t.stops && t.stops.length > 1) {
-          for (const s of t.stops) {
-            if (s.index < 0 || s.index >= src.length) continue
-            if (s.index === t.entryIndex) continue // initial stop = the entry marker
-            markers.push({
-              time: istChartTime(src[s.index].time) as UTCTimestamp,
-              position: t.side === 'BUY' ? 'belowBar' : 'aboveBar',
-              shape: t.side === 'BUY' ? 'arrowUp' : 'arrowDown',
-              color: '#F59E0B',
-              text: 'TSL',
-            })
-          }
-        }
-        if (t.exitIndex != null && t.reason && t.exitIndex >= 0 && t.exitIndex < src.length) {
-          markers.push({
-            time: istChartTime(src[t.exitIndex].time) as UTCTimestamp,
-            position: t.side === 'BUY' ? 'aboveBar' : 'belowBar',
-            shape: 'square',
-            color: t.reason === 'target' ? '#26A69A' : t.reason === 'stop' ? '#EF5350' : '#F59E0B',
-            text: t.reason === 'target' ? 'TP' : t.reason === 'stop' ? 'SL' : 'END',
-          })
-        }
       }
     }
-    // lightweight-charts requires markers ascending by time; absorptions +
-    // strategy trades are merged from independent walks so they can interleave.
     markers.sort((a, b) => (a.time as number) - (b.time as number))
     const key = JSON.stringify(markers)
     if (key !== absMarkersRef.current) {
       absMarkersRef.current = key
       cs.setMarkers(markers)
     }
-  }, [strategyCandles ?? candles, strategy, toggles.absorptions, toggles.strategy])
+  }, [overlays, strategy, toggles.absorptions, toggles.strategy])
 
-  // Open-trade SL/TSL/TP price lines (strategy overlay) — dashed lines at the
-  // live trade's initial stop, current trailing stop and target. The TSL line
-  // moves as the BE-phase ratchet lifts/lowers the stop; removed when the
-  // trade closes / toggled off.
+  // Open-trade SL/TP price lines from the latest strategy signal pair.
   useEffect(() => {
     const cs = candleRef.current
     if (!cs) return
     for (const line of stratLinesRef.current) cs.removePriceLine(line)
     stratLinesRef.current = []
     if (!toggles.strategy || !strategy) return
-    const open = strategy.trades[strategy.trades.length - 1]
-    if (!open || open.exitIndex != null) return
-    // The initial stop is the live stop until T1 trails; label it SL.
-    const trailing = open.tslActive === true && open.slNow != null
-    stratLinesRef.current = [
-      cs.createPriceLine({
-        price: open.sl, color: '#EF5350', lineWidth: 1, lineStyle: LineStyle.Dashed,
-        title: 'SL', axisLabelVisible: true,
-      }),
-    ]
-    if (trailing) {
-      stratLinesRef.current.push(
-        cs.createPriceLine({
-          price: open.slNow as number, color: '#F59E0B', lineWidth: 1, lineStyle: LineStyle.Dashed,
-          title: 'TSL', axisLabelVisible: true,
-        }),
-      )
+    const sigs = strategy.signals
+    const entries = sigs.filter((s) => !s.exit_reason)
+    const open = entries[entries.length - 1]
+    if (!open) return
+    if (open.sl != null) {
+      stratLinesRef.current.push(cs.createPriceLine({
+        price: open.sl, color: '#EF5350', lineWidth: 1, lineStyle: LineStyle.Dashed, title: 'SL', axisLabelVisible: true,
+      }))
     }
     if (open.tp != null) {
-      stratLinesRef.current.push(
-        cs.createPriceLine({ price: open.tp, color: '#26A69A', lineWidth: 1, lineStyle: LineStyle.Dashed, title: 'TP', axisLabelVisible: true }),
-      )
+      stratLinesRef.current.push(cs.createPriceLine({
+        price: open.tp, color: '#26A69A', lineWidth: 1, lineStyle: LineStyle.Dashed, title: 'TP', axisLabelVisible: true,
+      }))
     }
   }, [strategy, toggles.strategy])
 
-  // Frozen morning VAH/VAL lines (Morning VAH/VAL strategy) — the static
-  // levels the strategy trades against, drawn for the most recent frozen day
-  // so they don't stack across days. Cleared when the overlay is off.
+  // Frozen morning VAH/VAL/POC lines.
   useEffect(() => {
     const cs = candleRef.current
     if (!cs) return
     for (const line of levelLinesRef.current) cs.removePriceLine(line)
     levelLinesRef.current = []
-    if (!toggles.strategy || !strategy || !strategy.levels || strategy.levels.length === 0) return
+    if (!toggles.strategy || !strategy?.levels || strategy.levels.length === 0) return
     const lvl = strategy.levels[strategy.levels.length - 1]
     if (!(lvl.vah > lvl.val && lvl.vah > 0)) return
     levelLinesRef.current = [
@@ -474,56 +378,29 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     ]
   }, [strategy, toggles.strategy])
 
-  // Volume profile: horizontal histogram on the left edge (aligned via
-  // priceToCoordinate) + POC/VAH/VAL price lines, over a FIXED range — the
-  // current session day anchored at its session open (MCX 09:00, NSE 09:15),
-  // the TradingView FRVP behaviour. Zooming/panning does NOT rebuild it; it
-  // only grows as the live session prints bars (data-length change / resize /
-  // toggle rebuild it).
-  //
-  // Data source: in replay mode the full window (`context`, the dimmed
-  // background) — the profile is then STABLE while the cursor advances,
-  // instead of growing as bars are revealed. Live mode falls back to the
-  // candles (no context). The 1D interval's bars sit at midnight IST (before
-  // the session open), so daily charts profile the whole loaded window.
+  // Volume profile histogram + POC/VAH/VAL lines — from the server payload.
   const renderProfile = useCallback(() => {
     const chart = chartRef.current
     const cs = candleRef.current
     const panel = vpPanelRef.current
     if (!chart || !cs || !panel) return
-    // Price lines must be removed from the series they were created on — which
-    // is the context series in replay (see `coord` below). Track the owner.
     const owner = profileOwnerRef.current
     if (owner) for (const line of profileLinesRef.current) owner.removePriceLine(line)
     profileOwnerRef.current = null
     profileLinesRef.current = []
     panel.innerHTML = ''
     if (!indicatorsRef.current.volumeProfile) return
-    const candles = candlesRef.current
-    const ctx = contextDataRef.current
-    const src = ctx && ctx.length > 0 ? ctx : candles
-    if (src.length === 0) return
-    const isMcx = isMcxSession(exchangeRef.current, rootRef.current)
-    const profSrc = intervalRef.current === '1D'
-      ? src
-      : sessionProfileCandles(src, isMcx ? '09:00' : '09:15')
-    if (profSrc.length === 0) return
-    const vp = VP_RUN(profSrc)
-    // Coordinate source: at replay cursor 0 the candle series is empty (no
-    // revealed bars) and its priceToCoordinate returns null for every price,
-    // even though the shared price scale has data. The context series always
-    // holds the full window and sits on the same price scale, so use it for
-    // both the histogram alignment and the POC/VAH/VAL price lines.
-    const coord = ctx && ctx.length > 0 && contextRef.current ? contextRef.current : cs
-    if (vp.levels.length === 0) return
-    const maxVol = Math.max(...vp.levels.map((l: VpLevel) => l.volume))
+    const ov = overlaysRef.current
+    const vp = ov?.volume_profile
+    if (!vp || vp.levels.length === 0) return
+    const maxVol = Math.max(...vp.levels.map((l) => l.volume))
     const panelW = Math.max(panel.clientWidth, 16)
     panel.style.bottom = `${chart.timeScale().height() || 24}px`
     const barH = 3
     const frag = document.createDocumentFragment()
     for (const level of vp.levels) {
       if (level.volume <= 0) continue
-      const y = coord.priceToCoordinate(level.price)
+      const y = cs.priceToCoordinate(level.price)
       if (y == null) continue
       const div = document.createElement('div')
       const w = Math.max(2, (level.volume / maxVol) * panelW)
@@ -535,13 +412,13 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     }
     panel.appendChild(frag)
     const makeLine = (price: number, color: string, lineStyle: LineStyle, title: string): IPriceLine =>
-      coord.createPriceLine({ price, color, lineWidth: 1, lineStyle, title, axisLabelVisible: true })
+      cs.createPriceLine({ price, color, lineWidth: 1, lineStyle, title, axisLabelVisible: true })
     profileLinesRef.current = [
       makeLine(vp.poc, VWAP, LineStyle.Solid, 'POC'),
       makeLine(vp.vah, 'rgba(148,163,184,0.7)', LineStyle.Dashed, 'VAH'),
       makeLine(vp.val, 'rgba(148,163,184,0.7)', LineStyle.Dashed, 'VAL'),
     ]
-    profileOwnerRef.current = coord
+    profileOwnerRef.current = cs
   }, [])
 
   const scheduleProfile = useCallback(() => {
@@ -552,9 +429,6 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     })
   }, [renderProfile])
 
-  // Re-render the profile when the chart size changes (the histogram aligns to
-  // the price scale). NOT on visible-range change — the profile range is the
-  // fixed session, so zooming must not rebuild it (TradingView FRVP behaviour).
   useEffect(() => {
     const chart = chartRef.current
     const el = containerRef.current
@@ -566,7 +440,7 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
 
   useEffect(() => {
     scheduleProfile()
-  }, [toggles.volumeProfile, scheduleProfile])
+  }, [toggles.volumeProfile, overlays, scheduleProfile])
 
   // --- candle sync --------------------------------------------------------
 
@@ -587,44 +461,26 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     const prev = prevRef.current
 
     if (prev == null) {
-      // First paint of a dataset
       candleSeries.setData(candles.map(bar))
       volSeries.setData(candles.map(volBar))
       chart.timeScale().fitContent()
     } else if (last.time === prev.lastTime && candles.length === prev.n) {
-      // In-progress bar updated in place (live mode) — O(1). The count guard
-      // matters: a *replaced* dataset can share the last timestamp (e.g. 1m
-      // vs Range both end at the final 1m candle) — in-place update would mix
-      // the two series and corrupt the chart.
       candleSeries.update(bar(last))
       volSeries.update(volBar(last))
     } else if (candles.length > prev.n && candles[prev.n].time > prev.lastTime) {
-      // Appended bars (replay tick at any speed) — update only the new tail,
-      // keep the viewport stable. Avoids a full setData+fitContent per tick.
-      // The time-continuation guard matters: an interval/contract switch can
-      // produce a *larger* dataset whose times restart at the beginning, and
-      // update() with an earlier time throws "Cannot update oldest data".
       for (let i = prev.n; i < candles.length; i++) {
         candleSeries.update(bar(candles[i]))
         volSeries.update(volBar(candles[i]))
       }
     } else {
-      // Seek backward / dataset replaced — full rebuild + fit
       candleSeries.setData(candles.map(bar))
       volSeries.setData(candles.map(volBar))
       chart.timeScale().fitContent()
     }
     prevRef.current = { n: candles.length, lastTime: last.time }
 
-    // Refresh the profile when its data source changes length. In replay the
-    // source is the full window (context), which is stable — so a playing
-    // replay doesn't rebuild the profile every tick. In live mode the source
-    // is the candles, so a bar completion (length change) refreshes it.
     const ctx = contextDataRef.current
     const srcLen = ctx && ctx.length > 0 ? ctx.length : candles.length
-    // Rebuild on dataset growth AND on dataset identity change (contract /
-    // interval switch can keep the same bar count — e.g. NIFTY → BANKNIFTY —
-    // which the length check alone would miss and leave a stale profile).
     const profileKey = `${symbol ?? ''}|${interval ?? ''}|${exchange ?? ''}|${root ?? ''}`
     if (profileKey !== profileKeyRef.current || srcLen !== profileLenRef.current) {
       profileKeyRef.current = profileKey
@@ -635,8 +491,6 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
 
   return (
     <div className={`relative ${className ?? 'h-full w-full'}`} aria-label={ariaLabel}>
-      {/* On-chart legend — overlays the top-left; toggles the same overlays
-          the page used to expose as a separate row. */}
       {onIndicators && (
         <div className="pointer-events-auto absolute left-2 top-2 z-20 flex flex-wrap items-center gap-1.5">
           {LEGEND.map(({ key, label }) => (
@@ -658,7 +512,6 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
         </div>
       )}
       <div ref={containerRef} className="h-full w-full" />
-      {/* Volume-profile histogram — left edge, aligned to the price scale. */}
       <div
         ref={vpPanelRef}
         className="pointer-events-none absolute left-0 top-0 z-10 w-16 overflow-hidden"

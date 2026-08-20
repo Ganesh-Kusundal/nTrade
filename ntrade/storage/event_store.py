@@ -12,6 +12,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 
 from ntrade.events.base import Event
 from ntrade.events import lifecycle, market, order, portfolio, risk
@@ -81,6 +82,7 @@ class EventStore:
         self.path = Path(path) if path else None
         self._events: list[Event] = []
         self._fh = None
+        self._lock = Lock()
         if self.path is not None and self.path.exists():
             self._load()
 
@@ -94,11 +96,12 @@ class EventStore:
         # caused by a tick) must replay in append order, so recovery_events()
         # uses the in-memory index as the seq tiebreak, never ts alone (H5) —
         # ts ties would otherwise invert causality.
-        self._events.append(event)
-        fh = self._ensure_fh()
-        if fh is not None:
-            fh.write(json.dumps(_encode(event)) + "\n")
-            fh.flush()
+        with self._lock:
+            self._events.append(event)
+            fh = self._ensure_fh()
+            if fh is not None:
+                fh.write(json.dumps(_encode(event)) + "\n")
+                fh.flush()
         return self
 
     def extend(self, events) -> "EventStore":

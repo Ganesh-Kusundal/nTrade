@@ -81,7 +81,3 @@ HISTORY_MAX_AGE_MIN: float = 5.0
 
 # Cost defaults
 DEFAULT_RISK_FREE_RATE: float = 0.065  # 6.5% annual — approximate Indian risk-free
-
-# Paper-feed synthetic band (paper.py high/low markups)
-PAPER_HIGH_MARKUP: float = 1.005
-PAPER_DEFAULT_OPTION_LTP: float = 5.0

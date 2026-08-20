@@ -31,6 +31,9 @@ from pydantic import BaseModel
 
 from ntrade.domain.market_hours import IST
 from ntrade.events.market import TickEvent
+from ntrade.events.order import OrderFilledEvent
+from ntrade.events.risk import SignalGeneratedEvent
+from ntrade.storage.event_store import EventStore
 
 log = logging.getLogger("api.paper")
 
@@ -43,34 +46,19 @@ class PaperStartRequest(BaseModel):
     symbol: str
     exchange: str = "NFO"
     lot_size: int | None = None
-
-
-def _default_lot_size(symbol: str) -> int:
-    """Index-futures lot sizes (raw qty multiple the strategy floors to).
-
-    Kept in the service so the UI's start control needs only the symbol.
-    """
-    up = symbol.upper()
-    if "BANKNIFTY" in up:
-        return 15
-    if up.startswith("NIFTY"):
-        return 75
-    if up.startswith("SENSEX"):
-        return 20
-    if "FINNIFTY" in up:
-        return 40
-    if up.startswith("GOLD"):
-        return 1
-    return 1
+    strategy: str | None = None  # registered strategy id (default morning_vah_val)
+    strategy_params: dict | None = None
 
 
 class PaperTraderService:
     """Owns at most one paper session at a time, keyed to a symbol."""
 
-    def __init__(self, market, pump, initial_cash: float = 1_000_000.0):
+    def __init__(self, market, pump, initial_cash: float = 1_000_000.0,
+             store: EventStore | None = None):
         self._market = market
         self._pump = pump
         self._initial_cash = float(initial_cash)
+        self._store = store
         self._lock = threading.Lock()
         self._session = None
         self._symbol: str | None = None
@@ -83,10 +71,14 @@ class PaperTraderService:
         self._error: str | None = None
         self._fills: list[dict] = []
         self._signals: list[dict] = []
+        self._strategy_id: str | None = None
+        self._strategy_params: dict | None = None
+        self._strategy_inst = None  # live Strategy instance (for snapshots)
 
     # ------------------------------------------------------------------ API
     def start(self, symbol: str, exchange: str = "NFO",
-              lot_size: int | None = None) -> dict:
+              lot_size: int | None = None, strategy: str | None = None,
+              strategy_params: dict | None = None) -> dict:
         symbol = symbol.strip().upper()
         with self._lock:
             if not self._pump._real_feed or not self._pump.enabled:
@@ -99,7 +91,10 @@ class PaperTraderService:
             else:
                 already = False
                 try:
-                    self._build_session(symbol, exchange.upper(), lot_size)
+                    self._build_session(symbol, exchange.upper(), lot_size,
+                                        strategy, strategy_params)
+                except HTTPException:
+                    raise  # 422 from _resolve_lot_size passes through untouched
                 except Exception as exc:  # noqa: BLE001 — surface to the caller
                     log.exception("paper start failed for %s", symbol)
                     self._error = str(exc)
@@ -122,6 +117,9 @@ class PaperTraderService:
             symbol = self._symbol
             self._session = None
             self._symbol = None
+            self._strategy_id = None
+            self._strategy_params = None
+            self._strategy_inst = None
             self._stop_event.set()
             unsub = self._unsub
             self._unsub = None
@@ -153,7 +151,6 @@ class PaperTraderService:
             started_at = self._started_at
             error = self._error
             fills = list(self._fills)
-            signals = list(self._signals)
         if session is None:
             return {
                 "running": False,
@@ -165,9 +162,10 @@ class PaperTraderService:
                 "positions": [],
                 "trades": [],
                 "n_trades": 0,
-                "started_at": None,
-                "error": error,
-            }
+            "started_at": None,
+            "error": error,
+            "strategy": None,
+        }
         account = session.kernel.ctx.account
         positions = [
             {
@@ -187,6 +185,36 @@ class PaperTraderService:
         if open_pos is not None:
             unrealized = (float(open_pos.ltp or 0.0) - float(open_pos.avg_price or 0.0)) \
                 * int(open_pos.quantity)
+        # Strategy snapshot from the SAME instance running in the kernel —
+        # zero-parity with chart overlay + live. No recomputation on the API.
+        strategy_snapshot = None
+        inst = self._strategy_inst
+        if inst is not None:
+            snap: dict = {"id": self._strategy_id}
+            for attr in ("phase", "bias", "_day_pnl"):
+                try:
+                    val = getattr(inst, attr)
+                    snap[attr.lstrip("_")] = val
+                except Exception:  # noqa: BLE001
+                    pass
+            profile = getattr(inst, "_profile", None)
+            if profile is not None and profile.levels:
+                snap["levels"] = [{
+                    "vah": round(float(profile.vah), 4),
+                    "val": round(float(profile.val), 4),
+                    "poc": round(float(profile.poc), 4),
+                }]
+            active = getattr(inst, "_active", None)
+            if active is not None:
+                snap["open_trade"] = {
+                    "side": active.get("side"),
+                    "entry": round(float(active.get("entry", 0.0)), 4),
+                    "sl": round(float(active.get("sl", 0.0) or 0.0), 4),
+                    "tp": (round(float(active["tp"]), 4)
+                           if active.get("tp") is not None else None),
+                    "qty": int(active.get("qty", 0)),
+                }
+            strategy_snapshot = snap
         return {
             "running": True,
             "symbol": symbol,
@@ -202,40 +230,63 @@ class PaperTraderService:
             "unrealized_pnl": round(unrealized, 2),
             "started_at": started_at,
             "error": error,
+            "strategy": strategy_snapshot,
         }
 
     # ------------------------------------------------------------- internals
-    def _build_session(self, symbol: str, exchange: str, lot_size: int | None) -> None:
+    def _resolve_lot_size(self, symbol: str, lot_size: int | None) -> int:
+        """Contract lot size from the instrument master; explicit lot_size wins.
+
+        Unknown symbols fail loudly (422) instead of minting a hardcoded
+        default — the paper session must never guess a size the broker's
+        contract actually contradicts.
+        """
+        if lot_size and lot_size > 0:
+            return int(lot_size)
+        contract = self._market.master.resolve(symbol)
+        if contract is not None and contract.lot_size:
+            return int(contract.lot_size)
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown lot size for {symbol}; pass lot_size explicitly",
+        )
+
+    def _build_session(self, symbol: str, exchange: str, lot_size: int | None,
+                       strategy: str | None, strategy_params: dict | None) -> None:
         from ntrade.registry import strategy as _strategy_reg
         from ntrade.engines.strategies import _strategy_classes
         from ntrade.kernel.trading_session import TradingSession
 
         # Resolve the strategy by id through the registry — no hardcoded class
         # import. The spec carries the constructor defaults; _strategy_classes
-        # maps the spec id to the concrete implementation.
-        spec = _strategy_reg.get("morning_vah_val")
+        # maps the spec id to the concrete implementation. Default = tuned
+        # morning_vah_val (kept for backward-compat callers that omit strategy).
+        strategy_id = (strategy or "morning_vah_val").strip()
+        spec = _strategy_reg.get(strategy_id)
         cls = _strategy_classes[spec.id]
 
-        self._lot_size = lot_size or _default_lot_size(symbol)
+        self._lot_size = self._resolve_lot_size(symbol, lot_size)
         session = TradingSession.paper(initial_cash=self._initial_cash,
-                                       session_id=f"paper-{symbol}")
+                                       session_id=f"paper-{symbol}",
+                                       store=self._store)
         session.register(session.stock(symbol))
         # The tuned preset's sl_pad is absolute points calibrated for ~₹76k
         # index-futures notional; scale it to this symbol's price so a ₹100
         # stock doesn't get a 30% stop pad.
-        kw = dict(cls.TUNED)
-        ref = cls.TUNED_REF_PRICE
+        kw = dict(getattr(cls, "TUNED", {}))
+        ref = getattr(cls, "TUNED_REF_PRICE", 0.0) or 0.0
         try:
             state = self._pump._subs.get(symbol) or {}
             bar = state.get("bar") or {}
             px = float(bar.get("close") or 0.0)
         except Exception:  # noqa: BLE001 — fall back to the reference price
             px = 0.0
-        if px > 0:
-            kw["sl_pad"] = kw["sl_pad"] * (px / ref)
-        session.register_strategy(cls(
-            symbol=symbol, exchange=exchange, lot_size=self._lot_size, **kw,
-        ), risk={
+        if px > 0 and ref > 0:
+            kw["sl_pad"] = kw.get("sl_pad", 0.0) * (px / ref)
+        if strategy_params:
+            kw.update(strategy_params)
+        inst = cls(symbol=symbol, exchange=exchange, lot_size=self._lot_size, **kw)
+        session.register_strategy(inst, risk={
             # Sizing is the strategy's risk budget; these are sanity ceilings.
             "max_quantity": 10_000,
             "max_notional": 300_000_000.0,
@@ -250,6 +301,9 @@ class PaperTraderService:
         self._session = session
         self._symbol = symbol
         self._exchange = exchange
+        self._strategy_id = strategy_id
+        self._strategy_params = strategy_params
+        self._strategy_inst = inst
         self._fills = []
         self._signals = []
 
@@ -291,8 +345,6 @@ class PaperTraderService:
                         except Exception:  # noqa: BLE001
                             pass  # reconciliation failure keeps prior state
                         for event in k.bus.history:
-                            from ntrade.events.order import OrderFilledEvent
-                            from ntrade.events.risk import SignalGeneratedEvent
                             if isinstance(event, OrderFilledEvent):
                                 self._record_fill(event)
                             elif isinstance(event, SignalGeneratedEvent) and (
@@ -338,7 +390,9 @@ def _service(request: Request) -> PaperTraderService:
 
 @paper_router.post("/start")
 def paper_start(body: PaperStartRequest, request: Request) -> dict:
-    return _service(request).start(body.symbol, body.exchange, body.lot_size)
+    return _service(request).start(
+        body.symbol, body.exchange, body.lot_size,
+        strategy=body.strategy, strategy_params=body.strategy_params)
 
 
 @paper_router.post("/stop")

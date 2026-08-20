@@ -187,3 +187,77 @@ def get_quote(
 def health(request: Request) -> dict:
     service = _service(request)
     return {"ok": True, "provider": service.name}
+
+
+@router.get("/chart")
+def get_chart(
+    request: Request,
+    symbol: str = Query(..., description="Custom/trading symbol, e.g. 'NIFTY OCT FUT'"),
+    exchange: str = Query(Exchange.DERIVATIVES),
+    interval: str = Query("1m", description="1m | 5m | 15m | 1h | 1D | Range"),
+    start: str | None = Query(None, description="ISO-8601 start (naive = IST)"),
+    end: str | None = Query(None, description="ISO-8601 end (naive = IST)"),
+    strategy: str | None = Query(None, description="Registered strategy id (optional)"),
+    limit: int = Query(MAX_CANDLES_LIMIT, ge=1, le=MAX_CANDLES_LIMIT),
+    tick_size: float | None = Query(None),
+    range_size: float | None = Query(None),
+) -> dict:
+    """Single backend-calc chart payload: candles + every overlay + optional
+    strategy markers. The UI renders this verbatim; it never reimplements the
+    indicator/strategy math (zero-parity with paper/live).
+
+    ``interval='Range'`` builds price-based range bars server-side.
+    """
+    service = _service(request)
+    symbol = symbol.strip().upper()
+    if not is_valid_symbol(symbol):
+        raise _bad(f"invalid symbol {symbol!r}")
+    try:
+        start_dt = parse_iso(start, "start")
+        end_dt = parse_iso(end, "end")
+    except ValueError as exc:
+        raise _bad(str(exc)) from exc
+    if start_dt is not None and end_dt is not None and start_dt > end_dt:
+        raise _bad("start must be <= end")
+    try:
+        return service.build_chart(
+            symbol=symbol, exchange=exchange.strip().upper(), interval=interval,
+            start=start_dt, end=end_dt, limit=limit, strategy=strategy,
+            tick_size=tick_size, range_size=range_size,
+        )
+    except MarketDataError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/catalog")
+def get_catalog(request: Request) -> dict:
+    """Indicator + strategy registry metadata for the FE renderer.
+
+    Replaces the hard-coded TS registry ``run`` wiring: the FE fetches this
+    once at init and keeps only plot metadata + ids (no client math).
+    """
+    from ntrade.registry import indicator as indicator_reg
+    from ntrade.registry import strategy as strategy_reg
+
+    indicators = []
+    for spec in indicator_reg.registry.values():
+        indicators.append({
+            "id": spec.id,
+            "label": spec.label,
+            "params": spec.params,
+            "series": spec.series,
+            "plot": {
+                "series_key": spec.plot.series_key if spec.plot else None,
+                "pane": spec.plot.pane if spec.plot else "overlay",
+                "color": spec.plot.color if spec.plot else None,
+            } if spec.plot else None,
+        })
+    strategies = []
+    for spec in strategy_reg.registry.values():
+        strategies.append({
+            "id": spec.id,
+            "label": spec.label,
+            "params": spec.params,
+            "indicators": spec.indicators,
+        })
+    return {"indicators": indicators, "strategies": strategies}

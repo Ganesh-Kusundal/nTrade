@@ -475,6 +475,12 @@ class BrokerExecution:
         if new_qty <= 0:
             return
         price = _fill_price(order) or intent.price or 0.0
+        if price <= 0:
+            logger.error("fill rejected: zero fill_price for %s order %s "
+                         "(broker=%s, intent_price=%s)",
+                         intent.symbol, order_id,
+                         _fill_price(order), intent.price)
+            return
         notional = price * new_qty
         commission = round(self.commission.apply(notional), 4)
         if self.statutory is None:

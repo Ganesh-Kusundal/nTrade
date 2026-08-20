@@ -237,10 +237,16 @@ export class MarketSocket {
     }, backoff + jitter)
   }
 
-  subscribe(symbol: string, exchange: string, interval: Interval): void {
+  subscribe(symbol: string, exchange: string, interval: Interval,
+            strategy?: string | null, tickSize?: number | null): void {
     const sub = { symbol, exchange, interval }
+    if (strategy) (sub as Record<string, unknown>).strategy = strategy
+    if (tickSize != null) (sub as Record<string, unknown>).tick_size = tickSize
     this.subs.set(symbol, sub)
-    // The server keys on `type` — the wire shape is {type, symbol, exchange, interval}
+    // The server keys on `type` — the wire shape is
+    // {type, symbol, exchange, interval, [strategy], [tick_size]}. Passing the
+    // strategy lets the LiveCandlePump recompute overlays from the SAME backend
+    // pipeline (zero-parity with /api/market/chart + paper).
     if (this.ws?.readyState === WebSocket.OPEN) this.send({ type: 'subscribe', ...sub })
   }
 

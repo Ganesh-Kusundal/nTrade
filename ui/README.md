@@ -227,9 +227,14 @@ to their defaults — only the initial hydration keeps the persisted values.
 
 ## State & race safety
 
-- `useCandles` aborts in-flight fetches on symbol/interval change **and**
-  discards stale responses via a monotonically increasing request id —
-  switching contracts can never flash the previous contract's candles.
+- `useChart` (the renderer's single data hook) aborts in-flight fetches on
+  symbol/interval/strategy change **and** discards stale responses via a
+  monotonically increasing request id — switching contracts can never flash
+  the previous contract's candles. It fetches the full backend-computed
+  payload (`/api/market/chart`: candles + VWAP ±σ + volume profile +
+  absorptions + strategy markers). The FE never recomputes indicator or
+  strategy math (the same backend OverlayPipeline drives `/api/market/chart`,
+  the live WS `overlays` patches, and paper/live execution — zero-parity).
 - Live candles are cleared on contract/interval change; WS messages for a
   non-current symbol are ignored.
 - The chart instance is removed on unmount; the socket is disconnected on

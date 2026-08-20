@@ -230,6 +230,15 @@ indicator.register("hma", IndicatorSpec(
 indicator.register("st", IndicatorSpec(
     id="st", label="SuperTrend", params={"st_period": 10, "st_mult": 3.0},
     series=True, plot=PlotSpec(series_key="stx_10_3", pane="separate", color="#e91e63")))
+# Chart overlays produced by OverlayPipeline (not compute_bundle): registered
+# here so /api/market/catalog mirrors the FE's render ids (vwap already above).
+# The contract is metadata-only; the calc lives in overlay_pipeline.py.
+indicator.register("volume_profile", IndicatorSpec(
+    id="volume_profile", label="Volume Profile", params={},
+    series=True, plot=PlotSpec(series_key="volume_profile", pane="overlay", color="#ffb300")))
+indicator.register("absorptions", IndicatorSpec(
+    id="absorptions", label="Absorption Bars", params={"avg_volume_mult": 1.5, "range_threshold": 0.5},
+    series=False, plot=PlotSpec(series_key="absorptions", pane="overlay", color="#ab47bc")))
 
 
 def compute_bundle(df: pd.DataFrame, **params) -> dict[str, float]:

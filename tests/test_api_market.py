@@ -31,6 +31,8 @@ def _sample_master(tmp_path) -> Path:
          "2026-08-25 14:30:00,-0.01,XX,10.0,M,FUT,,NIFTY"),
         ("NSE,D,58073,FUTIDX,0,NIFTY-Sep2026-FUT,65.0,NIFTY SEP FUT,"
          "2026-09-29 14:30:00,-0.01,XX,10.0,M,FUT,,NIFTY"),
+        ("NSE,D,58074,FUTIDX,0,NIFTY-Oct2026-FUT,75.0,NIFTY OCT FUT,"
+         "2026-10-27 14:30:00,-0.01,XX,10.0,M,FUT,,NIFTY"),
         ("NSE,D,58067,FUTIDX,0,BANKNIFTY-Aug2026-FUT,30.0,BANKNIFTY AUG FUT,"
          "2026-08-25 14:30:00,-0.01,XX,20.0,M,FUT,,BANKNIFTY"),
         ("MCX,M,449735,FUTCOM,0,CRUDEOIL-19Aug2026-FUT,1.0,CRUDEOIL AUG FUT,"
@@ -88,22 +90,6 @@ def test_ticks_are_recorded_not_synthesized_for_real_feed(tmp_path, monkeypatch)
     assert body["synthetic"] is True
 
 
-def test_recorded_ticks_group_into_bars(tmp_path, monkeypatch):
-    ticks_dir = tmp_path / "ticks"
-    monkeypatch.setenv("NTRADE_TICKS_DIR", str(ticks_dir))
-    p = ticks_dir / "NIFTY AUG FUT"
-    p.mkdir(parents=True)
-    (p / "2026-08-13.jsonl").write_text("\n".join([
-        json.dumps({"ts": f"2026-08-13T09:31:0{i}+05:30", "symbol": "NIFTY AUG FUT", "price": 24300.0 + i, "qty": 25})
-        for i in range(3)
-    ]))
-    svc = build_service("synthetic")
-    out = svc._recorded_ticks("NIFTY AUG FUT", "1m", None, None)
-    assert out, "recorded ticks must be read back"
-    assert all(set(b) == {"time", "prices", "quantities"} for b in out)
-    assert sum(len(b["prices"]) for b in out) == 3
-
-
 def test_provider_endpoint(client):
     r = client.get("/api/market/provider")
     assert r.status_code == 200
@@ -129,7 +115,7 @@ def test_contracts_endpoint(client):
     body = r.json()
     assert body["root"] == "NIFTY"
     assert body["exchange"] == "NFO"
-    assert len(body["contracts"]) == 2
+    assert len(body["contracts"]) == 3
     c = body["contracts"][0]
     assert c["contract_id"] == "NIFTY-Aug2026-FUT"
     assert c["symbol"] == "NIFTY AUG FUT"
@@ -269,32 +255,6 @@ def test_master_missing_503(tmp_path):
         assert c.get("/api/market/roots").status_code == 503
 
 
-def test_ticks_are_recorded_not_synthesized_for_real_feed(tmp_path, monkeypatch):
-    ticks_dir = tmp_path / "ticks"
-    monkeypatch.setenv("NTRADE_TICKS_DIR", str(ticks_dir))
-    app = create_app("synthetic", master=FuturesMaster(_sample_master(tmp_path)), live_stream=False)
-    app.state.pump._real_feed = True
-    app.state.pump.enabled = True
-    app.state.pump.subscribe("NIFTY AUG FUT", "NFO", "1m")
-    t0 = datetime(2026, 8, 13, 9, 31, 0, tzinfo=IST)
-    for i in range(5):
-        app.state.pump.ingest_tick("NIFTY AUG FUT", 24300.0 + i, 25, now=t0 + timedelta(seconds=i))
-    # The recorder wrote real JSONL — nothing was synthesized.
-    day_file = ticks_dir / "NIFTY AUG FUT" / "2026-08-13.jsonl"
-    assert day_file.exists()
-    lines = day_file.read_text().splitlines()
-    assert len(lines) == 5
-    rec = json.loads(lines[0])
-    assert {"ts", "symbol", "price", "qty"} <= set(rec)
-    # The synthetic provider's /ticks is honest about being synthetic.
-    c = TestClient(app)
-    r = c.get("/api/market/ticks", params={"symbol": "NIFTY AUG FUT", "exchange": "NFO", "interval": "1m"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["source"] == "synthetic"
-    assert body["synthetic"] is True
-
-
 def test_recorded_ticks_group_into_bars(tmp_path, monkeypatch):
     ticks_dir = tmp_path / "ticks"
     monkeypatch.setenv("NTRADE_TICKS_DIR", str(ticks_dir))
@@ -305,7 +265,11 @@ def test_recorded_ticks_group_into_bars(tmp_path, monkeypatch):
         for i in range(3)
     ]))
     svc = build_service("synthetic")
-    out = svc._recorded_ticks("NIFTY AUG FUT", "1m", None, None)
+    # Explicit bounds: start=None means "now", which drifts past the fixture's
+    # pinned 2026-08-13 day as real time passes.
+    out = svc._recorded_ticks("NIFTY AUG FUT", "1m",
+                              datetime(2026, 8, 13, 9, 30, tzinfo=IST),
+                              datetime(2026, 8, 13, 15, 30, tzinfo=IST))
     assert out, "recorded ticks must be read back"
     assert all(set(b) == {"time", "prices", "quantities"} for b in out)
     assert sum(len(b["prices"]) for b in out) == 3

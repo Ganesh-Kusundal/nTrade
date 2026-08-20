@@ -80,7 +80,7 @@ class TradingKernel:
 
         # --- engine stack (mode-independent) ---------------------------------
         self.market_engine = MarketEngine(self.ctx)
-        self.candle_engine = CandleEngine(self.ctx, timeframe=timeframe)
+        self.candle_engine = CandleEngine(self.ctx, timeframe=timeframe, mode=mode)
         self.indicator_engine = IndicatorEngine(self.ctx, timeframe=timeframe)
         self.strategy_engine = StrategyEngine(self.ctx)
         self.risk_engine = RiskEngine(self.ctx)

@@ -26,6 +26,19 @@ class IndicatorEngine:
         self._max_rows = max_rows
         context.bus.subscribe(CandleClosedEvent, self.on_candle_closed)
 
+    def warm_up(self, symbol: str, rows: list[dict]) -> None:
+        """Seed the rolling OHLCV window from historical bars so live
+        decisions aren't delayed by the cold-start warm-up. Rows carry
+        open/high/low/close/volume (naive IST wire rows)."""
+        buf = self._rows.setdefault(symbol, [])
+        for r in rows:
+            buf.append({
+                "open": r["open"], "high": r["high"],
+                "low": r["low"], "close": r["close"], "volume": r["volume"],
+            })
+        if len(buf) > self._max_rows:
+            del buf[:len(buf) - self._max_rows]
+
     def on_candle_closed(self, event: CandleClosedEvent) -> None:
         if event.timeframe != self.timeframe:
             return

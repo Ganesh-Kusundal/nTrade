@@ -2,9 +2,19 @@
 (so PositionSyncEngine reconciles paper to its own reality instead of wiping
 the kernel). Regression for the paper/synth position-sync wipe bug."""
 
+import pytest
+
 from ntrade.brokers.paper import PaperBroker
 from ntrade.domain.instruments.cash import Equity
 from ntrade.domain.orders.order import OrderType
+
+
+def test_paper_get_quote_never_mints_placeholder():
+    """get_quote must never fabricate a 100.0 quote for an unseeded symbol —
+    paper has no real market price until the feed seeds one."""
+    broker = PaperBroker()
+    with pytest.raises(ValueError, match="no live quote"):
+        broker.get_quote("NIFTY OCT FUT")
 
 
 def test_paper_broker_reports_authoritative_balance_and_positions():

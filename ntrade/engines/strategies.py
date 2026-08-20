@@ -79,10 +79,12 @@ class EmaCrossStrategy(Strategy):
         # entries (golden cross), SELL covers flat + long exits (death cross).
         if crossed_up and qty <= 0:
             self.emit_signal(symbol=event.symbol, exchange=event.exchange,
-                             side="BUY", quantity=self.quantity, price=event.close)
+                             side="BUY", quantity=self.quantity, price=event.close,
+                             order_type="LIMIT")
         elif crossed_down and qty >= 0:
             self.emit_signal(symbol=event.symbol, exchange=event.exchange,
-                             side="SELL", quantity=self.quantity, price=event.close)
+                             side="SELL", quantity=self.quantity, price=event.close,
+                             order_type="LIMIT")
 
 
 class ValentiniScalper(Strategy):

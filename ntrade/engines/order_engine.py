@@ -24,7 +24,11 @@ class OrderEngine:
         intent = OrderIntentEvent(
             symbol=signal.symbol, exchange=signal.exchange, side=signal.side,
             quantity=signal.quantity,
-            order_type="LIMIT" if signal.price else "MARKET",
+            # Preserve backward compatibility: LIMIT when price is set,
+            # MARKET when price is zero — but allow explicit order_type from
+            # the new signal.order_type field.
+            order_type=signal.order_type if signal.order_type != "MARKET"
+            else ("LIMIT" if signal.price else "MARKET"),
             price=signal.price,
             reference_price=signal.metadata.get("reference_price", 0.0),
             strategy=signal.strategy, ts=event.ts,

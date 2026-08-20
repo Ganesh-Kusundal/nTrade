@@ -1,26 +1,17 @@
 /**
- * Indicator + strategy registry — the client-side mirror of the backend
- * ``ntrade.registry`` (``indicator`` / ``strategy``).
+ * Indicator + strategy registry — the client-side *metadata mirror* of the
+ * backend ``ntrade.registry`` (``indicator`` / ``strategy``).
  *
- * Single source of truth for what the UI can draw: each key has an id that
- * matches the Python registry exactly, a ``run`` fn (re-exported from the
- * existing pure-TS mirrors), default params, and whether it produces a full
- * series (so the chart can draw it) or a single latest value.
+ * The FE is a renderer only: every indicator / strategy is computed by the
+ * backend OverlayPipeline and served via ``/api/market/chart`` (+ WS overlay
+ * patches). This file therefore holds NO math — only stable ids, labels,
+ * default params, and plot metadata so the chart legend / strategy picker can
+ * render. Adding a new indicator or strategy = register its metadata here AND
+ * in the Python registry; zero edits to TradeScreen / ChartPanel.
  *
- * Adding a new indicator or strategy = register here (both backend Python and
- * this TS file) — zero edits to TradeScreen / ChartPanel. The mirrors stay
- * pure (no API round-trip) and headers-free: every indicator module pulls its
- * own deps from ``../types/market`` and the pure-TS helpers.
- *
- * Parity with the backend is enforced by the integration test in
- * ``__tests__/registry.test.ts``: the two registries must carry the same keys
- * and a ``series`` flag consistent with how the chart actually renders them.
+ * Parity with the backend is enforced by ``tests/test_catalog_endpoint``
+ * (the two registries must carry the same keys).
  */
-
-import type { Candle } from '../types/market'
-import { vwapSeries, buildVolumeProfile, detectAbsorptions, sessionProfileCandles } from './indicators'
-import { runValentini, type ValentiniResult, type ValentiniTrade } from './valentini'
-import { runMorningVahVal, type MorningVahValResult, type MorningVahValTrade } from './morningVahVal'
 
 // ---------------------------------------------------------------------------------------
 // Types — mirror of ``ntrade/registry.py`` IndicatorSpec / StrategySpec / PlotSpec
@@ -33,24 +24,22 @@ export interface SeriesPlotSpec {
   label: string
 }
 
-/** How to render an indicator when its toggle is on. ``series=false`` → scalar, no chart asset. */
+/** How to render an indicator when its toggle is on. */
 export interface IndicatorSpec {
   id: string // exact match with ``ntrade.registry.indicator`` keys
   label: string
   category: 'volume' | 'price' | 'momentum' | 'order_flow' | 'profile'
   series: boolean
   plot?: SeriesPlotSpec
-  run: (candles: Candle[], ...opts: any[]) => unknown
   /** Default params forwarded to the runner (mirrors Python init defaults). */
   defaultParams?: Record<string, unknown>
 }
 
-/** Strategy overlay spec — re-exported run + trades shape + default params. */
+/** Strategy overlay metadata — id + label + draw state, no client run(). */
 export interface StrategySpec {
   id: string // exact match with ``ntrade.registry.strategy`` keys
   label: string
   category: 'scalper' | 'momentum' | 'mean_reversion'
-  run: (candles: Candle[], ...opts: any[]) => unknown
   defaultParams?: Record<string, unknown>
   /** Which indicator keys the strategy consumes (used by TradeScreen to seed
   *  toggle defaults — the strategy turns on its prerequisites). */
@@ -58,10 +47,9 @@ export interface StrategySpec {
 }
 
 // ---------------------------------------------------------------------------------------
-// Indicator registry — re-exports every pure-TS indicator under a stable id.
+// Indicator registry — display metadata only (the math lives on the backend).
 // ---------------------------------------------------------------------------------------
 
-export { sessionProfileCandles }
 export const indicators: Record<string, IndicatorSpec> = {
   vwap: {
     id: 'vwap',
@@ -69,7 +57,6 @@ export const indicators: Record<string, IndicatorSpec> = {
     category: 'price',
     series: true,
     plot: { kind: 'bands', key: 'vwap', label: 'VWAP ± σ' },
-    run: vwapSeries,
     defaultParams: { numStd: 2 },
   },
   volume_profile: {
@@ -78,7 +65,6 @@ export const indicators: Record<string, IndicatorSpec> = {
     category: 'profile',
     series: true,
     plot: { kind: 'profile', key: 'volume_profile', label: 'POC / VAH / VAL' },
-    run: buildVolumeProfile,
   },
   absorptions: {
     id: 'absorption',
@@ -86,25 +72,19 @@ export const indicators: Record<string, IndicatorSpec> = {
     category: 'order_flow',
     series: false,
     plot: { kind: 'markers', key: 'absorptions', label: 'Absorption ↑↓' },
-    run: detectAbsorptions,
     defaultParams: { avgVolumeMult: 1.5, rangeThreshold: 0.5 },
   },
 }
 
 // ---------------------------------------------------------------------------------------
-// Strategy registry — re-exports both scalpers under stable ids matching the
-// backend ``ntrade.registry.strategy`` keys: ema_cross, valentini, morning_vah_val.
+// Strategy registry — display metadata only (the replay lives on the backend).
 // ---------------------------------------------------------------------------------------
-
-export interface ValentiniTradeShape extends ValentiniTrade {}
-export interface MorningVahValTradeShape extends MorningVahValTrade {}
 
 export const strategies: Record<string, StrategySpec> = {
   valentini: {
     id: 'valentini',
     label: 'Valentini Scalper (Fabio)',
     category: 'scalper',
-    run: runValentini,
     defaultParams: {
       warmup: 15,
       absVolumeMult: 1.5,
@@ -130,7 +110,6 @@ export const strategies: Record<string, StrategySpec> = {
     id: 'morning_vah_val',
     label: 'Morning VAH/VAL (Mukul)',
     category: 'scalper',
-    run: runMorningVahVal,
     defaultParams: {
       sessionStart: '09:15',
       sessionEnd: '15:30',
@@ -146,15 +125,6 @@ export const strategies: Record<string, StrategySpec> = {
   },
 }
 
-// Quick shape guards — used by TradeScreen to verify the runner returns the
-// expected overlay shape without a full type-erasure downcast.
-export function isValentiniResult(r: unknown): r is ValentiniResult {
-  return typeof r === 'object' && r !== null && 'phase' in r && 'trades' in r && 'lastAbsorption' in r
-}
-export function isMorningVahValResult(r: unknown): r is MorningVahValResult {
-  return typeof r === 'object' && r !== null && 'trades' in r && 'levels' in r && 'bias' in r
-}
-
 // ---------------------------------------------------------------------------------------
 // Convenience — toggle + param defaults for a registered strategy.
 // ---------------------------------------------------------------------------------------
@@ -163,17 +133,4 @@ export function isMorningVahValResult(r: unknown): r is MorningVahValResult {
 *  ``usePersistedState`` initial state). */
 export function strategyIndicatorKeys(spec: StrategySpec): string[] {
   return spec.indicators
-}
-
-/** Merge a strategy's default params with caller overrides and the session
-*  window so TradeScreen can hand a complete opts object to ``spec.run``. */
-export function strategyRun(opts: { candles: Candle[], spec: StrategySpec, overrides?: Record<string, unknown>, session?: { start?: string; end?: string } }): unknown {
-  const base = (opts.spec.defaultParams ?? {}) as Record<string, unknown>
-  const merged: Record<string, unknown> = { ...base }
-  if (opts.session) {
-    if (opts.session.start != null) merged['sessionStart'] = opts.session.start
-    if (opts.session.end != null) merged['sessionEnd'] = opts.session.end
-  }
-  if (opts.overrides) Object.assign(merged, opts.overrides)
-  return opts.spec.run(opts.candles, merged)
 }

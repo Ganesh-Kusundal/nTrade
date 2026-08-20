@@ -240,6 +240,7 @@ def test_signals_set_get():
 
 def test_instrument_download_convenience():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     rel._history.download(timeframe="5m")
     assert len(rel._history.df) == 200

@@ -64,9 +64,11 @@ def test_paper_limit_order_fills_at_price():
     assert order.avg_price == 99.5
 
 
-def test_paper_get_quote_still_seeds_for_data_reads():
-    """Guard: get_quote must keep seeding for data reads (history/chains/
-    depth and static tests depend on it)."""
+def test_paper_get_quote_raises_for_data_reads_without_seed():
+    """Guard: get_quote must NOT mint a placeholder for data reads — callers
+    that need a price (history/chains/depth/static tests) must seed one
+    explicitly, or the read raises instead of fabricating a 100.0."""
     broker = PaperBroker()
     rel = Equity("RELIANCE", broker=broker)
-    assert broker.get_quote(rel).ltp == 100.0
+    with pytest.raises(ValueError, match="no live quote"):
+        broker.get_quote(rel)

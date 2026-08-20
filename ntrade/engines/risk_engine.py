@@ -92,6 +92,8 @@ class RiskEngine:
         px = event.price or 0.0
         if px <= 0.0:
             px = self._reference_price(event)  # MARKET signals carry price=0
+            if px <= 0.0 and self.max_notional is not None:
+                return f"notional unverifiable: no market price for {event.symbol}"
         notional = px * event.quantity
         if self.max_notional is not None and notional > self.max_notional:
             return f"notional {notional:.2f} exceeds max {self.max_notional}"

@@ -32,6 +32,19 @@ export function ReplayReadyState() {
   )
 }
 
+/**
+ * Non-blocking feed notice (pre-open / WS off / stale). Must NOT use
+ * LoadingState — that is ``absolute inset-0`` and blocks chart interaction
+ * even when historical candles are already on screen.
+ */
+export function FeedNotice({ label }: { label: string }) {
+  return (
+    <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md border border-amber-400/40 bg-panel/85 px-3 py-1 text-[11px] text-amber-200 backdrop-blur-sm">
+      {label}
+    </div>
+  )
+}
+
 export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
     <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-base/60">
@@ -43,6 +56,19 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
           Retry
         </button>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * Non-blocking broker error chip — shown when the broker rejects a quote/data
+ * request. Unlike EmptyState (no data), this is a broker failure the user
+ * must know about; the UI must never silently substitute demo/synthetic data.
+ */
+export function BrokerErrorNotice({ message }: { message: string }) {
+  return (
+    <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md border border-danger/40 bg-panel/85 px-3 py-1 text-[11px] text-danger backdrop-blur-sm">
+      ⚠ broker error · {message}
     </div>
   )
 }

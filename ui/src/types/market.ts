@@ -111,8 +111,93 @@ export interface RootsResponse {
 export type WsMessage =
   | { type: 'live_status'; symbol: string; exchange: string; interval: Interval; status: 'streaming' | 'off' | 'stale'; source: string; reason?: string }
   | { type: 'candle'; symbol: string; exchange: string; interval: Interval; candle: Candle; ts: string }
+  | { type: 'overlays'; symbol: string; exchange: string; interval: Interval; overlays: ChartOverlays; strategy: StrategyPayload | null; ts?: number }
   | { type: 'pong' }
   | { type: 'error'; detail: string }
 
 export type FetchStatus = 'loading' | 'ready' | 'empty' | 'error'
 export type Mode = 'live' | 'replay'
+
+// ---------------------------------------------------------------------------
+// Server-owned chart overlays (single source of truth — computed by the
+// backend OverlayPipeline from the SAME analytics/strategy code the paper and
+// live engines run). The FE never reimplements this math. Shapes mirror
+// api/analytics/overlay_pipeline.py OverlayDTO.to_dict().
+// ---------------------------------------------------------------------------
+
+export interface VwapPoint {
+  time: number
+  value: number | null
+}
+
+export interface VolumeProfileLevel {
+  price: number
+  volume: number
+}
+
+export interface VolumeProfilePayload {
+  step: number
+  poc: number
+  vah: number
+  val: number
+  levels: VolumeProfileLevel[]
+}
+
+export interface AbsorptionPayload {
+  index: number
+  time: number
+  price: number
+  volume: number
+  side: 'BUY' | 'SELL'
+  strength: number
+}
+
+export interface ChartOverlays {
+  vwap: VwapPoint[] | null
+  vwap_upper: VwapPoint[] | null
+  vwap_lower: VwapPoint[] | null
+  volume_profile: VolumeProfilePayload | null
+  absorptions: AbsorptionPayload[] | null
+  range_bars?: unknown[] | null
+}
+
+/** A strategy signal produced by the backend replay (entry or exit marker). */
+export interface StrategySignal {
+  symbol: string
+  side: 'BUY' | 'SELL'
+  quantity: number
+  phase?: string | null
+  exit_reason?: string | null
+  intent_price?: number | null
+  sl?: number | null
+  tp?: number | null
+  reference_price?: number | null
+}
+
+export interface StrategyLevel {
+  date: string
+  vah: number
+  val: number
+  poc: number
+}
+
+export interface StrategyPayload {
+  id: string
+  signals: StrategySignal[]
+  levels?: StrategyLevel[]
+  phase?: string | null
+  bias?: string | null
+}
+
+export interface ChartResponse {
+  symbol: string
+  exchange: string
+  interval: string
+  source: string
+  count: number
+  candles: Candle[]
+  overlays: ChartOverlays
+  strategy: StrategyPayload | null
+  range_bars?: unknown[] | null
+  reason?: string | null  // why a broker returned no data (vs. no history)
+}

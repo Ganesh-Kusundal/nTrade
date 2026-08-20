@@ -5,7 +5,6 @@ import pytest
 from ntrade.brokers.paper import PaperBroker
 from ntrade.domain.instruments.cash import Commodity, Equity, Index, Spot
 from ntrade.domain.instruments.derivatives import Future, Option
-from ntrade.domain.market.quote import Tick
 
 
 def test_equity_is_instrument():
@@ -93,6 +92,7 @@ def test_live_tick_handlers():
 
 def test_history_fetch_and_delegate():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     series = rel._history.fetch(timeframe="5m")
     assert len(series) == 200
@@ -104,6 +104,7 @@ def test_history_fetch_and_delegate():
 
 def test_history_freshness_cache():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     first = rel._history.fetch(timeframe="5m")
     assert first.is_fresh()
@@ -133,6 +134,7 @@ def test_history_cache_is_per_timeframe():
 
 def test_indicators_bundle():
     broker = PaperBroker()
+    broker.seed_history("RELIANCE", timeframe="5m")
     rel = Equity("RELIANCE", broker=broker)
     rel._history.fetch(timeframe="5m")
     rel.analytics.compute()

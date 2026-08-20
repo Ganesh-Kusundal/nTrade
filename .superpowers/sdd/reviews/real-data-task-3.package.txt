@@ -1,0 +1,603 @@
+=== COMMITS ===
+8dce903 feat(paper): feed real ticks through the canonical kernel pipeline; gate on live feed
+
+=== STAT ===
+ api/paper_trader.py                | 165 ++++++++++++++++++-------------------
+ tests/test_paper_routes.py         |  13 +++
+ tests/test_paper_trader_service.py | 131 +++++++++++++++++++++++------
+ 3 files changed, 195 insertions(+), 114 deletions(-)
+
+=== DIFF ===
+diff --git a/api/paper_trader.py b/api/paper_trader.py
+index 64865ca..ae57233 100644
+--- a/api/paper_trader.py
++++ b/api/paper_trader.py
+@@ -1,41 +1,43 @@
+ """Paper trading service + REST routes.
+ 
+-Runs ``MorningVAHVAL`` on a ₹1M ``PaperBroker`` session that is fed by the
+-live candle pump — a UI control ("paper trade on the selected symbol") that
+-exercises the real kernel pipeline (feed → candles → strategy → risk →
+-paper fills) with zero real orders.
+-
+-The pump forms live 1m bars; this service polls the pump's in-progress bar
+-and feeds each *completed* bar into the paper kernel as Quote +
+-CandleClosed events (the strategy reacts on candle close, exactly like the
+-live engine stack). Outside exchange hours the pump produces no bars and the
+-paper session simply idles.
++Runs ``MorningVAHVAL`` on a ₹1M ``PaperBroker`` session fed by the live
++candle pump — a UI control ("paper trade on the selected symbol") that
++exercises the real kernel pipeline (real ``TickEvent`` → MarketEngine →
++CandleEngine → strategy → risk → paper fills) with zero real orders.
++
++The pump's ``on_tick`` listener publishes every real tick into the paper
++kernel; a snapshot loop then polls the kernel (LTP, position sync, fill /
++signal recording) so the status endpoint tracks the canonical engine's
++decisions. No ``QuoteEvent``/``CandleClosedEvent`` is ever hand-injected.
++Starting paper requires a real live feed; outside exchange hours the pump
++produces no ticks and the paper session simply idles.
+ 
+ Routes:
+     POST /api/paper/start   {symbol, exchange, lot_size}
+     POST /api/paper/stop
+     GET  /api/paper/status
+ """
+ 
+ from __future__ import annotations
+ 
+ import logging
+ import threading
+ import time
+ from datetime import datetime
++from typing import Callable
+ 
+ from fastapi import APIRouter, HTTPException, Request
+ from pydantic import BaseModel
+ 
+ from ntrade.domain.market_hours import IST
+-from ntrade.events.market import CandleClosedEvent, QuoteEvent
++from ntrade.events.market import TickEvent
+ 
+ log = logging.getLogger("api.paper")
+ 
+ paper_router = APIRouter(prefix="/api/paper", tags=["paper"])
+ 
+ _POLL_S = 1.0
+ 
+ 
+ class PaperStartRequest(BaseModel):
+     symbol: str
+@@ -69,73 +71,83 @@ class PaperTraderService:
+         self._market = market
+         self._pump = pump
+         self._initial_cash = float(initial_cash)
+         self._lock = threading.Lock()
+         self._session = None
+         self._symbol: str | None = None
+         self._exchange: str = "NFO"
+         self._lot_size = 1
+         self._thread: threading.Thread | None = None
+         self._stop_event = threading.Event()
+-        self._pending_bar = None
+-        self._last_bar_time = 0
++        self._unsub: Callable[[], None] | None = None
+         self._started_at: str | None = None
+         self._error: str | None = None
+         self._fills: list[dict] = []
+         self._signals: list[dict] = []
+ 
+     # ------------------------------------------------------------------ API
+     def start(self, symbol: str, exchange: str = "NFO",
+               lot_size: int | None = None) -> dict:
+         symbol = symbol.strip().upper()
+         with self._lock:
++            if not self._pump._real_feed or not self._pump.enabled:
++                raise HTTPException(
++                    status_code=422,
++                    detail="paper trading requires a real live feed (run --provider dhan --live-stream)",
++                )
+             if self._session is not None:
+                 already = True
+             else:
+                 already = False
+                 try:
+                     self._build_session(symbol, exchange.upper(), lot_size)
+                 except Exception as exc:  # noqa: BLE001 — surface to the caller
+                     log.exception("paper start failed for %s", symbol)
+                     self._error = str(exc)
+                     raise HTTPException(status_code=500, detail=str(exc)) from exc
+                 self._started_at = datetime.now(tz=IST).isoformat()
+                 self._error = None
+                 self._stop_event.clear()
+-                self._thread = threading.Thread(target=self._feed_loop, daemon=True,
+-                                                name="paper-feed")
++                self._unsub = self._pump.on_tick(self._on_pump_tick)
++                self._thread = threading.Thread(target=self._snapshot_loop, daemon=True,
++                                                name="paper-snapshot")
+                 self._thread.start()
+         # status() takes the same lock — call it outside the with block.
+         if not already:
+             log.info("paper trading started: %s (%s)", symbol, exchange.upper())
+         return self.status()
+ 
+     def stop(self) -> dict:
+         with self._lock:
+             session = self._session
+             symbol = self._symbol
+             self._session = None
+             self._symbol = None
+             self._stop_event.set()
++            unsub = self._unsub
++            self._unsub = None
++            if unsub is not None:
++                try:
++                    unsub()
++                except Exception:  # noqa: BLE001
++                    pass
+             if session is not None:
+                 try:
+                     session.kernel.stop(reason="paper stop")
+                 except Exception:  # noqa: BLE001
+                     pass
+                 try:
+                     session.disconnect()
+                 except Exception:  # noqa: BLE001
+                     pass
+             thread = self._thread
+             self._thread = None
+-            self._pending_bar = None
+-            self._last_bar_time = 0
+         if thread is not None:
+             thread.join(timeout=_POLL_S * 2)
+         log.info("paper trading stopped (%s)", symbol)
+         return self.status()
+ 
+     def status(self) -> dict:
+         with self._lock:
+             session = self._session
+             symbol = self._symbol
+             started_at = self._started_at
+@@ -208,24 +220,22 @@ class PaperTraderService:
+         session = TradingSession.paper(initial_cash=self._initial_cash,
+                                        session_id=f"paper-{symbol}")
+         session.register(session.stock(symbol))
+         # The tuned preset's sl_pad is absolute points calibrated for ~₹76k
+         # index-futures notional; scale it to this symbol's price so a ₹100
+         # stock doesn't get a 30% stop pad.
+         kw = dict(cls.TUNED)
+         ref = cls.TUNED_REF_PRICE
+         try:
+             state = self._pump._subs.get(symbol) or {}
+-            px = float(state.get("price") or 0.0)
+-            if px <= 0:
+-                bar = state.get("bar") or {}
+-                px = float(bar.get("close") or 0.0)
++            bar = state.get("bar") or {}
++            px = float(bar.get("close") or 0.0)
+         except Exception:  # noqa: BLE001 — fall back to the reference price
+             px = 0.0
+         if px > 0:
+             kw["sl_pad"] = kw["sl_pad"] * (px / ref)
+         session.register_strategy(cls(
+             symbol=symbol, exchange=exchange, lot_size=self._lot_size, **kw,
+         ), risk={
+             # Sizing is the strategy's risk budget; these are sanity ceilings.
+             "max_quantity": 10_000,
+             "max_notional": 300_000_000.0,
+@@ -236,89 +246,70 @@ class PaperTraderService:
+         try:
+             self._pump.subscribe(symbol, exchange, "1m")
+         except Exception:  # noqa: BLE001 — pump problems must not block paper
+             log.warning("pump subscribe failed for %s", symbol)
+         self._session = session
+         self._symbol = symbol
+         self._exchange = exchange
+         self._fills = []
+         self._signals = []
+ 
+-    def _feed_loop(self) -> None:
+-        with self._lock:
+-            session = self._session
+-        while not self._stop_event.is_set():
+-            bar = self._pump_bar()
+-            if bar is not None and bar.get("time") != self._last_bar_time:
+-                if self._pending_bar is not None:
+-                    self._feed_closed(self._pending_bar, session)
+-                self._pending_bar = dict(bar)
+-                self._last_bar_time = int(bar["time"])
+-            elif bar is not None:
+-                self._pending_bar = dict(bar)  # in-progress revision
+-            time.sleep(_POLL_S)
+-        # Flush the in-progress bar on stop so the final partial candle is
+-        # evaluated too (the captured session outlives stop() clearing it).
+-        with self._lock:
+-            bar = self._pending_bar
+-        if session is not None and bar is not None:
+-            self._feed_closed(bar, session)
+-
+-    def _pump_bar(self) -> dict | None:
+-        with self._lock:
+-            symbol = self._symbol
+-            subs = self._pump._subs
+-        if not symbol:
+-            return None
+-        state = subs.get(symbol)
+-        return state.get("bar") if state else None
+-
+-    def _feed_closed(self, bar: dict, session=None) -> None:
+-        with self._lock:
+-            session = session or self._session
+-            symbol = self._symbol
+-            exchange = self._exchange
+-        if session is None or symbol is None:
++    def _on_pump_tick(self, symbol: str, exchange: str, price: float,
++                      qty: int, ts: datetime) -> None:
++        session = self._session
++        if session is None or symbol != self._symbol:
+             return
+         try:
+-            ts = datetime.fromtimestamp(int(bar["time"]), tz=IST)
+-            k = session.kernel
+-            k.bus.publish(QuoteEvent(
+-                symbol=symbol, exchange=exchange, ltp=float(bar["close"]),
+-                bid=0.0, ask=0.0, open=float(bar["open"]),
+-                high=float(bar["high"]), low=float(bar["low"]),
+-                volume=int(bar.get("volume", 0) or 0), ts=ts,
++            session.kernel.bus.publish(TickEvent(
++                symbol=symbol, exchange=exchange, price=float(price),
++                quantity=int(qty), ts=ts,
+             ))
+-            k.bus.publish(CandleClosedEvent(
+-                symbol=symbol, exchange=exchange, timeframe="1m",
+-                open=float(bar["open"]), high=float(bar["high"]),
+-                low=float(bar["low"]), close=float(bar["close"]),
+-                volume=int(bar.get("volume", 0) or 0), ts=ts,
+-            ))
+-            # Keep the open position's LTP live so the status endpoint's
+-            # equity / unrealized PnL move with price (mirror of the backtest
+-            # simulator's _mark_to_market: Position.ltp otherwise only updates
+-            # on fills).
+-            position = k.ctx.portfolio.position(symbol)
+-            if position is not None:
+-                position.ltp = float(bar["close"])
+-            # Snapshot fills + signals for the status endpoint (bus history is
+-            # capped at 10k events, so keep our own growing lists).
+-            for event in k.bus.history:
+-                from ntrade.events.order import OrderFilledEvent
+-                from ntrade.events.risk import SignalGeneratedEvent
+-                if isinstance(event, OrderFilledEvent):
+-                    self._record_fill(event)
+-                elif isinstance(event, SignalGeneratedEvent):
+-                    self._record_signal(event)
+-        except Exception:  # noqa: BLE001 — a bad bar never kills the loop
+-            log.exception("paper feed failed on bar %s", bar.get("time"))
++        except Exception:  # noqa: BLE001
++            log.exception("paper tick publish failed")
++
++    def _snapshot_loop(self) -> None:
++        while not self._stop_event.is_set():
++            try:
++                session = self._session
++                if session is not None:
++                    k = session.kernel
++                    # The bus RLock is the kernel's serialization point: live
++                    # mode has multiple producer threads and the shared
++                    # read-models must never observe a torn dispatch (EventBus
++                    # docstring). This snapshot loop mutates the same
++                    # read-models (position LTP, portfolio sync) and scans
++                    # history, so it must run inside that lock or it races the
++                    # pump's tick dispatch — concurrent list/read-model
++                    # mutation that hangs or segfaults under load.
++                    with k.bus._lock:
++                        bar = (self._pump._subs.get(self._symbol) or {}).get("bar")
++                        if bar:
++                            position = k.ctx.portfolio.position(self._symbol)
++                            if position is not None:
++                                position.ltp = float(bar["close"])
++                        try:
++                            k.sync_positions()
++                        except Exception:  # noqa: BLE001
++                            pass  # reconciliation failure keeps prior state
++                        for event in k.bus.history:
++                            from ntrade.events.order import OrderFilledEvent
++                            from ntrade.events.risk import SignalGeneratedEvent
++                            if isinstance(event, OrderFilledEvent):
++                                self._record_fill(event)
++                            elif isinstance(event, SignalGeneratedEvent) and (
++                                "exit_reason" in (event.metadata or {})
++                                or (event.metadata or {}).get("phase") == "signal"
++                            ):
++                                self._record_signal(event)
++            except Exception:  # noqa: BLE001
++                log.exception("paper snapshot failed")
++            time.sleep(_POLL_S)
+ 
+     def _record_fill(self, event: OrderFilledEvent) -> None:
+         if any(f.get("order_id") == event.order_id for f in self._fills):
+             return
+         self._fills.append({
+             "order_id": event.order_id,
+             "symbol": event.symbol,
+             "side": event.side,
+             "quantity": int(event.quantity),
+             "price": round(float(event.fill_price), 4),
+diff --git a/tests/test_paper_routes.py b/tests/test_paper_routes.py
+index b41c3e5..30ab7a0 100644
+--- a/tests/test_paper_routes.py
++++ b/tests/test_paper_routes.py
+@@ -13,30 +13,43 @@ from api.server import create_app
+ def test_paper_routes_lifecycle(tmp_path):
+     from tests.test_api_market import _sample_master
+ 
+     app = create_app("synthetic", master=_sample_master(tmp_path), live_stream=False)
+     with TestClient(app) as c:
+         # Status is idle before any session.
+         st = c.get("/api/paper/status").json()
+         assert st["running"] is False
+         assert st["initial_cash"] == 1_000_000.0
+ 
++        # Paper now requires a real live feed — open the fixture seams so the
++        # start control can run without a Dhan connection.
++        app.state.paper._pump._real_feed = True
++        app.state.paper._pump.enabled = True
++
+         # Start a paper session on a symbol (idempotent second start).
+         st = c.post("/api/paper/start",
+                     json={"symbol": "NIFTY AUG FUT", "exchange": "NFO"}).json()
+         assert st["running"] is True
+         assert st["symbol"] == "NIFTY AUG FUT"
+         assert st["balance"] == 1_000_000.0
+         assert c.post("/api/paper/start",
+                       json={"symbol": "NIFTY AUG FUT"}).json()["running"] is True
+ 
+         # Stop flattens to idle.
+         st = c.post("/api/paper/stop").json()
+         assert st["running"] is False
+         assert st["balance"] == 1_000_000.0
+ 
+ 
+ def test_paper_start_requires_symbol():
+     app = create_app("synthetic", live_stream=False)
+     with TestClient(app) as c:
+         # Missing symbol → 422 from the pydantic body.
+         assert c.post("/api/paper/start", json={}).status_code == 422
++
++
++def test_paper_start_requires_real_feed():
++    app = create_app("synthetic", live_stream=False)
++    c = TestClient(app)
++    r = c.post("/api/paper/start", json={"symbol": "NIFTY AUG FUT", "exchange": "NFO"})
++    assert r.status_code == 422
++    assert "real live feed" in r.json()["detail"]
+\ No newline at end of file
+diff --git a/tests/test_paper_trader_service.py b/tests/test_paper_trader_service.py
+index 78de8ae..1030604 100644
+--- a/tests/test_paper_trader_service.py
++++ b/tests/test_paper_trader_service.py
+@@ -1,122 +1,199 @@
+ """PaperTraderService tests — the UI paper-trade control's backend.
+ 
+-Drives the real kernel stack (feed -> candles -> MorningVAHVAL -> risk ->
+-PaperBroker fills) through the service's bar-feeding path with synthetic
+-candles, and asserts the status endpoint reports trades, balance changes,
+-and positions — the ₹1M paper-trading contract.
++Drives the real kernel stack (real ticks -> MarketEngine -> CandleEngine ->
++MorningVAHVAL -> risk -> PaperBroker fills) through the pump's tick listener,
++and asserts the status endpoint reports trades, balance changes, and positions
++— the ₹1M paper-trading contract.
++
++Ticks are fed as naive IST wall-clock timestamps (the domain convention the
++strategy and the whole backtest stack expect — see the zero-parity audit); the
++kernel's CandleEngine builds the real bars, and fills surface through the
++service's snapshot drain.
+ """
+ 
++import time
+ from datetime import datetime
+ 
+-from api.paper_trader import PaperTraderService
++from api.paper_trader import PaperTraderService, _POLL_S
++from api.server import create_app
++from ntrade.domain.market_hours import IST
++from ntrade.events.market import CandleClosedEvent
++
++_SYMBOL = "BANKNIFTY AUG FUT"
+ 
+ 
+ def _ist_epoch(y, mo, d, h, mi):
+     """UTC epoch for an IST wall-clock time."""
+     from zoneinfo import ZoneInfo
+     dt = datetime(y, mo, d, h, mi, tzinfo=ZoneInfo("Asia/Kolkata"))
+     return int(dt.timestamp())
+ 
+ 
+-def _bar(day, minute, o, h, l, c, volume=100):
+-    """One 1m bar dict exactly as the live pump emits (session-anchored ts)."""
+-    return {
+-        "time": _ist_epoch(2026, 8, day, 9, 15) + (minute - 555) * 60,
+-        "open": o, "high": h, "low": l, "close": c, "volume": volume,
+-    }
++def _bar_ts(day, minute):
++    """Session-anchored IST epoch for a 1m bar (09:15 open)."""
++    return _ist_epoch(2026, 8, day, 9, 15) + (minute - 555) * 60
++
++
++def _naive_ist(epoch):
++    """IST wall-clock digits as a naive timestamp (naive == IST wall time)."""
++    return datetime.fromtimestamp(epoch, tz=IST).replace(tzinfo=None)
+ 
+ 
+ class _FakePump:
+-    """Minimal pump stub: the service only reads _subs and calls subscribe."""
++    """Pump seam with the real pump's surface the service uses: ``_real_feed``,
++    ``enabled``, ``_subs``, ``subscribe``, ``on_tick``, ``ingest_tick``."""
+ 
+     def __init__(self):
++        self._real_feed = True
++        self.enabled = True
+         self._subs = {}
++        self._tick_listeners = []
+         self.subscribed = []
+ 
+     def subscribe(self, symbol, exchange, interval):
+         self.subscribed.append((symbol, exchange, interval))
+-        self._subs.setdefault(symbol, {})["bar"] = None
++        self._subs.setdefault(symbol, {"bar": None, "exchange": exchange, "interval": interval})
++
++    def on_tick(self, fn):
++        self._tick_listeners.append(fn)
++        return lambda: self._tick_listeners.remove(fn)
++
++    def ingest_tick(self, symbol, price, qty=0, now=None):
++        state = self._subs.get(symbol)
++        if state is None:
++            return None
++        state["bar"] = {"close": price}  # snapshot ltp only; the kernel builds real bars
++        for fn in self._tick_listeners:
++            fn(symbol, state.get("exchange", "NFO"), float(price), int(qty or 0), now)
++
++
++def _feed_bar(svc, day, mi, o, h, l, c, volume=100):
++    """Drive one 1m bar as four real ticks so the kernel's CandleEngine closes
++    it with the intended OHLC: o / low / high / c at +1s, +10s, +30s, +59s,
++    with qty values summing to the bar's volume."""
++    base = _bar_ts(day, mi)
++    q = volume // 4
++    for off, px, qty in ((1, o, q), (10, min(l, h), q),
++                         (30, max(l, h), q), (59, c, volume - 3 * q)):
++        svc._pump.ingest_tick(_SYMBOL, px, qty, now=_naive_ist(base + off))
+ 
+ 
+ def _feed_day(svc, day, open_px, close_px):
+     """Full 09:15-15:29 session drifting open → close (1m bars)."""
+     n = 375
+     for i in range(n):
+         frac = i / (n - 1)
+         c = open_px + (close_px - open_px) * frac
+         o = c - (close_px - open_px) / (n - 1) * 0.5
+-        svc._feed_closed(_bar(day, 555 + i, o, max(o, c) + 0.5,
+-                              min(o, c) - 0.5, c))
++        _feed_bar(svc, day, 555 + i, o, max(o, c) + 0.5, min(o, c) - 0.5, c)
+ 
+ 
+ def _feed_profile(svc, day):
+     """09:15-09:29 profile window: POC ≈ 99, VAH ≈ 101, final 2m dips below
+     VAL (same data as tests/test_morning_vah_val.py)."""
+     for i in range(10):  # minutes 09:15..09:24
+         c = 99.5 if i % 2 == 0 else 101.5
+-        svc._feed_closed(_bar(day, 555 + i, c - 1.5, c + 0.5, c - 1.5, c))
++        _feed_bar(svc, day, 555 + i, c - 1.5, c + 0.5, c - 1.5, c)
+     # 09:25..09:27 — thicken the region above VAH so the VA extends upward.
+-    svc._feed_closed(_bar(day, 565, 102.0, 103.0, 101.5, 102.5, volume=50))
+-    svc._feed_closed(_bar(day, 566, 102.5, 103.2, 102.0, 103.0, volume=50))
+-    svc._feed_closed(_bar(day, 567, 103.0, 103.2, 101.5, 102.0, volume=50))
++    _feed_bar(svc, day, 565, 102.0, 103.0, 101.5, 102.5, volume=50)
++    _feed_bar(svc, day, 566, 102.5, 103.2, 102.0, 103.0, volume=50)
++    _feed_bar(svc, day, 567, 103.0, 103.2, 101.5, 102.0, volume=50)
+     # 09:28..09:29 — fake breakdown below VAL.
+-    svc._feed_closed(_bar(day, 568, 99.0, 98.5, 97.3, 97.6))
+-    svc._feed_closed(_bar(day, 569, 97.6, 98.2, 97.2, 97.7))
++    _feed_bar(svc, day, 568, 99.0, 98.5, 97.3, 97.6)
++    _feed_bar(svc, day, 569, 97.6, 98.2, 97.2, 97.7)
+ 
+ 
+ def _feed_reversal_long(svc, day):
+-    svc._feed_closed(_bar(day, 570, 97.7, 98.8, 97.4, 98.4))
+-    svc._feed_closed(_bar(day, 571, 98.4, 99.9, 98.2, 99.6))
++    _feed_bar(svc, day, 570, 97.7, 98.8, 97.4, 98.4)
++    _feed_bar(svc, day, 571, 98.4, 99.9, 98.2, 99.6)
+ 
+ 
+ def _make_service():
+     pump = _FakePump()
+     svc = PaperTraderService(None, pump, initial_cash=1_000_000.0)
+     return svc, pump
+ 
+ 
++def _drain(svc, timeout=3.0):
++    """Wait for the snapshot loop to record fills from the kernel."""
++    status = svc.status()
++    deadline = time.monotonic() + timeout
++    while status["n_trades"] < 1 and time.monotonic() < deadline:
++        time.sleep(_POLL_S)  # the snapshot loop polls every 1.0s
++        status = svc.status()
++    return status
++
++
+ def test_start_stop_lifecycle():
+     svc, pump = _make_service()
+     st = svc.start("BANKNIFTY AUG FUT", "NFO")
+     assert st["running"] is True
+     assert st["symbol"] == "BANKNIFTY AUG FUT"
+     assert st["initial_cash"] == 1_000_000.0
+     assert ("BANKNIFTY AUG FUT", "NFO", "1m") in pump.subscribed
+     # Idempotent start while running.
+     assert svc.start("BANKNIFTY AUG FUT")["running"] is True
+     stopped = svc.stop()
+     assert stopped["running"] is False
+     assert stopped["balance"] == 1_000_000.0
+ 
+ 
+ def test_paper_buy_then_stop_is_flat():
+     svc, _ = _make_service()
+     svc.start("BANKNIFTY AUG FUT", "NFO", lot_size=15)
+     # The service runs the cost-drag-tuned preset (require_cluster=True, which
+     # needs 20+ 2m bars — the synthetic feed can't reach it). White-box the
+-    # cluster check so the paper pipeline (feed -> fills -> status) is tested
+-    # in isolation from the strategy knobs, exactly like the strategy suite.
++    # cluster check so the paper pipeline (real ticks -> fills -> status) is
++    # tested in isolation from the strategy knobs, exactly like the strategy
++    # suite.
+     strat = svc._session.kernel.strategy_engine.strategies[0]
+     strat._ema_cluster = lambda close: True
++    # IndicatorEngine recomputes the full bundle (incl. O(n²) per-element
++    # SuperTrend) on every candle close — 350+ bars here is ~30s of pure
++    # recompute that the entry path never consumes. White-box it out so the
++    # paper pipeline is fast and deterministic (a kernel perf concern, out of
++    # scope for this task).
++    k = svc._session.kernel
++    k.bus.unsubscribe(CandleClosedEvent, k.indicator_engine.on_candle_closed)
+     _feed_day(svc, 3, 100.0, 130.0)      # prior day UP → bias
+     _feed_profile(svc, 4)                # day 2 profile (VAL ~97.2, VAH ~101)
+     _feed_reversal_long(svc, 4)          # 09:30-09:31 reversal
+-    svc._feed_closed(_bar(4, 572, 99.6, 99.7, 99.4, 99.6))  # entry fires
++    _feed_bar(svc, 4, 572, 99.6, 99.7, 99.4, 99.6)  # entry fires on CandleEngine close
+ 
+-    status = svc.status()
++    status = _drain(svc)
+     assert status["running"] is True
+     assert status["n_trades"] >= 1, "the entry fill must be recorded"
+     fills = [t for t in status["trades"] if t["side"] == "BUY"]
+     assert fills, "a BUY fill must appear"
+     assert status["balance"] < 1_000_000.0, "cash must drop on the buy"
+     positions = status["positions"]
+     assert any(p["symbol"] == "BANKNIFTY AUG FUT" for p in positions)
+     open_pos = [p for p in positions if p["symbol"] == "BANKNIFTY AUG FUT"][0]
+     assert open_pos["quantity"] > 0
+     assert open_pos["quantity"] % 15 == 0, "qty must be lot-multiples"
+     # An open runner after the entry.
+     assert status["realized_pnl"] == 0.0
+ 
+     svc.stop()
+     stopped = svc.status()
+     assert stopped["running"] is False
++
++
++def test_paper_feed_publishes_real_ticks_not_fabricated_events(tmp_path):
++    from tests.test_api_market import _sample_master
++
++    app = create_app("synthetic", master=_sample_master(tmp_path), live_stream=False)
++    service = app.state.paper
++    service._pump._real_feed = True
++    service._pump.enabled = True
++    service._pump.subscribe("NIFTY AUG FUT", "NFO", "1m")
++    service.start("NIFTY AUG FUT", "NFO")
++    try:
++        now = datetime.now(tz=IST)
++        for price in (24300.0, 24310.0, 24305.0, 24312.0):
++            service._pump.ingest_tick("NIFTY AUG FUT", price, 25, now=now)
++        st = service.status()
++        assert st["running"] is True
++        assert service._session is not None
++    finally:
++        service.stop()

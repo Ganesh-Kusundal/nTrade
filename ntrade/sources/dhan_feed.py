@@ -141,6 +141,9 @@ class DhanMarketFeedSource(MarketFeedSource):
         self._sleep = time.sleep
         self._reconnect_limiter = RateLimiter(calls_per_second=0.5)
         self._reconnect_called = False
+        # P0-1 dedup: (symbol, exchange) → (epoch_s, price, qty) for duplicate ticks
+        self._dedup_window: dict[tuple[str, str], tuple[float, float, int]] = {}
+        self._dedup_ttl_s: float = 1.0
         # M-2: stop() sets this so the websocket's close/error callbacks know
         # the shutdown was deliberate and must not trigger a reconnect.
         self._intentional_stop = False
@@ -246,9 +249,31 @@ class DhanMarketFeedSource(MarketFeedSource):
         if self.kernel is None:
             return
         ts = self.kernel.clock.now()
-        for event in dhan_payload_to_events(payload, self.symbol_map, ts):
+        events = dhan_payload_to_events(payload, self.symbol_map, ts)
+        # P0-1: content-dedup ticks within the sliding window (broker replay / gateway retry)
+        events = self._dedupe_ticks(events)
+        for event in events:
             self.bus.publish(event)
         self.payloads_ingested += 1
+
+    def _dedupe_ticks(self, events: list) -> list:
+        """Drop duplicate ticks — Dhan MarketFeed may replay the same (price, qty)
+        within a short window. A duplicate tick inflates volume, corrupts OHLCV,
+        and can trigger phantom signals. Returns events with dups removed."""
+        if not events:
+            return events
+        out = []
+        for event in events:
+            if isinstance(event, TickEvent):
+                key = (event.symbol, event.exchange)
+                ts_s = event.ts.timestamp()
+                last = self._dedup_window.get(key)
+                if last and (ts_s - last[0]) < self._dedup_ttl_s \
+                        and last[1] == event.price and last[2] == event.quantity:
+                    continue  # duplicate — skip
+                self._dedup_window[key] = (ts_s, event.price, event.quantity)
+            out.append(event)
+        return out
 
     def _on_error(self, instance, error) -> None:
         _logger.error("feed error: %s", error)

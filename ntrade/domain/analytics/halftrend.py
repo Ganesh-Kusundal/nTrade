@@ -70,7 +70,13 @@ def halftrend(
     # ta.lowestbars -> lowest low in last amplitude bars
     lowPrice = low.rolling(amplitude, min_periods=amplitude).min()
 
-    # state arrays
+    # state arrays — match Pine var init at bar 0
+    #
+    #   var float maxLowPrice = nz(low[1], low)   -> low[0]
+    #   var float minHighPrice = nz(high[1], high)  -> high[0]
+    #   var float up = 0.0 / var float down = 0.0  -> but up[0] is assigned in the
+    #   loop (trend==0 branch), so arrays below start NaN and get filled as they
+    #   would in Pine's per-bar flow.
     trend = [0] * n
     nextTrend = [0] * n
     maxLowPrice = [float("nan")] * n
@@ -82,8 +88,6 @@ def halftrend(
     arrowUp = [float("nan")] * n
     arrowDown = [float("nan")] * n
 
-    # var init: nz(low[1], low) at bar 0 -> low[0]; similarly high
-    # We seed bar 0
     if n > 0:
         maxLowPrice[0] = float(low.iloc[0])
         minHighPrice[0] = float(high.iloc[0])

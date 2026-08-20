@@ -10,7 +10,7 @@ import pytest
 
 from ntrade.brokers.dhan_auth_provider import DhanAuthProvider
 from ntrade.brokers.dhan_mapper import DhanMapper, to_records, _f
-from ntrade.brokers.dhan_transport import DhanTransport
+from ntrade.brokers.dhan_transport import BrokerDataError, DhanTransport
 from ntrade.domain.market.quote import Quote
 from ntrade.domain.orders.book import OrderBook, TradeBook
 
@@ -297,7 +297,8 @@ class TestDhanTransport:
         tsl = MagicMock()
         tsl.get_lot_size.side_effect = Exception("fail")
         transport = DhanTransport(tsl)
-        assert transport.get_lot_size("X") == 0
+        with pytest.raises(BrokerDataError):
+            transport.get_lot_size("X")
 
     def test_get_expiry_list(self):
         tsl = MagicMock()

@@ -215,8 +215,11 @@ def test_dhan_get_instrument_metadata_empty_when_unknown():
     import types
     from ntrade.brokers.dhan import DhanBroker
     from ntrade.brokers.dhan_transport import DhanTransport
-    idf = pd.DataFrame({"SEM_TRADING_SYMBOL": ["SOMETHING"], "SEM_CUSTOM_SYMBOL": ["X"],
-                        "SEM_EXM_EXCH_ID": ["NSE"]})
+    idf = pd.DataFrame({
+        "SEM_TRADING_SYMBOL": ["SOMETHING"], "SEM_CUSTOM_SYMBOL": ["X"],
+        "SEM_EXM_EXCH_ID": ["NSE"], "SM_SYMBOL_NAME": ["SOMETHING"],
+        "SEM_INSTRUMENT_NAME": ["FUTCOM"],
+    })
     broker = DhanBroker.__new__(DhanBroker)
     broker._connected = True
     broker.tsl = types.SimpleNamespace(instrument_df=idf)

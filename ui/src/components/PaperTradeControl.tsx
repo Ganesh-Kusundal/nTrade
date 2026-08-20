@@ -3,7 +3,7 @@ import { api, type PaperStatus } from '../api/client'
 import { fmtIST } from '../lib/istTime'
 
 /**
- * Paper-trading control — starts/stops the Morning VAH/VAL paper session on
+ * Paper-trading control — starts/stops the HalfTrend paper session on
  * the selected symbol (₹1M paper capital, zero real orders) and shows the
  * live account state: balance, equity, realized/unrealized PnL, the open
  * position, and the recent fill tape.
@@ -79,7 +79,7 @@ export function PaperTradeControl({ symbol, exchange, disabled }: {
         className={`tpill ${show ? 'tpill-active' : ''}`}
         onClick={() => setShow((v) => !v)}
         aria-expanded={show}
-        title="Morning VAH/VAL paper trading on the selected symbol (₹1M paper capital)"
+        title="HalfTrend paper trading on the selected symbol (₹1M paper capital)"
       >
         {running ? '● Paper Live' : 'Paper Trade'}
       </button>

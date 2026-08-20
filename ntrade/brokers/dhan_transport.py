@@ -315,8 +315,10 @@ class DhanTransport:
             )
         except RateLimited:
             raise
-        except Exception:
-            return pd.DataFrame()
+        except Exception as exc:
+            raise BrokerDataError(
+                f"get_long_term_historical({symbol},{exchange}) failed"
+            ) from exc
         return DhanMapper.filter_history(
             DhanMapper.normalize_history(df), start=from_date, end=to_date,
             asof=self._ts(),
@@ -339,8 +341,10 @@ class DhanTransport:
             )
         except RateLimited:
             raise
-        except Exception:
-            return pd.DataFrame()
+        except Exception as exc:
+            raise BrokerDataError(
+                f"get_daily_historical({symbol},{exchange}) failed"
+            ) from exc
         return DhanMapper.filter_history(
             DhanMapper.normalize_history(df), days=days, start=start, end=end,
             asof=self._ts(),
@@ -370,8 +374,8 @@ class DhanTransport:
             )
         except RateLimited:
             raise
-        except Exception:
-            return []
+        except Exception as exc:
+            raise BrokerDataError(f"expiry list fetch failed for {underlying}: {exc}") from exc
         dates = []
         for item in raw or []:
             try:
@@ -389,8 +393,8 @@ class DhanTransport:
             )
         except RateLimited:
             raise
-        except Exception:
-            return []
+        except Exception as exc:
+            raise BrokerDataError(f"expiry date fetch failed for {underlying}: {exc}") from exc
         dates = []
         for item in raw or []:
             try:
@@ -407,8 +411,8 @@ class DhanTransport:
             )
         except RateLimited:
             raise
-        except Exception:
-            return None
+        except Exception as exc:
+            raise BrokerDataError(f"future script fetch failed for {underlying} expiry={expiry}: {exc}") from exc
 
     def get_lot_size(self, symbol: str) -> int:
         try:
@@ -417,8 +421,8 @@ class DhanTransport:
             ))
         except RateLimited:
             raise
-        except Exception:
-            return 0
+        except Exception as exc:
+            raise BrokerDataError(f"lot size fetch failed for {symbol}: {exc}") from exc
 
     def get_ohlc(self, symbol: str) -> dict:
         try:
@@ -429,16 +433,16 @@ class DhanTransport:
             return dict(data.get(symbol, {}) or {})
         except RateLimited:
             raise
-        except Exception:
-            return {}
+        except Exception as exc:
+            raise BrokerDataError(f"OHLC fetch failed for {symbol}: {exc}") from exc
 
     def get_start_date(self):
         try:
             return self._invoke(Quota.NON_TRADING, lambda: self._tsl.get_start_date())
         except RateLimited:
             raise
-        except Exception:
-            return None
+        except Exception as exc:
+            raise BrokerDataError(f"start date fetch failed: {exc}") from exc
 
     def get_instrument_file(self):
         try:
@@ -447,8 +451,8 @@ class DhanTransport:
             )
         except RateLimited:
             raise
-        except Exception:
-            return None
+        except Exception as exc:
+            raise BrokerDataError(f"instrument file fetch failed: {exc}") from exc
 
     @property
     def instrument_df(self) -> pd.DataFrame | None:
@@ -596,7 +600,7 @@ class DhanTransport:
     # ---- instrument metadata -----------------------------------------------
 
     def get_instrument_metadata(self, symbol: str, exchange: str,
-                                underlying_symbol: str = "") -> dict:
+                                 underlying_symbol: str = "") -> dict:
         """Hydrate tick size / lot size / freeze qty from Dhan's instrument file."""
         try:
             idf = self.instrument_df
@@ -621,8 +625,8 @@ class DhanTransport:
             return {"tick_size": tick, "lot_size": lot, "freeze_qty": frz}
         except RateLimited:
             raise
-        except Exception:
-            return {}
+        except Exception as exc:
+            raise BrokerDataError(f"instrument metadata fetch failed for {symbol}: {exc}") from exc
 
     def blocks_day(self, symbol: str, exchange: str) -> bool:
         """True when Dhan's intraday wrapper rejects DAY for this instrument."""

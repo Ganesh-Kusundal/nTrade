@@ -241,7 +241,15 @@ class DhanBroker(BrokerAdapter):
             chain.expiry_index_used = attempt
             # Resolve the REAL contract expiry from Dhan's expiry list so
             # chain.target_expiry / chain.expiries() are no longer placeholders.
-            exp_dates = self.get_expiry_list(underlying)
+            # get_expiry_list now raises on non-RateLimited failure — treat that
+            # as "no expiry enrichment" rather than failing the whole chain;
+            # RateLimited still propagates (never swallowed).
+            try:
+                exp_dates = self.get_expiry_list(underlying)
+            except RateLimited:
+                raise
+            except Exception:
+                exp_dates = []
             if exp_dates:
                 real = exp_dates[min(attempt, len(exp_dates) - 1)]
                 chain.target_expiry = real
@@ -516,8 +524,10 @@ class DhanBroker(BrokerAdapter):
         """Return Holding domain objects (Adapter: normalize broker API rows)."""
         try:
             return self._get_transport().get_holdings()
-        except Exception:
-            return []
+        except RateLimited:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Dhan holdings fetch failed: {exc}") from exc
 
     # ------------------------------------------------------------ market data
     def get_expiry_list(self, instrument: "Instrument"):
@@ -531,22 +541,22 @@ class DhanBroker(BrokerAdapter):
             return self._get_transport().get_expiry_list(instrument.symbol, exchange)
         except RateLimited:
             raise
-        except Exception:
-            return []
+        except Exception as exc:
+            raise RuntimeError(f"Dhan expiry list fetch failed for {instrument.symbol}: {exc}") from exc
 
     def get_expiry_date(self, instrument: "Instrument", opt_fut: str = "OPTION") -> list:
         """Resolve contract expiry dates for an option/future script.
 
         Dhan's library takes opt_fut in ("OPTION", "FUTURE") and returns a
-        LIST of expiry date strings — we normalize to a list[date] (empty on
-        failure). A rate-limit rejection propagates (K-021).
+        LIST of expiry date strings — we normalize to a list[date].
+        A rate-limit rejection propagates (K-021); other failures raise.
         """
         try:
             return self._get_transport().get_expiry_date(instrument.symbol, opt_fut)
         except RateLimited:
             raise
-        except Exception:
-            return []
+        except Exception as exc:
+            raise RuntimeError(f"Dhan expiry date fetch failed for {instrument.symbol}: {exc}") from exc
 
     def get_future_script(self, instrument: "Instrument", expiry: int):
         """Resolve the Dhan tradingsymbol for a future of this underlying.
@@ -558,8 +568,8 @@ class DhanBroker(BrokerAdapter):
             return self._get_transport().get_future_script(instrument.symbol, expiry)
         except RateLimited:
             raise
-        except Exception:
-            return None
+        except Exception as exc:
+            raise RuntimeError(f"Dhan future script fetch failed for {instrument.symbol} expiry={expiry}: {exc}") from exc
 
     def get_lot_size(self, instrument: "Instrument") -> int:
         """Fetch the lot size for a derivative script (options/futures).
@@ -571,8 +581,8 @@ class DhanBroker(BrokerAdapter):
             return self._get_transport().get_lot_size(dhan_symbol(instrument))
         except RateLimited:
             raise
-        except Exception:
-            return 0
+        except Exception as exc:
+            raise RuntimeError(f"Dhan lot size fetch failed for {instrument.symbol}: {exc}") from exc
 
     def get_long_term_historical(self, instrument, timeframe="1d", from_date=None, to_date=None) -> pd.DataFrame:
         """Longer-dated history via Dhan's dedicated endpoint (dates required)."""
@@ -588,8 +598,10 @@ class DhanBroker(BrokerAdapter):
         """Intraday OHLC bundle from the tick-level endpoint."""
         try:
             return self._get_transport().get_ohlc(dhan_symbol(instrument))
-        except Exception:
-            return {}
+        except RateLimited:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Dhan OHLC fetch failed for {instrument.symbol}: {exc}") from exc
 
     def get_start_date(self):
         """Earliest available date for this underlying on Dhan.
@@ -601,8 +613,8 @@ class DhanBroker(BrokerAdapter):
             return self._get_transport().get_start_date()
         except RateLimited:
             raise
-        except Exception:
-            return None
+        except Exception as exc:
+            raise RuntimeError(f"Dhan start date fetch failed: {exc}") from exc
 
     def get_instrument_file(self):
         """Path/location of Dhan's instrument master file.
@@ -614,8 +626,8 @@ class DhanBroker(BrokerAdapter):
             return self._get_transport().get_instrument_file()
         except RateLimited:
             raise
-        except Exception:
-            return None
+        except Exception as exc:
+            raise RuntimeError(f"Dhan instrument file fetch failed: {exc}") from exc
 
     def get_instrument_metadata(self, instrument: "Instrument") -> dict:
         """Hydrate tick size / lot size / freeze qty from Dhan's instrument file.
@@ -623,7 +635,7 @@ class DhanBroker(BrokerAdapter):
         Falls back to the commodity FUTCOM row when the symbol only matches via
         SM_SYMBOL_NAME (e.g. 'GOLD'); returns {} when nothing matches.
         A rate-limit rejection (RateLimited) propagates — never masked as
-        empty metadata (K-021).
+        empty metadata (K-021). Empty {} on df.empty is NOT an error — kept.
         """
         try:
             return self._get_transport().get_instrument_metadata(
@@ -632,8 +644,8 @@ class DhanBroker(BrokerAdapter):
             )
         except RateLimited:
             raise
-        except Exception:
-            return {}
+        except Exception as exc:
+            raise RuntimeError(f"Dhan instrument metadata fetch failed for {instrument.symbol}: {exc}") from exc
 
 
 # ------------------------------------------------------------------ capabilities

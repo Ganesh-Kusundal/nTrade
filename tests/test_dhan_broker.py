@@ -62,7 +62,21 @@ def test_get_expiry_date_returns_list():
 
 def test_get_expiry_date_empty_on_failure():
     broker = make_broker(get_expiry_date=lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
-    assert broker.get_expiry_date(Index("NIFTY"), "OPTION") == []
+    with pytest.raises(RuntimeError, match="expiry date"):
+        broker.get_expiry_date(Index("NIFTY"), "OPTION")
+
+
+def test_expiry_list_raises_on_transport_failure():
+    broker = make_broker(get_expiry_list=lambda **kw: (_ for _ in ()).throw(ConnectionError("down")))
+    with pytest.raises(RuntimeError, match="expiry list"):
+        broker.get_expiry_list(Index("NIFTY"))
+
+
+def test_expiry_list_still_propagates_rate_limited():
+    from ntrade.execution.rate_limit import RateLimited, Quota
+    broker = make_broker(get_expiry_list=lambda **kw: (_ for _ in ()).throw(RateLimited(Quota.NON_TRADING)))
+    with pytest.raises(RateLimited):
+        broker.get_expiry_list(Index("NIFTY"))
 
 
 def test_get_quote_no_duplicate_kwargs():
@@ -833,9 +847,10 @@ def test_orderbook_propagates_other_errors():
 
 
 def test_expiry_date_still_degrades_on_other_errors():
-    """Non-rate failures keep the documented [] degrade for expiry dates."""
+    """Non-rate failures now raise RuntimeError (no silent [] degrade)."""
     broker = make_broker(get_expiry_date=lambda **kw: (_ for _ in ()).throw(ConnectionError("down")))
-    assert broker.get_expiry_date(Index("NIFTY"), "OPTION") == []
+    with pytest.raises(RuntimeError, match="expiry date"):
+        broker.get_expiry_date(Index("NIFTY"), "OPTION")
 
 
 def test_instrument_metadata_propagates_rate_limited():

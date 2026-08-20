@@ -85,7 +85,13 @@ export const TradeScreen = memo(function TradeScreen() {
   symbolRef.current = symbol
   modeRef.current = mode
   strategyRef.current = strategyId
-  _setStrategyId('halftrend')
+
+  // HalfTrend is the only registered strategy: force any stale persisted id
+  // (e.g. a pre-rollout 'valentini'/'morning_vah_val') back to 'halftrend'.
+  // Must run in an effect, not the render body — a render-time setState loops.
+  useEffect(() => {
+    _setStrategyId('halftrend')
+  }, [_setStrategyId])
 
   useEffect(() => {
     const s = new MarketSocket()

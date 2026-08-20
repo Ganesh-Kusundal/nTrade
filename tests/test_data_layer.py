@@ -455,3 +455,40 @@ def test_upsert_drops_nse_after_hours_keeps_session_and_daily(tmp_path):
     assert len(mcx_back) == 2
     d_back = store.read(symbols=["INFY"], timeframe="1d")
     assert len(d_back) == 1
+
+
+# ============================================================ 9. wide universe pagination (OOM fix)
+def test_parquet_wide_universe_no_oom(tmp_path):
+    """Wide universe (100 symbols) must read via batched pagination without OOM
+    and ParquetStorage must not import domain.market_hours at module load."""
+    from pathlib import Path
+
+    store = ParquetStorage(tmp_path / "ohlcv_wide")
+    # Write 100 symbols * 5 daily bars (daily keeps session filter pass)
+    for i in range(100):
+        sym = f"SYM{i}"
+        df = _ohlcv_frame(sym, pd.date_range("2026-05-01", periods=5, freq="1D"),
+                          [10, 11, 12, 13, 14])
+        store.upsert(df)
+
+    # Paginated read with batch_size=10
+    universe = [f"SYM{i}" for i in range(100)]
+    result = store.read(universe=universe, start="2026-05-01", end="2026-08-01", batch_size=10)
+    assert len(result) == 500
+    # Alias symbols must also work with pagination
+    result2 = store.read(symbols=universe, start="2026-05-01", end="2026-08-01", batch_size=10)
+    assert len(result2) == 500
+    # Small universe should still be single-batch (no extra cost)
+    small = store.read(symbols=["SYM0", "SYM1"], batch_size=100)
+    assert len(small) == 10
+
+    # Verify decoupling: file must not contain the coupled import string
+    text = Path("ntrade/data/parquet_store.py").read_text()
+    assert "market_hours" not in text
+
+    # DuckDB Hive scan pushdown must still work
+    import duckdb
+    con = duckdb.connect()
+    store.duckdb_scan(con, start="2026-05-01", end="2026-05-03")
+    cnt = con.execute("SELECT count(*) FROM ohlcv").fetchone()[0]
+    assert cnt > 0

@@ -34,9 +34,10 @@ class ParallelHistoryFetcher:
         df = fetcher.fetch(instruments, timeframe="5m", days=90)
     """
 
-    def __init__(self, broker, max_workers: int = _MAX_WORKERS):
+    def __init__(self, broker, max_workers: int = _MAX_WORKERS, session_filter=None):
         self.broker = broker
         self.max_workers = max_workers
+        self._session_filter = session_filter
 
     def fetch(self,
               instruments: Iterable,

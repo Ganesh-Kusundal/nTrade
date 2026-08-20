@@ -169,7 +169,10 @@ class Instrument(ABC):
             # Stamping on failure would make is_stale() lie and report a dead
             # quote as fresh (state desync — a failed refresh must stay stale).
             self._last_refresh_at = now if now is not None else datetime.now()
-        depth = broker.get_depth(self)
+        try:
+            depth = broker.get_depth(self)
+        except Exception:
+            depth = None
         if depth is not None:
             self._depth = depth
         return self

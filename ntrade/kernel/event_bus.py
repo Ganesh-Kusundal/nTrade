@@ -22,7 +22,7 @@ _logger = logging.getLogger("ntrade.bus")
 
 
 class EventBus:
-    def __init__(self, *, max_history: int = 10_000, max_handler_errors: int | None = None) -> None:
+    def __init__(self, *, max_history: int = 10_000, max_handler_errors: int | None = 100) -> None:
         self._subscribers: dict[type, list[Callable[[Event], None]]] = defaultdict(list)
         self._history: deque[Event] = deque(maxlen=max_history)
         self._lock = RLock()
@@ -68,6 +68,7 @@ class EventBus:
             if event.causation_id is None and parent is not None:
                 object.__setattr__(event, "causation_id", parent.event_id)
             self._stack.append(event)
+            halt_event = None
             try:
                 self._history.append(event)
                 for klass in type(event).__mro__:
@@ -88,14 +89,16 @@ class EventBus:
                                 and self._handler_errors >= self._max_handler_errors
                             ):
                                 from ntrade.events.risk import RiskHaltedEvent
-                                self.publish(RiskHaltedEvent(
+                                halt_event = RiskHaltedEvent(
                                     ts=event.ts,
                                     reason=f"handler error limit reached ({self._handler_errors} errors)",
-                                ))
+                                )
                                 self._max_handler_errors = None  # ponytail: halt once, don't re-halt
                             continue
             finally:
                 self._stack.pop()
+            if halt_event is not None:
+                self.publish(halt_event)
 
     @property
     def history(self) -> list[Event]:

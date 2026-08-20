@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 
+from zoneinfo import ZoneInfo
+
 from ntrade.domain.constants import QUOTE_MAX_AGE_S
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 
 @dataclass(frozen=True)
@@ -61,8 +65,13 @@ class Quote:
     def is_stale(self, max_age_seconds: float = QUOTE_MAX_AGE_S, *, now: datetime | None = None) -> bool:
         if self.timestamp is None:
             return True
-        reference = now if now is not None else datetime.now()
-        return (reference - self.timestamp).total_seconds() > max_age_seconds
+        reference = now if now is not None else datetime.now(tz=_IST)
+        ts = self.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_IST)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=_IST)
+        return (reference.astimezone(_IST) - ts.astimezone(_IST)).total_seconds() > max_age_seconds
 
     def as_dict(self) -> dict:
         return {

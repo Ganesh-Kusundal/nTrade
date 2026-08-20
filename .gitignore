@@ -24,8 +24,7 @@ Dependencies/
 # Generated graph output
 graphify-out/
 .qoder/repowiki/
-data/ohlcv/
-Dependencies/
+data/
 .ntrade_cache/
 
 # Scratch / local artifacts

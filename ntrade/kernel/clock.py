@@ -9,6 +9,9 @@ replay and backtest (zero parity).
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 
 class TradingClock:
@@ -22,17 +25,17 @@ class TradingClock:
 
 
 class LiveClock(TradingClock):
-    """Wall-clock time — used in live trading."""
+    """Wall-clock time — used in live trading. Always returns IST-aware datetime."""
 
     def now(self) -> datetime:
-        return datetime.now()
+        return datetime.now(tz=_IST)
 
 
 class ReplayClock(TradingClock):
     """Deterministic clock driven by the events being replayed."""
 
     def __init__(self, start: datetime | None = None):
-        self._now = start or datetime(1970, 1, 1)
+        self._now = start or datetime(1970, 1, 1, tzinfo=_IST)
 
     def now(self) -> datetime:
         return self._now

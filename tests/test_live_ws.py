@@ -349,3 +349,39 @@ def test_live_overlays_emitted_on_bar_close(app):
             # Strategy markers come from the same pipeline (zero-parity).
             assert ov["strategy"] is not None
             assert ov["strategy"]["id"] == "halftrend"
+
+
+async def _noop_async(msg):
+    pass
+
+
+def test_pump_persists_final_bar_on_market_close():
+    """A bar in progress at market close must be persisted + overlaid, not
+    dropped (bars only persisted on the NEXT bar's first tick before)."""
+    import asyncio
+
+    pump = LiveCandlePump.__new__(LiveCandlePump)
+    pump._subs = {}
+    pump._clients = set()
+    pump._tick_listeners = []
+    pump._quote_listeners = []
+    pump._real_feed = True
+    pump.enabled = True
+    pump._service = type("S", (), {"name": "synthetic"})()
+    persisted = []
+    pump._persist_bar = lambda state, bar: persisted.append(bar)
+    pump._emit_overlays = lambda state, bar: None
+    pump._broadcast = _noop_async
+
+    # 09:15 bar in progress; clock now reads 15:30 (market closed)
+    state = {"symbol": "NIFTY", "exchange": "NSE", "interval": "1m",
+             "span_s": 60, "bar_start": 1_755_760_500,
+             "bar": {"time": 1_755_760_500, "open": 1.0, "high": 2.0,
+                     "low": 1.0, "close": 1.5, "volume": 7},
+             "last_tick": datetime(2026, 8, 21, 15, 29, tzinfo=IST),
+             "stale_emitted": False, "feed_stale": False}
+    pump._subs["NIFTY"] = state
+
+    asyncio.run(pump._run_once(datetime(2026, 8, 21, 15, 30, tzinfo=IST)))
+    assert len(persisted) == 1 and persisted[0]["close"] == 1.5
+    assert state["bar"] is None

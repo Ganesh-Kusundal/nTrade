@@ -181,27 +181,38 @@ class LiveCandlePump:
             await asyncio.sleep(self._tick_s)
             if not self._real_feed:
                 continue
-            now = self._clock()
-            for symbol, state in list(self._subs.items()):
-                if not is_market_open(state["exchange"], now):
-                    continue
-                last = state.get("last_tick")
-                if last is None:
-                    continue
-                age = (now - last).total_seconds()
-                if age > self._STALE_S and not state.get("stale_emitted"):
-                    state["stale_emitted"] = True
-                    state["feed_stale"] = True
-                    await self._broadcast({"type": "live_status", "symbol": symbol,
-                                           "exchange": state["exchange"], "status": "stale",
-                                           "source": self._service.name,
-                                           "reason": f"no ticks for {int(age)}s"})
-                elif age <= self._STALE_S and state.get("stale_emitted"):
-                    state["stale_emitted"] = False
-                    state["feed_stale"] = False
-                    await self._broadcast({"type": "live_status", "symbol": symbol,
-                                           "exchange": state["exchange"], "status": "streaming",
-                                           "source": self._service.name})
+            await self._run_once(self._clock())
+
+    async def _run_once(self, now: datetime) -> None:
+        for symbol, state in list(self._subs.items()):
+            # Session edge: persist + overlay the in-progress bar now — the
+            # next bar's first tick never comes after close, so waiting for
+            # it (the old behavior) dropped the session's final bar.
+            if state.get("bar") is not None and (
+                    not is_market_open(state["exchange"], now)
+                    or state.get("last_tick") is None):
+                completed, state["bar"], state["bar_start"] = state["bar"], None, None
+                self._persist_bar(state, completed)
+                self._emit_overlays(state, completed)
+            if not is_market_open(state["exchange"], now):
+                continue
+            last = state.get("last_tick")
+            if last is None:
+                continue
+            age = (now - last).total_seconds()
+            if age > self._STALE_S and not state.get("stale_emitted"):
+                state["stale_emitted"] = True
+                state["feed_stale"] = True
+                await self._broadcast({"type": "live_status", "symbol": symbol,
+                                       "exchange": state["exchange"], "status": "stale",
+                                       "source": self._service.name,
+                                       "reason": f"no ticks for {int(age)}s"})
+            elif age <= self._STALE_S and state.get("stale_emitted"):
+                state["stale_emitted"] = False
+                state["feed_stale"] = False
+                await self._broadcast({"type": "live_status", "symbol": symbol,
+                                       "exchange": state["exchange"], "status": "streaming",
+                                       "source": self._service.name})
 
     def ingest_tick(self, symbol: str, price: float, quantity: int = 0,
                     now: datetime | None = None) -> dict | None:

@@ -50,6 +50,30 @@ class PaperStartRequest(BaseModel):
     strategy_params: dict | None = None
 
 
+def _realized_pnl(fills: list[dict], event: OrderFilledEvent) -> float:
+    """FIFO realized PnL for a fill against prior opposite-side fills.
+
+    A SELL realizes against open BUY lots; a BUY realizes against open SELL
+    lots (shorts). Opening legs realize nothing."""
+    closing = "SELL" if event.side == "BUY" else "BUY"
+    opening = event.side
+    remaining = int(event.quantity)
+    pnl = 0.0
+    for f in fills:
+        if f["symbol"] != event.symbol or f["side"] != closing:
+            continue
+        take = min(remaining, f["open_qty"])
+        if take <= 0:
+            continue
+        sign = 1.0 if opening == "SELL" else -1.0  # short cover: entry - exit
+        pnl += sign * (event.fill_price - f["price"]) * take
+        f["open_qty"] -= take
+        remaining -= take
+        if remaining == 0:
+            break
+    return pnl
+
+
 class PaperTraderService:
     """Owns at most one paper session at a time, keyed to a symbol."""
 
@@ -351,6 +375,8 @@ class PaperTraderService:
             "side": event.side,
             "quantity": int(event.quantity),
             "price": round(float(event.fill_price), 4),
+            "open_qty": int(event.quantity),
+            "pnl": round(_realized_pnl(self._fills, event), 4),
             "ts": event.ts.isoformat(),
         })
 

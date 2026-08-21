@@ -15,7 +15,7 @@ import pandas as pd
 from ntrade.domain.market.depth import DepthLevel, MarketDepth
 from ntrade.domain.market.quote import Quote
 from ntrade.domain.orders.book import OrderBook, OrderBookEntry, TradeBook, TradeBookEntry
-from ntrade.domain.constants import Exchange
+from ntrade.domain.constants import Exchange, OptionType
 
 if TYPE_CHECKING:
     from ntrade.domain.instruments.base import Instrument
@@ -72,7 +72,7 @@ class DhanMapper:
         need the CUSTOM form (B-016: front-month future resolution).
         """
         if instrument.KIND == "option":
-            leg = "CALL" if instrument.option_type == "CE" else "PUT"
+            leg = "CALL" if instrument.option_type == OptionType.CE else "PUT"
             date_part = instrument.expiry.strftime("%d %b").upper()
             strike_label = (
                 int(instrument.strike)
@@ -351,7 +351,10 @@ def chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float,
     for _, row in df.iterrows():
         strike = float(row["Strike Price"])
         strike_label = int(strike) if strike == int(strike) else strike
-        for leg, prefix, otype in (("CE", "CE", "CE"), ("PE", "PE", "PE")):
+        for leg, prefix, otype in (
+            (OptionType.CE.value, OptionType.CE.value, OptionType.CE.value),
+            (OptionType.PE.value, OptionType.PE.value, OptionType.PE.value),
+        ):
             ltp_col = f"{prefix} LTP"
             if ltp_col not in df.columns or pd.isna(row.get(ltp_col)):
                 continue

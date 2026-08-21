@@ -16,7 +16,7 @@ positions on a network hiccup would corrupt the read models.
 from __future__ import annotations
 
 from ntrade.domain.portfolio import Position
-from ntrade.domain.constants import Exchange
+from ntrade.domain.constants import Exchange, PRICE_PRECISION
 from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
 from ntrade.domain.coercion import to_float, to_int
 
@@ -79,7 +79,7 @@ class PositionSyncEngine:
         reports_cash = getattr(self.broker, "reports_cash", True)
         balance = self._safe_balance() if reports_cash else None
         if balance is not None and balance != self.ctx.account.balance:
-            self.ctx.account.balance = round(balance, 4)
+            self.ctx.account.balance = round(balance, PRICE_PRECISION)
             self.ctx.bus.publish(BalanceChangedEvent(
                 balance=self.ctx.account.balance, ts=self.ctx.now(),
             ))

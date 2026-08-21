@@ -45,7 +45,7 @@ from ntrade.execution._guard import (
     CorrelationId,
     MemoryIdempotencyGuard,
 )
-from ntrade.domain.constants import CIRCUIT_COOLDOWN_S, CIRCUIT_FAILURE_THRESHOLD
+from ntrade.domain.constants import CIRCUIT_COOLDOWN_S, CIRCUIT_FAILURE_THRESHOLD, PRICE_PRECISION
 
 logger = logging.getLogger("ntrade.execution")
 
@@ -471,7 +471,7 @@ class BrokerExecution:
                          to_float(order.avg_price), intent.price)
             return
         notional = price * new_qty
-        commission = round(self.commission.apply(notional), 4)
+        commission = round(self.commission.apply(notional), PRICE_PRECISION)
         if self.statutory is None:
             statutory = 0.0
         else:
@@ -484,7 +484,7 @@ class BrokerExecution:
             else:
                 model = self.statutory.for_instrument(instrument)
             statutory = round(
-                model.total_cost(notional, intent.side, brokerage=commission), 4)
+                model.total_cost(notional, intent.side, brokerage=commission), PRICE_PRECISION)
         fill = OrderFilledEvent(
             order_id=order_id, symbol=intent.symbol, exchange=intent.exchange,
             side=intent.side, quantity=new_qty, fill_price=price,

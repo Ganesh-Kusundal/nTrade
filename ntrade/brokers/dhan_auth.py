@@ -28,13 +28,14 @@ from pathlib import Path
 
 _quiet_lock = threading.Lock()
 
+from ntrade.domain.constants import JWT_EXPIRY_BUFFER_S, SEBI_TOTP_COOLDOWN_S
 from ntrade.execution.rate_limit import Quota
 from ntrade.execution._guard import TotpCooldownGuard, TotpRateLimitError
 
-TOTP_ATTEMPT_COOLDOWN_S = 90
-# Proactive expiry buffer: refresh token if it expires within this window
-# Default: 15 minutes (900 seconds) to avoid mid-session expiry
-EXPIRY_BUFFER_S = int(os.environ.get("DHAN_EXPIRY_BUFFER_S", "900"))
+# Backward-compatible aliases — the canonical values now live in
+# ntrade.domain.constants (SEBI_TOTP_COOLDOWN_S, JWT_EXPIRY_BUFFER_S).
+TOTP_ATTEMPT_COOLDOWN_S = SEBI_TOTP_COOLDOWN_S
+EXPIRY_BUFFER_S = JWT_EXPIRY_BUFFER_S
 
 # Imported at module level (guarded) so tests can monkeypatch dhan_auth.Tradehull
 # while importing ntrade never hard-depends on the Dhan library being installed.

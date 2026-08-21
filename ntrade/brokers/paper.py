@@ -11,7 +11,7 @@ from datetime import timedelta
 
 import pandas as pd
 
-from ntrade.domain.constants import DEFAULT_INITIAL_CASH
+from ntrade.domain.constants import DEFAULT_INITIAL_CASH, OptionType
 from ntrade.domain.ports import BrokerAdapter
 from ntrade.domain.market.candles import CandleSeries
 from ntrade.domain.portfolio import Position
@@ -102,9 +102,9 @@ class PaperBroker(BrokerAdapter):
         strikes = [atm + (i - num_strikes // 2) * 50 for i in range(num_strikes)]
         options = []
         for s in strikes:
-            for otype in ("CE", "PE"):
+            for otype in (OptionType.CE, OptionType.PE):
                 opt = Option(
-                    symbol=f"{underlying.symbol} {s} {otype}", exchange="NFO",
+                    symbol=f"{underlying.symbol} {s} {otype.value}", exchange="NFO",
                     strike=s, expiry=self._ts().date(), option_type=otype,
                     underlying_symbol=underlying.symbol, broker=self,
                 )

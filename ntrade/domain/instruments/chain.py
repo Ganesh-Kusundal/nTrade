@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Iterator
 import pandas as pd
 
 from ntrade.domain.analytics.surface import GreeksTable, IVSurface
+from ntrade.domain.constants import OptionType
 from ntrade.domain.instruments.expiry import Expiry, OptionPair
 
 if TYPE_CHECKING:
@@ -63,11 +64,11 @@ class OptionChain:
     # ------------------------------------------------------------------ views
     @property
     def calls(self) -> list[Option]:
-        return [o for o in self._options if o.option_type == "CE"]
+        return [o for o in self._options if o.option_type == OptionType.CE]
 
     @property
     def puts(self) -> list[Option]:
-        return [o for o in self._options if o.option_type == "PE"]
+        return [o for o in self._options if o.option_type == OptionType.PE]
 
     def expiries(self) -> list[Expiry]:
         """Return list of Expiry objects, one per expiry date."""
@@ -102,19 +103,19 @@ class OptionChain:
     def strikes(self) -> list[float]:
         return sorted(self._strike_map.keys())
 
-    def at_strike(self, strike: float, option_type: str | None = None) -> Option | None:
+    def at_strike(self, strike: float, option_type: "OptionType | str | None" = None) -> Option | None:
         """O(1) strike lookup via pre-built index."""
         bucket = self._strike_map.get(strike)
         if bucket is None:
             return None
         if option_type:
             return bucket.get(option_type)
-        return bucket.get("CE") or bucket.get("PE")
+        return bucket.get(OptionType.CE) or bucket.get(OptionType.PE)
 
     @property
     def atm(self) -> Option | None:
         if self.atm_strike is not None:
-            return self.at_strike(self.atm_strike, "CE") or self.at_strike(self.atm_strike)
+            return self.at_strike(self.atm_strike, OptionType.CE) or self.at_strike(self.atm_strike)
         if not self._options:
             return None
         # Nearest strike to underlying LTP.
@@ -144,7 +145,7 @@ class OptionChain:
         for strike in self.strikes:
             pain = 0.0
             for o in self._options:
-                if o.option_type == "CE":
+                if o.option_type == OptionType.CE:
                     pain += max(strike - o.strike, 0.0) * max(o._quote.oi, 0)
                 else:
                     pain += max(o.strike - strike, 0.0) * max(o._quote.oi, 0)

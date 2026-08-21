@@ -25,10 +25,7 @@ class OrderEngine:
             symbol=signal.symbol, exchange=signal.exchange, side=signal.side,
             quantity=signal.quantity,
             # The strategy's declared order_type IS the contract. price rides
-            # along for risk checks/audit only — it never re-types the order
-            # (the old "LIMIT if signal.price" heuristic made backtests fill
-            # MARKET signals at the prior bar's open and left live limits
-            # resting unfilled).
+            # along for risk checks/audit only — it never re-types the order.
             order_type=signal.order_type,
             price=signal.price,
             reference_price=signal.metadata.get("reference_price", 0.0),

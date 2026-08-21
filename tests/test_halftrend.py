@@ -87,3 +87,38 @@ def test_overlay_pipeline_no_markers_during_atr_warmup():
     assert result is not None
     for m in result["markers"]:
         assert m["index"] >= 100, f"marker at index {m['index']} is during warmup"
+
+
+def test_strategy_emits_nothing_during_atr_warmup():
+    """The strategy must apply the same warmup gate as the chart overlay:
+    no signal before atr_period bars, even if a flip fires on garbage state."""
+    from datetime import datetime, timedelta
+
+    from ntrade.engines.strategies import HalfTrendStrategy
+    from ntrade.events.market import CandleClosedEvent
+
+    strat = HalfTrendStrategy(atr_period=100)
+    frame = _make_frame(n=99)
+    base = datetime(2026, 8, 21, 9, 15)
+    for i in range(99):
+        row = frame.iloc[i]
+        strat.on_candle_closed(CandleClosedEvent(
+            symbol="X", exchange="NSE", timeframe="1m",
+            open=float(row["open"]), high=float(row["high"]),
+            low=float(row["low"]), close=float(row["close"]),
+            volume=100, ts=base + timedelta(minutes=i)))
+    assert strat.latest_signal(float(row["close"])) is None
+
+
+def test_strategy_ignores_other_timeframes():
+    from datetime import datetime
+
+    from ntrade.engines.strategies import HalfTrendStrategy
+    from ntrade.events.market import CandleClosedEvent
+
+    strat = HalfTrendStrategy(atr_period=2)
+    strat.on_candle_closed(CandleClosedEvent(
+        symbol="X", exchange="NSE", timeframe="5m", volume=100,
+        open=1.0, high=2.0, low=0.5, close=1.5,
+        ts=datetime(2026, 8, 21, 9, 15)))
+    assert strat._buf == []

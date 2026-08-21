@@ -66,6 +66,10 @@ class HalfTrendStrategy(Strategy):
         self._sell = out["sellSignal"].tolist()
 
     def latest_signal(self, close: float) -> dict | None:
+        # Same warmup gate as the chart overlay: trend flips before atr_period
+        # evolve on uninitialized ATR state — never trade them.
+        if len(self._buy) < self.atr_period:
+            return None
         if not self._buy or not self._sell:
             return None
         n = len(self._buy)
@@ -83,6 +87,8 @@ class HalfTrendStrategy(Strategy):
     def on_candle_closed(self, event) -> None:
         if self.symbol is not None and event.symbol != self.symbol:
             return
+        if getattr(event, "timeframe", "1m") != "1m":
+            return  # mixed-timeframe streams would corrupt the bar buffer
         self._buf.append({
             "open": float(event.open),
             "high": float(event.high),

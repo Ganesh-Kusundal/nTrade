@@ -75,3 +75,15 @@ def _make_frame_tagged():
     out = halftrend(_make_frame())
     # give the frame the same columns shape; reuse index
     return out
+
+
+def test_overlay_pipeline_no_markers_during_atr_warmup():
+    """OverlayPipeline must not emit markers before ATR(100) warms up."""
+    from ntrade.analytics.overlay_pipeline import _build_halftrend
+
+    df = _make_frame(n=150, seed=42)
+    df["time"] = list(range(len(df)))
+    result = _build_halftrend(df, {"amplitude": 2, "channel_deviation": 2, "atr_period": 100})
+    assert result is not None
+    for m in result["markers"]:
+        assert m["index"] >= 100, f"marker at index {m['index']} is during warmup"

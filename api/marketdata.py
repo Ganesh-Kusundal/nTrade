@@ -844,7 +844,7 @@ class MarketDataService:
         if not candles and self.name == "dhan":
             payload["reason"] = (
                 f"Dhan returned no {interval} candles for {symbol} "
-                f"({start.date()} → {end.date()})"
+                f"({start.date() if start else '?'} → {end.date() if end else '?'})"
             )
         if include_range and payload["overlays"].get("range_bars"):
             payload["range_bars"] = payload["overlays"].pop("range_bars")

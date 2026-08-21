@@ -157,7 +157,9 @@ def _build_halftrend(df: pd.DataFrame, params: dict | None) -> dict | None:
     if out.empty:
         return None
     markers = []
-    for i in range(1, len(out)):
+    # ponytail: skip ATR warmup — trend flips before atr_period are on
+    # uninitialized state and produce spurious signals
+    for i in range(apt, len(out)):
         row = out.iloc[i]
         prev = out.iloc[i - 1]
         if pd.notna(row.get("buySignal")) and bool(row["buySignal"]):

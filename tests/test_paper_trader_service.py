@@ -118,6 +118,33 @@ def test_start_stop_lifecycle():
     assert stopped["balance"] == 1_000_000.0
 
 
+def test_paper_trader_generates_fills_after_warmup():
+    """Feed 120+ bars with a steep trend reversal — paper must record a fill.
+
+    HalfTrend needs a sharp move to trigger a flip: 100 bars of steep
+    uptrend (ATR warmup + trend established), then a sharp downtrend.
+    ponytail: steepness tuned to actually trigger the indicator — the
+    flip condition needs close to break below maxLowPrice (a running max
+    of lows), which requires a large move relative to recent volatility.
+    """
+    svc, pump = _make_service()
+    svc.start("BANKNIFTY AUG FUT", "NFO", lot_size=15)
+    try:
+        base_px = 55000.0
+        # Steep uptrend for 110 bars: +5/bar to build a strong trend
+        for i in range(110):
+            c = base_px + i * 5.0
+            _feed_bar(svc, 18, 555 + i, c - 0.5, c + 1.0, c - 1.0, c)
+        # Sharp downtrend: -20/bar to trigger HalfTrend SELL flip
+        for i in range(40):
+            c = base_px + 550.0 - i * 20.0
+            _feed_bar(svc, 18, 665 + i, c - 0.5, c + 1.0, c - 1.0, c)
+        status = _drain(svc, timeout=5.0)
+        assert status["n_trades"] >= 1, f"expected at least 1 fill, got {status['n_trades']}"
+    finally:
+        svc.stop()
+
+
 def test_paper_feed_publishes_real_ticks_not_fabricated_events(tmp_path):
     from tests.test_api_market import _sample_master
     from api.marketdata import FuturesMaster

@@ -53,8 +53,9 @@ interface ChartPanelProps {
 
 const UP = 'rgba(38, 166, 154, 0.45)'
 const DOWN = 'rgba(239, 83, 80, 0.45)'
-const HALFTREND_UP = '#4caf50'
-const HALFTREND_DOWN = '#ff5722'
+// TradingView HalfTrend palette: blue up / red down (matches the reference).
+const HALFTREND_UP = '#2962FF'
+const HALFTREND_DOWN = '#F23645'
 const VWAP = '#F59E0B'
 const VWAP_BAND = 'rgba(245, 158, 11, 0.35)'
 
@@ -117,6 +118,10 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
   const vwapRef = useRef<LineSeries | null>(null)
   const vwapUpperRef = useRef<LineSeries | null>(null)
   const vwapLowerRef = useRef<LineSeries | null>(null)
+  const htUpRef = useRef<LineSeries | null>(null)
+  const htDownRef = useRef<LineSeries | null>(null)
+  const atrHighRef = useRef<LineSeries | null>(null)
+  const atrLowRef = useRef<LineSeries | null>(null)
   const vpPanelRef = useRef<HTMLDivElement | null>(null)
   const prevRef = useRef<PrevRef | null>(null)
   const vwapPrevRef = useRef<{ n: number; lastTime: number } | null>(null)
@@ -201,6 +206,17 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     }
     const vwapUpper = chart.addLineSeries(bandOpts)
     const vwapLower = chart.addLineSeries(bandOpts)
+    const htLineOpts = {
+      lineWidth: 2 as const, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    }
+    const htUp = chart.addLineSeries({ ...htLineOpts, color: HALFTREND_UP })
+    const htDown = chart.addLineSeries({ ...htLineOpts, color: HALFTREND_DOWN })
+    const atrOpts = {
+      color: 'rgba(148, 163, 184, 0.55)', lineWidth: 1 as const, lineStyle: LineStyle.Dashed,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    }
+    const atrHigh = chart.addLineSeries(atrOpts)
+    const atrLow = chart.addLineSeries(atrOpts)
     chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } })
     chartRef.current = chart
     candleRef.current = candles
@@ -210,6 +226,10 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     vwapRef.current = vwap
     vwapUpperRef.current = vwapUpper
     vwapLowerRef.current = vwapLower
+    htUpRef.current = htUp
+    htDownRef.current = htDown
+    atrHighRef.current = atrHigh
+    atrLowRef.current = atrLow
     return () => {
       if (profileRafRef.current) window.cancelAnimationFrame(profileRafRef.current)
       chart.remove()
@@ -221,6 +241,10 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
       vwapRef.current = null
       vwapUpperRef.current = null
       vwapLowerRef.current = null
+      htUpRef.current = null
+      htDownRef.current = null
+      atrHighRef.current = null
+      atrLowRef.current = null
       prevRef.current = null
       vwapPrevRef.current = null
       stratLinesRef.current = []
@@ -235,7 +259,11 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     const vs = ctxVolRef.current
     if (!chartRef.current || !cs || !vs) return
     cs.setData(ctx.map(bar))
-    vs.setData(ctx.map((c) => ({ time: istChartTime(c.time) as UTCTimestamp, value: c.volume, color: [0.58, 0.64, 0.72, 0.22] })))
+    vs.setData(ctx.map((c) => ({
+      time: istChartTime(c.time) as UTCTimestamp,
+      value: c.volume,
+      color: 'rgba(148, 163, 184, 0.22)',
+    })))
     if (ctx.length > 0) chartRef.current.timeScale().fitContent()
   }, [context])
 
@@ -292,19 +320,27 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     vwapPrevRef.current = { n: series.length, lastTime }
   }, [overlays, toggles.vwap])
 
-  // HalfTrend + server overlays — both come from the server.
+  // HalfTrend — backend sends id:"halftrend" (+ optional kind); never invent client math.
   useEffect(() => {
     const cs = candleRef.current
-    if (!cs) return
+    const htUp = htUpRef.current
+    const htDown = htDownRef.current
+    const atrH = atrHighRef.current
+    const atrL = atrLowRef.current
+    if (!cs || !htUp || !htDown || !atrH || !atrL) return
     const src = candlesRef.current
+    const strat = strategyRef.current
+    // API OverlayPipeline uses strategy.id; kind is optional legacy.
+    const isHt = (strat?.kind ?? strat?.id) === 'halftrend'
+    const show = toggles.strategy && isHt
+
     const timeOf = (t: number) => {
       const idx = src.findIndex((c) => c.time === t)
       if (idx >= 0) return istChartTime(src[idx].time) as UTCTimestamp
       return istChartTime(t) as UTCTimestamp
     }
     const markers: SeriesMarker<UTCTimestamp>[] = []
-    const strat = strategyRef.current
-    if (toggles.strategy && strat && strat.kind === 'halftrend' && strat.markers) {
+    if (show && strat?.markers) {
       for (const m of strat.markers) {
         markers.push({
           time: timeOf(m.time),
@@ -320,7 +356,39 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
       absMarkersRef.current = key
       cs.setMarkers(markers)
     }
-  }, [strategy, toggles.strategy])
+
+    const series = show ? strat?.series : null
+    const n = series ? Math.min(src.length, series.ht.length, series.trend.length) : 0
+    if (!series || n === 0) {
+      htUp.setData([]); htDown.setData([]); atrH.setData([]); atrL.setData([])
+      return
+    }
+    type Pt = { time: UTCTimestamp; value?: number }
+    const up: Pt[] = []
+    const down: Pt[] = []
+    const high: Pt[] = []
+    const low: Pt[] = []
+    for (let i = 0; i < n; i++) {
+      const time = istChartTime(src[i].time) as UTCTimestamp
+      const ht = series.ht[i]
+      const tr = series.trend[i]
+      if (ht == null) {
+        up.push({ time }); down.push({ time })
+      } else if (tr === 0) {
+        up.push({ time, value: ht }); down.push({ time })
+      } else {
+        down.push({ time, value: ht }); up.push({ time })
+      }
+      const ah = series.atrHigh[i]
+      const al = series.atrLow[i]
+      high.push(ah == null ? { time } : { time, value: ah })
+      low.push(al == null ? { time } : { time, value: al })
+    }
+    htUp.setData(up)
+    htDown.setData(down)
+    atrH.setData(high)
+    atrL.setData(low)
+  }, [strategy, toggles.strategy, candles])
 
   // HalfTrend SL/TP price lines from the latest strategy signal pair.
   useEffect(() => {

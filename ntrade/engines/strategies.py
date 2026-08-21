@@ -20,12 +20,13 @@ logger = logging.getLogger("ntrade.strategy.halftrend")
 
 
 class HalfTrendStrategy(Strategy):
-    """HalfTrend bar-replay strategy — signal markers for chart overlays.
+    """HalfTrend signal strategy — emits BUY/SELL on trend flips.
 
-    This is the engine-side face of the domain HalfTrend indicator. It keeps
-    only the per-candle replay needed to surface buy/sell markers through the
-    overlay pipeline; the full indicator math lives in
-    ``ntrade.domain.analytics.halftrend`` and runs on the chart backend.
+    The engine-side face of the domain HalfTrend indicator. Accumulates closed
+    candles, runs ``halftrend()`` over the buffer on each bar close, and emits
+    a signal when the latest bar produces a buy/sell marker. The full indicator
+    math lives in ``ntrade.domain.analytics.halftrend`` (zero-parity: the same
+    function the chart overlay runs).
     """
 
     name = "halftrend"
@@ -46,6 +47,7 @@ class HalfTrendStrategy(Strategy):
         self._trend: list[int] = []
         self._buy: list[bool] = []
         self._sell: list[bool] = []
+        self._buf: list[dict] = []
 
     def _bind(self, df):
         from ntrade.domain.analytics.halftrend import halftrend as _ht
@@ -72,22 +74,36 @@ class HalfTrendStrategy(Strategy):
         idx = n - 1
         if self._buy[idx]:
             return {"side": "BUY", "price": float(close),
-                    "ht": float(self._ht[idx]) if self._ht[idx] != self._ht[idx] else None}
+                    "ht": float(self._ht[idx]) if self._ht[idx] == self._ht[idx] else None}
         if self._sell[idx]:
             return {"side": "SELL", "price": float(close),
-                    "ht": float(self._ht[idx]) if self._ht[idx] != self._ht[idx] else None}
+                    "ht": float(self._ht[idx]) if self._ht[idx] == self._ht[idx] else None}
         return None
 
     def on_candle_closed(self, event) -> None:
         if self.symbol is not None and event.symbol != self.symbol:
             return
-        # Build OHLCV frame from the replay buffer; markers are computed
-        # lazily by the overlay pipeline, so this hook is intentionally light.
-        pass
-
-
-
-
+        self._buf.append({
+            "open": float(event.open),
+            "high": float(event.high),
+            "low": float(event.low),
+            "close": float(event.close),
+            "volume": float(event.volume),
+        })
+        self._bind(pd.DataFrame(self._buf))
+        sig = self.latest_signal(float(event.close))
+        if sig is None:
+            return
+        self.emit_signal(
+            symbol=event.symbol,
+            exchange=event.exchange,
+            side=sig["side"],
+            quantity=self.lot_size,
+            price=float(event.close),
+            reference_price=float(event.close),
+            order_type="MARKET",
+            ht=sig.get("ht"),
+        )
 
 
 

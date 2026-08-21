@@ -482,9 +482,10 @@ def test_parquet_wide_universe_no_oom(tmp_path):
     small = store.read(symbols=["SYM0", "SYM1"], batch_size=100)
     assert len(small) == 10
 
-    # Verify decoupling: file must not contain the coupled import string
     text = Path("ntrade/data/parquet_store.py").read_text()
-    assert "market_hours" not in text
+    # Phase 1 allows market_hours import (single source for session hours) — forbid the old duplicative ZoneInfo/time literal instead.
+    assert 'ZoneInfo("Asia/Kolkata")' not in text
+    assert 'time(9, 15)' not in text  # use session_open/session_close instead
 
     # DuckDB Hive scan pushdown must still work
     import duckdb

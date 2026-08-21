@@ -50,6 +50,12 @@ class PaperStartRequest(BaseModel):
     strategy_params: dict | None = None
 
 
+# TODO(api slim): FIFO realized PnL duplicates domain PnL concepts
+# (ntrade.domain.portfolio.Position.pnl is unrealized MTM only; no domain
+# FIFO engine exists yet). A future ntrade.domain.portfolio FIFO helper
+# could own this, but refactoring now is risky — snapshot mutates
+# fill["open_qty"] in-place and is tested as-is. Do NOT refactor PnL
+# yet; extract with parity tests in a follow-up.
 def _realized_pnl(fills: list[dict], event: OrderFilledEvent) -> float:
     """FIFO realized PnL for a fill against prior opposite-side fills.
 

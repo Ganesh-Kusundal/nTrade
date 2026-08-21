@@ -6,6 +6,7 @@ All endpoints are read-only and broker-agnostic: they delegate to the
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -33,6 +34,27 @@ def _service(request: Request):
 
 def _bad(detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail=detail)
+
+
+def _validate_symbol_params(
+    symbol: str, start: str | None, end: str | None
+) -> tuple[str, datetime | None, datetime | None]:
+    """Shared validation for symbol + ISO-8601 window (candles/ticks/chart).
+
+    Returns the normalized (SYMBOL, start_dt, end_dt) tuple or raises the
+    same 422 HTTPException the inline blocks used to raise.
+    """
+    symbol = symbol.strip().upper()
+    if not is_valid_symbol(symbol):
+        raise _bad(f"invalid symbol {symbol!r}")
+    try:
+        start_dt = parse_iso(start, "start")
+        end_dt = parse_iso(end, "end")
+    except ValueError as exc:
+        raise _bad(str(exc)) from exc
+    if start_dt is not None and end_dt is not None and start_dt > end_dt:
+        raise _bad("start must be <= end")
+    return symbol, start_dt, end_dt
 
 
 @router.get("/provider")
@@ -87,16 +109,7 @@ def get_candles(
     (the UI renders its no-data state, not an error).
     """
     service = _service(request)
-    symbol = symbol.strip().upper()
-    if not is_valid_symbol(symbol):
-        raise _bad(f"invalid symbol {symbol!r}")
-    try:
-        start_dt = parse_iso(start, "start")
-        end_dt = parse_iso(end, "end")
-    except ValueError as exc:
-        raise _bad(str(exc)) from exc
-    if start_dt is not None and end_dt is not None and start_dt > end_dt:
-        raise _bad("start must be <= end")
+    symbol, start_dt, end_dt = _validate_symbol_params(symbol, start, end)
     try:
         candles = service.candles(symbol=symbol, exchange=exchange.strip().upper(),
                                   interval=interval, start=start_dt, end=end_dt,
@@ -137,16 +150,7 @@ def get_ticks(
     (seeded per bar), so replay is reproducible.
     """
     service = _service(request)
-    symbol = symbol.strip().upper()
-    if not is_valid_symbol(symbol):
-        raise _bad(f"invalid symbol {symbol!r}")
-    try:
-        start_dt = parse_iso(start, "start")
-        end_dt = parse_iso(end, "end")
-    except ValueError as exc:
-        raise _bad(str(exc)) from exc
-    if start_dt is not None and end_dt is not None and start_dt > end_dt:
-        raise _bad("start must be <= end")
+    symbol, start_dt, end_dt = _validate_symbol_params(symbol, start, end)
     try:
         ticks = service.ticks(symbol=symbol, exchange=exchange.strip().upper(),
                               interval=interval, start=start_dt, end=end_dt,
@@ -209,16 +213,7 @@ def get_chart(
     ``interval='Range'`` builds price-based range bars server-side.
     """
     service = _service(request)
-    symbol = symbol.strip().upper()
-    if not is_valid_symbol(symbol):
-        raise _bad(f"invalid symbol {symbol!r}")
-    try:
-        start_dt = parse_iso(start, "start")
-        end_dt = parse_iso(end, "end")
-    except ValueError as exc:
-        raise _bad(str(exc)) from exc
-    if start_dt is not None and end_dt is not None and start_dt > end_dt:
-        raise _bad("start must be <= end")
+    symbol, start_dt, end_dt = _validate_symbol_params(symbol, start, end)
     try:
         return service.build_chart(
             symbol=symbol, exchange=exchange.strip().upper(), interval=interval,

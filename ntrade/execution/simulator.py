@@ -24,6 +24,7 @@ both legs.
 
 from __future__ import annotations
 
+from ntrade.domain.constants import PRICE_PRECISION
 from ntrade.events.order import (
     OrderAcceptedEvent,
     OrderFilledEvent,
@@ -105,7 +106,7 @@ class SimulatedExecution:
             side=intent.side, quantity=intent.quantity, strategy=intent.strategy, ts=intent.ts,
         ))
         notional = fill_price * intent.quantity
-        commission = round(self.commission.apply(notional), 4)
+        commission = round(self.commission.apply(notional), PRICE_PRECISION)
         # --- delivery (overnight) detection ---------------------------------
         held_overnight = False
         delivery_adjustment = 0.0
@@ -127,7 +128,7 @@ class SimulatedExecution:
                     delivery.stt(entry_notional, "BUY")
                     + delivery.stamp(entry_notional, "BUY")
                     - intraday.stt(entry_notional, "BUY")
-                    - intraday.stamp(entry_notional, "BUY"), 4)
+                    - intraday.stamp(entry_notional, "BUY"), PRICE_PRECISION)
         # --- statutory charges ----------------------------------------------
         if self.statutory is not None:
             # Product schedule from the instrument class (F&O vs equity), GST
@@ -137,12 +138,12 @@ class SimulatedExecution:
             model = self.statutory.for_instrument(instrument, delivery=held_overnight)
             statutory = round(
                 model.total_cost(notional, intent.side, brokerage=commission)
-                + delivery_adjustment, 4)
+                + delivery_adjustment, PRICE_PRECISION)
         else:
             statutory = 0.0
         filled = OrderFilledEvent(
             order_id=order_id, symbol=intent.symbol, exchange=intent.exchange,
-            side=intent.side, quantity=intent.quantity, fill_price=round(fill_price, 4),
+            side=intent.side, quantity=intent.quantity, fill_price=round(fill_price, PRICE_PRECISION),
             commission=commission, statutory=statutory, strategy=intent.strategy, ts=intent.ts,
         )
         self.ctx.bus.publish(filled)

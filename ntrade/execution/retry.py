@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generator
 
+from ntrade.domain.constants import RETRY_BASE_DELAY_S, RETRY_MAX_DELAY_S, RETRY_MULTIPLIER_S, RETRY_JITTER_S, RETRY_MAX_RETRIES
 from ntrade.execution.rate_limit import BrokerRateGate, Quota, RateLimited, is_rate_limited
 
 __all__ = [
@@ -48,11 +49,11 @@ class RetryPolicy:
     predicate; returning True for an exception re-raises it immediately.
     """
 
-    max_retries: int = 3
-    base_delay: float = 0.2       # seconds
-    max_delay: float = 5.0        # cap on exponential backoff
-    multiplier: float = 2.0       # backoff multiplier
-    jitter: float = 0.1           # random jitter range (+-jitter/2)
+    max_retries: int = RETRY_MAX_RETRIES
+    base_delay: float = RETRY_BASE_DELAY_S       # seconds
+    max_delay: float = RETRY_MAX_DELAY_S         # cap on exponential backoff
+    multiplier: float = RETRY_MULTIPLIER_S       # backoff multiplier
+    jitter: float = RETRY_JITTER_S               # random jitter range (+-jitter/2)
     no_retry_on: Callable[[Exception], bool] | None = field(
         default=None, repr=False, compare=False,
     )

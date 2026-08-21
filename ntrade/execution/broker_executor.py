@@ -36,6 +36,7 @@ from ntrade.execution.costs import (
     resolve_statutory,
 )
 from ntrade.execution.rate_limit import RateLimited
+from ntrade.domain.coercion import to_float, to_int
 
 # Local implementations of v3 patterns — no external dependency.
 from ntrade.execution._guard import (
@@ -44,25 +45,11 @@ from ntrade.execution._guard import (
     CorrelationId,
     MemoryIdempotencyGuard,
 )
-from ntrade.domain.constants import CIRCUIT_COOLDOWN_S, CIRCUIT_FAILURE_THRESHOLD
+from ntrade.domain.constants import CIRCUIT_COOLDOWN_S, CIRCUIT_FAILURE_THRESHOLD, PRICE_PRECISION
 
 logger = logging.getLogger("ntrade.execution")
 
 _TERMINAL_STATUSES = tuple(sorted(_OrderStatus.TERMINAL))
-
-
-def _fill_price(order) -> float:
-    try:
-        return float(order.avg_price or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _fill_qty(order) -> int:
-    try:
-        return int(order.filled_qty or 0)
-    except (TypeError, ValueError):
-        return 0
 
 
 class BrokerExecution:
@@ -129,6 +116,7 @@ class BrokerExecution:
             logger.debug("idempotency_dedup order_id=%s corr=%s", prior, corr)
             return None  # already accepted; the original OrderAcceptedEvent was published
         try:
+            # TODO: use execution.order_types.strategy_for / route_for_broker when adding new types
             order = instrument.order.place(
                 intent.side, intent.quantity,
                 order_type=OrderType(intent.order_type.upper()),
@@ -281,8 +269,8 @@ class BrokerExecution:
                 self.ctx.bus.publish(OrderUpdatedEvent(
                     order_id=order_id, symbol=record["intent"].symbol,
                     exchange=record["intent"].exchange, side=record["intent"].side,
-                    status=order.status.value, filled_qty=_fill_qty(order),
-                    avg_price=_fill_price(order), strategy=record["intent"].strategy,
+                    status=order.status.value, filled_qty=to_int(order.filled_qty),
+                    avg_price=to_float(order.avg_price), strategy=record["intent"].strategy,
                     ts=self.ctx.now(),
                 ))
             self._emit_fill(order_id, record["intent"], order, emitted)
@@ -472,18 +460,18 @@ class BrokerExecution:
         """Emit the newly-filled quantity since the last poll (partial-safe)."""
         record = self._open.get(order_id)
         already = record["filled"] if record else 0
-        new_qty = _fill_qty(order) - already
+        new_qty = to_int(order.filled_qty) - already
         if new_qty <= 0:
             return
-        price = _fill_price(order) or intent.price or 0.0
+        price = to_float(order.avg_price) or intent.price or 0.0
         if price <= 0:
             logger.error("fill rejected: zero fill_price for %s order %s "
                          "(broker=%s, intent_price=%s)",
                          intent.symbol, order_id,
-                         _fill_price(order), intent.price)
+                         to_float(order.avg_price), intent.price)
             return
         notional = price * new_qty
-        commission = round(self.commission.apply(notional), 4)
+        commission = round(self.commission.apply(notional), PRICE_PRECISION)
         if self.statutory is None:
             statutory = 0.0
         else:
@@ -496,7 +484,7 @@ class BrokerExecution:
             else:
                 model = self.statutory.for_instrument(instrument)
             statutory = round(
-                model.total_cost(notional, intent.side, brokerage=commission), 4)
+                model.total_cost(notional, intent.side, brokerage=commission), PRICE_PRECISION)
         fill = OrderFilledEvent(
             order_id=order_id, symbol=intent.symbol, exchange=intent.exchange,
             side=intent.side, quantity=new_qty, fill_price=price,

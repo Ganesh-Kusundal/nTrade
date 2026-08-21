@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING
 
+from ntrade.domain.constants import OptionType
+
 if TYPE_CHECKING:
     from ntrade.domain.instruments.derivatives import Option
 
@@ -62,8 +64,8 @@ class Expiry:
         self._strikes = sorted({o.strike for o in options})
         # Build pair lookup
         self._pair_map: dict[float, OptionPair] = {}
-        calls = {o.strike: o for o in options if o.option_type == "CE"}
-        puts = {o.strike: o for o in options if o.option_type == "PE"}
+        calls = {o.strike: o for o in options if o.option_type == OptionType.CE}
+        puts = {o.strike: o for o in options if o.option_type == OptionType.PE}
         for s in self._strikes:
             self._pair_map[s] = OptionPair(strike=s, call=calls.get(s), put=puts.get(s))
 
@@ -87,14 +89,14 @@ class Expiry:
         otm_calls: list[Option] = []
         for s in self._strikes[atm_idx + 1:]:
             for o in self._options:
-                if o.strike == s and o.option_type == "CE":
+                if o.strike == s and o.option_type == OptionType.CE:
                     otm_calls.append(o)
                     break
         # OTM puts (strikes below ATM, nearest first)
         otm_puts: list[Option] = []
         for s in reversed(self._strikes[:atm_idx]):
             for o in self._options:
-                if o.strike == s and o.option_type == "PE":
+                if o.strike == s and o.option_type == OptionType.PE:
                     otm_puts.append(o)
                     break
         # Interleave: call, put, call, put …
@@ -123,14 +125,14 @@ class Expiry:
         itm_calls: list[Option] = []
         for s in reversed(self._strikes[:atm_idx]):
             for o in self._options:
-                if o.strike == s and o.option_type == "CE":
+                if o.strike == s and o.option_type == OptionType.CE:
                     itm_calls.append(o)
                     break
         # ITM puts (strikes above ATM, nearest first)
         itm_puts: list[Option] = []
         for s in self._strikes[atm_idx + 1:]:
             for o in self._options:
-                if o.strike == s and o.option_type == "PE":
+                if o.strike == s and o.option_type == OptionType.PE:
                     itm_puts.append(o)
                     break
         # Interleave: call, put, call, put …
@@ -157,10 +159,10 @@ class Expiry:
         return [self._pair_map[s] for s in self._strikes]
 
     def calls(self) -> list["Option"]:
-        return [o for o in self._options if o.option_type == "CE"]
+        return [o for o in self._options if o.option_type == OptionType.CE]
 
     def puts(self) -> list["Option"]:
-        return [o for o in self._options if o.option_type == "PE"]
+        return [o for o in self._options if o.option_type == OptionType.PE]
 
     def strikes(self) -> list[float]:
         return list(self._strikes)

@@ -1,5 +1,7 @@
 import type { InProgressBar } from '../hooks/replayVisible'
 import type { Contract, Quote } from '../types/market'
+import type { WsStatus } from '../lib/feedStatus'
+import { fmtExpiry, fmtPrice, fmtVolume } from '../lib/format'
 import { StatusBadge } from './StatusBadge'
 
 interface MarketHeaderProps {
@@ -8,18 +10,10 @@ interface MarketHeaderProps {
   lastClose: number | null
   source: string | null
   live: boolean
-  wsStatus: 'connected' | 'disconnected' | 'reconnecting' | 'off'
+  wsStatus: WsStatus
   mode: 'live' | 'replay'
   /** In-progress bar during tick replay — current tick price vs real bar OHLC. */
   replayBar?: InProgressBar | null
-}
-
-const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
-
-function fmtExpiry(iso: string | undefined): string {
-  if (!iso) return '—'
-  const [y, m, d] = iso.split('-').map(Number)
-  return `${d} ${MONTHS[m - 1]} ${String(y).slice(2)}`
 }
 
 function Readout({ label, value }: { label: string; value: string }) {
@@ -59,7 +53,7 @@ export function MarketHeader({ contract, quote, lastClose, source, live, wsStatu
       <div className="flex items-center gap-4">
         <div className="flex items-baseline gap-2">
           <span className={`font-mono text-2xl font-semibold ${price == null ? 'text-muted' : up ? 'text-accent' : 'text-danger'}`}>
-            {price == null ? '—' : price.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+            {price == null ? '—' : fmtPrice(price)}
           </span>
           {price != null && change != null && (
             <span className={`font-mono text-sm ${up ? 'text-accent' : 'text-danger'}`}>
@@ -75,7 +69,7 @@ export function MarketHeader({ contract, quote, lastClose, source, live, wsStatu
           <Readout label="High" value={quote?.high != null ? quote.high.toFixed(2) : '—'} />
           <Readout label="Low" value={quote?.low != null ? quote.low.toFixed(2) : '—'} />
           <Readout label="Prev" value={quote?.prev_close != null ? quote.prev_close.toFixed(2) : '—'} />
-          <Readout label="Vol" value={quote?.volume != null ? quote.volume.toLocaleString('en-IN') : '—'} />
+          <Readout label="Vol" value={quote?.volume != null ? fmtVolume(quote.volume) : '—'} />
         </div>
 
         {replayBar && (

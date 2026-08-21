@@ -22,6 +22,7 @@ import pandas as pd
 
 from ntrade.domain.analytics.indicators import atr, ema, vwap
 from ntrade.domain.market_hours import IST as _IST
+from ntrade.domain.types import NaiveUTC
 from ntrade.engines.strategy_engine import Strategy
 
 logger = logging.getLogger("ntrade.strategy.orb_vwap")
@@ -36,9 +37,13 @@ def _ist_dt(ts) -> datetime | None:
         except Exception:
             pass
     try:
-        # Kernel candle labels are naive UTC (CandleEngine convention since
-        # the IST boundary fix) — interpret them as UTC, not IST wall time,
-        # or the session windows would fire 5.5h early.
+        # Kernel candle labels are NaiveUTC (CandleEngine convention since
+        # the IST boundary fix) — wrap explicitly so the contract is
+        # assertion-backed, then reinterpret as UTC and shift to IST wall
+        # time. Treating them as IST wall time directly would fire the
+        # session windows 5.5h early.
+        if not isinstance(ts, NaiveUTC):
+            ts = NaiveUTC(ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second, ts.microsecond)
         return ts.replace(tzinfo=timezone.utc).astimezone(_IST)
     except Exception:
         return None

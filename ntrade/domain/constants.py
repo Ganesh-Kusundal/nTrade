@@ -6,6 +6,7 @@ points here.
 """
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 
 
@@ -52,6 +53,20 @@ class Timeframe(StrEnum):
 DEFAULT_TIMEFRAME = Timeframe.MIN
 
 
+# ---- option-style taxonomy --------------------------------------------------
+# Single home for the call/put flag. StrEnum so existing string comparisons
+# (``option_type == "CE"``) keep working, while new code can compare against the
+# enum member. Every option-type comparison in the codebase should reference
+# these members instead of a bare literal.
+
+
+class OptionType(StrEnum):
+    """Option type — call (CE) or put (PE)."""
+
+    CE = "CE"  # call
+    PE = "PE"  # put
+
+
 # ---- throttling & intervals ------------------------------------------------
 # Shared by scanner rate-limits, circuit-breaker cooldowns, and kill-switch
 # backoffs — all use the same 30s cadence to avoid magic-number drift.
@@ -81,3 +96,27 @@ HISTORY_MAX_AGE_MIN: float = 5.0
 
 # Cost defaults
 DEFAULT_RISK_FREE_RATE: float = 0.065  # 6.5% annual — approximate Indian risk-free
+DEFAULT_INITIAL_CASH: float = 100_000.0  # Default opening cash for paper trading, backtests, and sessions (₹1 lakh)
+
+
+# ---- rounding precision -----------------------------------------------------
+# Single home for decimal rounding so price/qty/rounding never drifts between
+# the simulator, the broker executor, and the engines. Price fields round to
+# 4 dp (paise); payoff / market-value fields round to 2 dp.
+PRICE_PRECISION: int = 4
+PAYOFF_PRECISION: int = 2
+
+
+# ---- Dhan auth --------------------------------------------------------------
+# JWT proactive-refresh buffer: refresh a token when it expires within this
+# window (default 15 minutes) to avoid mid-session expiry. Overridable via
+# the DHAN_EXPIRY_BUFFER_S env var.
+JWT_EXPIRY_BUFFER_S: int = int(os.environ.get("DHAN_EXPIRY_BUFFER_S", "900"))
+
+
+# ---- retry policy defaults --------------------------------------------------
+RETRY_MAX_RETRIES: int = 3
+RETRY_BASE_DELAY_S: float = 0.2
+RETRY_MAX_DELAY_S: float = 5.0
+RETRY_MULTIPLIER_S: float = 2.0
+RETRY_JITTER_S: float = 0.1

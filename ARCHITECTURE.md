@@ -26,12 +26,12 @@ atm.order.buy(75)
 │  BrokerRegistry                                            │
 ├─────────────────────────────────────────────────────────────┤
 │  TRADING KERNEL  (event-centric — zero parity)              │
-│  TradingKernel · ResilientKernel · StrategyRunner · LiveRunner│
+│  TradingKernel · StrategyRunner · LiveRunner                │
 │  EventBus · TradingClock (Live/Replay/Sim) · EventStore   │
 │  engines/  market · candle · indicator · strategy · risk   │
 │           order (OMS) · portfolio · position-sync          │
 │  execution/  router → SimulatedExecution · BrokerExecution │
-│  replay/  ReplayEngine                                       │
+│  replay/  (planned — empty; replay via TradingSession.replay() + TradingKernel.run_replay() + ReplayClock) │
 │  backtest/ BacktestSimulator · fills (FillPolicy)           │
 │  sources/ MarketFeedSource · DhanMarketFeedSource · Synthetic│
 │  sim/ synthesize_1m_ticks · SimTick                         │
@@ -264,7 +264,7 @@ OHLCV    ──► BacktestSimulator ──► TickEvent ──► EventBus
   `max_drawdown_pct`; `BacktestSimulator(fill_policy=FillPolicy())` swaps in a
   `BarAwareExecution` so LIMIT orders only fill when a bar trades through the
   limit (MARKET orders keep the standard path).
-- **ResilientKernel** — crash recovery on top of the recorded EventStore:
+- **ResilientKernel (planned — not implemented)** — crash recovery on top of the recorded EventStore:
   `store.recovery_events()` returns the causal market stream
   (`Tick/Quote/Depth` + `OrderFilled`) in causal order (a fill replays *after*
   the market event that caused it); `ResilientKernel.recover()` replays it into
@@ -276,6 +276,8 @@ OHLCV    ──► BacktestSimulator ──► TickEvent ──► EventBus
   raises) and reseeds the simulator sequence so the first live order never
   collides with recovered `SIM-…` ids. Recovered fills, positions and balance
   match the crashed session (verified by zero-parity test).
+
+  > Note: ResilientKernel has no implementation (`ntrade/replay/` is empty, 0 files). Current replay/crash-recovery uses `TradingSession.replay(events)` → `TradingKernel.run_replay(events)` with `ReplayClock` (`ntrade/kernel/session.py:140`, `ntrade/kernel/clock.py:33`, `ntrade/kernel/trading_session.py:126`). `store.recovery_events()` / `ResilientKernel.recover()` above is the planned design; live reconciliation today is `LiveRunner` + `PositionSyncEngine`.
 - **StrategyRunner** — multi-strategy management on one kernel. Each strategy
   registered via `runner.add(strategy, risk={...})` gets a unique name
   (`strategy`, `strategy#2`, …) — also avoiding collisions with strategies
@@ -358,7 +360,7 @@ OHLCV    ──► BacktestSimulator ──► TickEvent ──► EventBus
   `RiskHaltedEvent` (consumed by the LiveRunner's kill switch) and `resume()`
   publishes `RiskResumedEvent`. All new kwargs are optional, so `StrategyRunner`
   and existing kernels are untouched.
-- **OMS state events + modify/cancel + orphan adoption + crash-restore** — `BrokerExecution.poll()` publishes `OrderUpdatedEvent` whenever an open order's status changes between polls (PENDING → PARTIALLY_FILLED → COMPLETED / CANCELLED / REJECTED), alongside the partial-safe fills. `BrokerExecution.modify(order_id, **kw)` / `.cancel(order_id)` delegate to the adapter. `TradingKernel` exposes `open_orders()`, `modify_order()`, `cancel_order()` passthroughs (no-ops in sim mode). `BrokerExecution.reconcile_open()` adopts broker-side orphan orders unknown to the tracker (C-4) so an ambiguous placement failure loses nothing; `BrokerExecution.restore_open(deltas)` rehydrates the in-memory `_open` map from `EventStore.open_order_deltas()` during `ResilientKernel.recover()` (H3) so a partially-filled order's remaining quantity survives a crash.
+- **OMS state events + modify/cancel + orphan adoption + crash-restore** — `BrokerExecution.poll()` publishes `OrderUpdatedEvent` whenever an open order's status changes between polls (PENDING → PARTIALLY_FILLED → COMPLETED / CANCELLED / REJECTED), alongside the partial-safe fills. `BrokerExecution.modify(order_id, **kw)` / `.cancel(order_id)` delegate to the adapter. `TradingKernel` exposes `open_orders()`, `modify_order()`, `cancel_order()` passthroughs (no-ops in sim mode). `BrokerExecution.reconcile_open()` adopts broker-side orphan orders unknown to the tracker (C-4) so an ambiguous placement failure loses nothing; `BrokerExecution.restore_open(deltas)` rehydrates the in-memory `_open` map from `EventStore.open_order_deltas()` during planned `ResilientKernel.recover()` (H3) — currently wired manually via `TradingKernel.run_replay()` + `ReplayClock` — so a partially-filled order's remaining quantity survives a crash.
 - **Ops tooling** — `scripts/paper_gate_run.py` replays real historical data
   through the synthetic feed with a strategy and prints a `build_paper_report`
   checklist (fills, final equity, max drawdown) that must pass before going
@@ -465,6 +467,7 @@ ntrade/
   execution/           # ExecutionRouter, SimulatedExecution, BrokerExecution, costs, retry
   storage/             # EventStore (append-only JSONL, recovery_events)
   backtest/            # BacktestSimulator, fills (FillPolicy, BarAwareExecution)
+  replay/              # planned — empty (0 files); replay is TradingSession.replay() + TradingKernel.run_replay() + ReplayClock (ntrade/kernel/trading_session.py:126, ntrade/kernel/session.py:140, ntrade/kernel/clock.py:33)
   sources/             # MarketFeedSource ABC, SimulatedFeedSource, DhanMarketFeedSource,
                        # SyntheticMarketFeedSource, dhan_feed, synthetic_feed
   sim/                 # tick_simulator (synthesize_1m_ticks, SimTick), depth_simulator
@@ -492,8 +495,10 @@ tests/                 # ~1118+ offline test functions
   backtest (paper), replay, and live (Dhan).
 - **Zero parity** — strategies are written once against the kernel's events
   (`Strategy` hooks) and run identically in live (BrokerExecution), replay
-  (ReplayEngine) and backtest (BacktestSimulator). New event sources just
+  (`TradingSession.replay()` + `ReplayClock` / `TradingKernel.run_replay()`) and backtest (BacktestSimulator). New event sources just
   publish canonical events.
+
+  > Note: ReplayEngine is planned; `ntrade/replay/` is empty (0 files). Current replay uses `TradingSession.replay(events)` (`ntrade/kernel/trading_session.py:126`) → `TradingKernel.run_replay(events)` (`ntrade/kernel/session.py:140`) with `ReplayClock` (`ntrade/kernel/clock.py:33`).
 - **Entry points** — preferred: `TradingSession.connect("dhan")` / `.paper()`
   / `.replay(events)`; legacy: `Market(broker="dhan")`. Both delegate to the
   same `TradingKernel` + `InstrumentFactory` + `BrokerRegistry` internals.
@@ -525,11 +530,7 @@ Latest run (2026-08-20, from commit `2424757`):
 - **Key communities**: LiveRunner, EventStore, TradingKernel, BrokerRateGate,
   DhanTransport, Strategy, DhanBroker, TickEvent, PaperBroker, ParquetStorage,
   HistoricalSeries, GapDetector, ScannerLoader, DhanMarketFeedSource,
-  SyntheticMarketFeedSource, RiskEngine, ResilientKernel, BrokerExecution.
-- **Flagged**: a 4–5-file import cycle in `domain/instruments/`
-  (`base → capabilities → chain → {expiry, derivatives} → base`). This is
-  deferred hygiene — cycle members are `cached_property`-resolved at call time,
-  so it does not cause a module-load circular import, but a future refactor
-  should break it for static-analysis cleanliness.
+  SyntheticMarketFeedSource, RiskEngine, ResilientKernel (planned), BrokerExecution.
+- **Flagged (now resolved)**: the `domain/instruments/` cycle (`base → capabilities → chain → {expiry, derivatives} → base`) is now broken for static analysis — `ntrade/domain/instruments/chain.py:13` imports under `TYPE_CHECKING` only, and `ntrade/domain/instruments/capabilities.py:24` / `ntrade/domain/instruments/base.py:115` use deferred/local imports + `cached_property`, so no runtime circular import remains. Shared helpers now live in `ntrade/domain/types.py`, `ntrade/domain/ohlcv.py`, `ntrade/domain/coercion.py` (NaiveIST/NaiveUTC, OHLCV resample, wire coercion).
 - Run `graphify update .` after code changes (no API cost) to keep the graph
   fresh. See `GRAPH_REPORT.md` in `graphify-out/` for the full community map.

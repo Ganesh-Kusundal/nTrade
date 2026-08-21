@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from ntrade.domain.constants import OptionType
+
 #: Sentinel for "no value was computed". Distinct from a genuine 0.0 so a
 #: not-computed IV/delta can never be mistaken for a real zero (L5).
 NOT_COMPUTED: float | None = None
@@ -49,17 +51,17 @@ class BlackScholes:
     @staticmethod
     def price(
         spot: float, strike: float, years: float, risk_free: float,
-        sigma: float, option_type: str = "CE", dividend: float = 0.0,
+        sigma: float, option_type: "OptionType | str" = OptionType.CE, dividend: float = 0.0,
     ) -> float:
         if years <= 0:
-            intrinsic = max(spot - strike, 0.0) if option_type == "CE" else max(strike - spot, 0.0)
+            intrinsic = max(spot - strike, 0.0) if option_type == OptionType.CE else max(strike - spot, 0.0)
             return round(intrinsic, 4)
         if sigma <= 0:
             raise ValueError("sigma must be positive")
         sqrt_t = math.sqrt(years)
         d1 = (math.log(spot / strike) + (risk_free - dividend + 0.5 * sigma ** 2) * years) / (sigma * sqrt_t)
         d2 = d1 - sigma * sqrt_t
-        if option_type == "CE":
+        if option_type == OptionType.CE:
             value = spot * math.exp(-dividend * years) * _norm_cdf(d1) - strike * math.exp(-risk_free * years) * _norm_cdf(d2)
         else:
             value = strike * math.exp(-risk_free * years) * _norm_cdf(-d2) - spot * math.exp(-dividend * years) * _norm_cdf(-d1)
@@ -68,23 +70,23 @@ class BlackScholes:
     @staticmethod
     def greeks(
         spot: float, strike: float, years: float, risk_free: float,
-        sigma: float, option_type: str = "CE", dividend: float = 0.0,
+        sigma: float, option_type: "OptionType | str" = OptionType.CE, dividend: float = 0.0,
     ) -> Greeks:
         sqrt_t = math.sqrt(years)
         d1 = (math.log(spot / strike) + (risk_free - dividend + 0.5 * sigma ** 2) * years) / (sigma * sqrt_t)
         d2 = d1 - sigma * sqrt_t
         pdf_d1 = _norm_pdf(d1)
-        delta = math.exp(-dividend * years) * (_norm_cdf(d1) if option_type == "CE" else _norm_cdf(d1) - 1)
+        delta = math.exp(-dividend * years) * (_norm_cdf(d1) if option_type == OptionType.CE else _norm_cdf(d1) - 1)
         gamma = math.exp(-dividend * years) * pdf_d1 / (spot * sigma * sqrt_t)
         vega = spot * math.exp(-dividend * years) * pdf_d1 * sqrt_t / 100.0
         theta = (
             -spot * math.exp(-dividend * years) * pdf_d1 * sigma / (2 * sqrt_t)
-            - risk_free * strike * math.exp(-risk_free * years) * (_norm_cdf(d2) if option_type == "CE" else _norm_cdf(-d2))
-            + (dividend * spot * math.exp(-dividend * years) * (_norm_cdf(d1) if option_type == "CE" else _norm_cdf(-d1)))
+            - risk_free * strike * math.exp(-risk_free * years) * (_norm_cdf(d2) if option_type == OptionType.CE else _norm_cdf(-d2))
+            + (dividend * spot * math.exp(-dividend * years) * (_norm_cdf(d1) if option_type == OptionType.CE else _norm_cdf(-d1)))
         ) / 365.0
         rho = (
             strike * years * math.exp(-risk_free * years)
-            * (_norm_cdf(d2) if option_type == "CE" else _norm_cdf(-d2)) / 100.0
+            * (_norm_cdf(d2) if option_type == OptionType.CE else _norm_cdf(-d2)) / 100.0
         )
         return Greeks(
             delta=round(delta, 6), gamma=round(gamma, 6),
@@ -94,14 +96,14 @@ class BlackScholes:
     @staticmethod
     def implied_volatility(
         market_price: float, spot: float, strike: float, years: float,
-        risk_free: float, option_type: str = "CE", dividend: float = 0.0,
+        risk_free: float, option_type: "OptionType | str" = OptionType.CE, dividend: float = 0.0,
         tol: float = 1e-6, max_iter: int = 100,
     ) -> float | None:
         """Bisection IV solver. Returns ``NOT_COMPUTED`` (None) when no
         solution exists within bounds — never a misleading 0.0 (L5)."""
         if years <= 0 or market_price <= 0:
             return NOT_COMPUTED
-        intrinsic = max(spot - strike, 0.0) if option_type == "CE" else max(strike - spot, 0.0)
+        intrinsic = max(spot - strike, 0.0) if option_type == OptionType.CE else max(strike - spot, 0.0)
         if market_price < intrinsic:
             return NOT_COMPUTED
         lo, hi = 0.0001, 5.0

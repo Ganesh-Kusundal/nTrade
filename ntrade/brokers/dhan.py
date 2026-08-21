@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from ntrade.brokers.base import BrokerAdapter
-from ntrade.brokers.capabilities import capability
+from ntrade.domain.ports import BrokerAdapter, capability
+from ntrade.execution.order_types import route_for_broker
 from ntrade.brokers.dhan_auth_provider import DhanAuthProvider
 from ntrade.brokers.dhan_mapper import (
     DhanMapper,
@@ -290,7 +290,7 @@ class DhanBroker(BrokerAdapter):
         # Bracket (BO) orders: Dhan's order_placement accepts no BO type — route
         # to its dedicated place_super_order API (entry + target + stop legs).
         # Both paths go through the throttled transport (B-010: no self.tsl bypass).
-        if order.order_type.value == "BRACKET":
+        if route_for_broker(order.order_type) == "super_order":
             try:
                 order_id = self._get_transport().place_super_order(
                     tradingsymbol=dhan_symbol(order.instrument),

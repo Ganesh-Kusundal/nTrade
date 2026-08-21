@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from ntrade.domain.constants import Timeframe, DEFAULT_TIMEFRAME
 from ntrade.domain.market_hours import IST
+from ntrade.domain.types import NaiveUTC, assert_naive_ist
 from ntrade.events.market import CandleClosedEvent, QuoteEvent, TickEvent
 
 from ntrade.domain.timeframes import timeframe_seconds as _timeframe_seconds
@@ -52,6 +53,7 @@ class CandleEngine:
             # event source (live IST-aware ticks, naive-IST history bars).
             # Pin the zone BEFORE timestamp(): timestamp() on a naive value
             # re-reads the process-local TZ (double conversion).
+            assert_naive_ist(ts)
             ts = ts.replace(tzinfo=IST)
         epoch = int(ts.timestamp())  # aware -> absolute, host-TZ independent
         return epoch - (epoch % self.seconds)
@@ -108,13 +110,14 @@ class CandleEngine:
         candle["volume"] += volume
 
     def _close(self, symbol: str, candle: dict) -> None:
+        _dt = datetime.fromtimestamp(candle["bucket"] + self.seconds,
+                                     tz=timezone.utc).replace(tzinfo=None)
         closed = CandleClosedEvent(
             symbol=symbol, exchange=candle["exchange"], timeframe=self.timeframe,
             open=candle["open"], high=candle["high"], low=candle["low"],
             close=candle["close"], volume=candle["volume"],
             # naive UTC wall-clock label, host-timezone independent
-            ts=datetime.fromtimestamp(candle["bucket"] + self.seconds,
-                                      tz=timezone.utc).replace(tzinfo=None),
+            ts=NaiveUTC(_dt.year, _dt.month, _dt.day, _dt.hour, _dt.minute, _dt.second, _dt.microsecond),
         )
         buf = self._closed.setdefault(symbol, [])
         buf.append(closed)

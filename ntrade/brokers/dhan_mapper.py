@@ -15,7 +15,7 @@ import pandas as pd
 from ntrade.domain.market.depth import DepthLevel, MarketDepth
 from ntrade.domain.market.quote import Quote
 from ntrade.domain.orders.book import OrderBook, OrderBookEntry, TradeBook, TradeBookEntry
-from ntrade.domain.constants import Exchange
+from ntrade.domain.constants import Exchange, OptionType
 
 if TYPE_CHECKING:
     from ntrade.domain.instruments.base import Instrument
@@ -72,7 +72,7 @@ class DhanMapper:
         need the CUSTOM form (B-016: front-month future resolution).
         """
         if instrument.KIND == "option":
-            leg = "CALL" if instrument.option_type == "CE" else "PUT"
+            leg = "CALL" if instrument.option_type == OptionType.CE else "PUT"
             date_part = instrument.expiry.strftime("%d %b").upper()
             strike_label = (
                 int(instrument.strike)
@@ -119,50 +119,12 @@ class DhanMapper:
     def resample_history(df: pd.DataFrame | None, rule: str) -> pd.DataFrame:
         """Aggregate 1m candles to a coarser rule (e.g. ``3min``).
 
-        OHLCV-safe: open=first, high=max, low=min, close=last, volume/oi=sum,
-        anchored per calendar day at the 09:15 market open so night-session
-        candles never bleed across days (mirrors Tradehull's
-        ``resample_timeframe`` day-grouping). Empty input returns as-is.
+        Delegates to :func:`ntrade.domain.ohlcv.resample` (day_group=True,
+        origin=09:15) — single source of truth for OHLCV aggregation.
         """
-        if df is None or df.empty or "timestamp" not in df:
-            return df if df is not None else pd.DataFrame()
-        out = df.copy()
-        out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce")
-        # Normalize tz-aware timestamps to naive IST wall time so the day-group
-        # + 09:15 origin math is exact (resample rejects tz-mixed index/origin).
-        if getattr(out["timestamp"].dt, "tz", None) is not None:
-            out["timestamp"] = out["timestamp"].dt.tz_localize(None)
-        out = out.dropna(subset=["timestamp"])
-        if out.empty:
-            return out.reset_index(drop=True)
-        indexed = out.set_index("timestamp")
-        agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
-        for col in ("volume", "oi"):
-            if col in indexed.columns:
-                agg[col] = "sum"
-        rows = []
-        for day, group in indexed.groupby(indexed.index.date):
-            # Naive origin anchored at the 09:15 IST market open so
-            # night-session candles stay inside their own calendar day.
-            origin = pd.Timestamp(day) + pd.Timedelta(hours=9, minutes=15)
-            # K-025 parity: adopt the engine's RIGHT-edge label convention
-            # (bin start + span — CandleEngine labels closed candles at
-            # bucket + seconds, same as HistoricalSeries.resample). pandas
-            # defaults to label="left" (bin START), which labels a 3m bar
-            # 09:15 where the engine labels 09:18 — same bin membership
-            # (closed="left" kept so bins don't shift), different label.
-            # NOTE: exact grid parity with the engine holds only for 3m (09:15
-            # is on the 180s epoch grid); 2m/4m sit 1-3min off the engine's
-            # epoch grid by design — the 09:15 IST origin keeps night-session
-            # candles inside their own calendar day, which is the more
-            # important invariant. Do not replace the origin to chase parity.
-            resampled = group.resample(
-                rule, origin=origin, closed="left", label="right",
-            ).agg(agg).dropna(subset=["open"])
-            rows.append(resampled)
-        if not rows:
-            return pd.DataFrame(columns=out.columns)
-        return pd.concat(rows).reset_index()
+        from ntrade.domain.ohlcv import resample as _ohlcv_resample
+
+        return _ohlcv_resample(df, rule, origin="09:15", day_group=True)
 
     # ---- quote normalization -----------------------------------------------
 
@@ -389,7 +351,10 @@ def chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float,
     for _, row in df.iterrows():
         strike = float(row["Strike Price"])
         strike_label = int(strike) if strike == int(strike) else strike
-        for leg, prefix, otype in (("CE", "CE", "CE"), ("PE", "PE", "PE")):
+        for leg, prefix, otype in (
+            (OptionType.CE.value, OptionType.CE.value, OptionType.CE.value),
+            (OptionType.PE.value, OptionType.PE.value, OptionType.PE.value),
+        ):
             ltp_col = f"{prefix} LTP"
             if ltp_col not in df.columns or pd.isna(row.get(ltp_col)):
                 continue
@@ -420,42 +385,13 @@ def chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float,
     return OptionChain(underlying, options, expiry=expiry, atm_strike=atm, chain_df=df)
 
 
-# ---- scalar helpers --------------------------------------------------------
-
-def _f(v) -> float:
-    try:
-        return float(v or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _first_str(row, *keys) -> str:
-    for k in keys:
-        v = row.get(k)
-        if v is not None and not (isinstance(v, float) and pd.isna(v)):
-            return str(v)
-    return ""
-
-
-def _first_int(row, *keys) -> int:
-    for k in keys:
-        v = row.get(k)
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            continue
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            continue
-    return 0
-
-
-def _first_float(row, *keys) -> float:
-    for k in keys:
-        v = row.get(k)
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            continue
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            continue
-    return 0.0
+# ---- scalar helpers (delegated to domain/coercion) ---------------------------
+# Single source of truth: domain/coercion first_*/to_* already handle pandas
+# NA / empty-string / type-error fallbacks, so the broker layer must not
+# re-implement them.
+from ntrade.domain.coercion import (
+    first_float as _first_float,
+    first_int as _first_int,
+    first_str as _first_str,
+    to_float as _f,
+)

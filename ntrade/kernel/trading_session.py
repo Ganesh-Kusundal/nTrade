@@ -23,7 +23,7 @@ from ntrade.factories import InstrumentFactory
 from ntrade.kernel.runner import StrategyRunner
 from ntrade.kernel.session import TradingKernel
 from ntrade.registry import BrokerRegistry
-from ntrade.domain.constants import DEFAULT_TIMEFRAME
+from ntrade.domain.constants import DEFAULT_INITIAL_CASH, DEFAULT_TIMEFRAME
 
 if TYPE_CHECKING:
     from ntrade.domain.ports import BrokerAdapter
@@ -52,7 +52,7 @@ class TradingSession:
         kernel: TradingKernel | None = None,
         mode: str = "live",
         session_id: str = "",
-        initial_cash: float = 100_000.0,
+        initial_cash: float = DEFAULT_INITIAL_CASH,
         timeframe: str = DEFAULT_TIMEFRAME,
         **kernel_kw: Any,
     ):
@@ -85,7 +85,7 @@ class TradingSession:
         env_path: str = ".env",
         env: dict | None = None,
         session_id: str = "",
-        initial_cash: float = 100_000.0,
+        initial_cash: float = DEFAULT_INITIAL_CASH,
         timeframe: str = DEFAULT_TIMEFRAME,
         **kw: Any,
     ) -> "TradingSession":
@@ -105,7 +105,7 @@ class TradingSession:
         cls,
         *,
         session_id: str = "paper",
-        initial_cash: float = 100_000.0,
+        initial_cash: float = DEFAULT_INITIAL_CASH,
         timeframe: str = DEFAULT_TIMEFRAME,
         **kw: Any,
     ) -> "TradingSession":
@@ -129,7 +129,7 @@ class TradingSession:
         *,
         broker: "BrokerAdapter | None" = None,
         session_id: str = "replay",
-        initial_cash: float = 100_000.0,
+        initial_cash: float = DEFAULT_INITIAL_CASH,
         timeframe: str = DEFAULT_TIMEFRAME,
         **kw: Any,
     ) -> "TradingSession":

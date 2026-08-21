@@ -19,6 +19,7 @@ from ntrade.events.market import DepthEvent, QuoteEvent, TickEvent
 from ntrade.sources.market_feed import MarketFeedSource
 from ntrade.events.lifecycle import FeedDisconnectedEvent
 from ntrade.execution.retry import RateLimiter
+from ntrade.domain.coercion import to_float, to_int
 
 # Guarded import for the wire constants only — dhanhq ships with
 # Dhan-Tradehull, but the module must stay importable without it (the feed
@@ -34,20 +35,6 @@ _FULL_MODE = int(getattr(_MarketFeed, "Full", 21))
 _QUOTE_MODE = int(getattr(_MarketFeed, "Quote", 17))
 
 _logger = logging.getLogger("ntrade.feed.dhan")
-
-
-def _to_float(value) -> float:
-    try:
-        return float(value or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _to_int(value) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
 
 
 def dhan_payload_to_events(payload: dict, symbol_map: dict, ts) -> list:
@@ -80,15 +67,15 @@ def dhan_payload_to_events(payload: dict, symbol_map: dict, ts) -> list:
     if ptype in ("ticker data", "quote data", "full data", "market depth"):
         events.append(TickEvent(
             symbol=symbol, exchange=exchange, price=ltp,
-            quantity=_to_int(payload.get("LTQ")), ts=ts,
+            quantity=to_int(payload.get("LTQ")), ts=ts,
         ))
 
     if ptype in ("quote data", "full data"):
         events.append(QuoteEvent(
             symbol=symbol, exchange=exchange, ltp=ltp,
-            open=_to_float(payload.get("open")), high=_to_float(payload.get("high")),
-            low=_to_float(payload.get("low")), prev_close=_to_float(payload.get("close")),
-            volume=_to_int(payload.get("volume")), oi=_to_int(payload.get("OI")), ts=ts,
+            open=to_float(payload.get("open")), high=to_float(payload.get("high")),
+            low=to_float(payload.get("low")), prev_close=to_float(payload.get("close")),
+            volume=to_int(payload.get("volume")), oi=to_int(payload.get("OI")), ts=ts,
         ))
 
     depth = payload.get("depth") or ()
@@ -96,14 +83,14 @@ def dhan_payload_to_events(payload: dict, symbol_map: dict, ts) -> list:
     for level in depth:
         if not isinstance(level, dict):
             continue
-        bid_px = _to_float(level.get("bid_price"))
-        ask_px = _to_float(level.get("ask_price"))
+        bid_px = to_float(level.get("bid_price"))
+        ask_px = to_float(level.get("ask_price"))
         if bid_px > 0:
-            bids.append((bid_px, _to_int(level.get("bid_quantity")),
-                         _to_int(level.get("bid_orders"))))
+            bids.append((bid_px, to_int(level.get("bid_quantity")),
+                         to_int(level.get("bid_orders"))))
         if ask_px > 0:
-            asks.append((ask_px, _to_int(level.get("ask_quantity")),
-                         _to_int(level.get("ask_orders"))))
+            asks.append((ask_px, to_int(level.get("ask_quantity")),
+                         to_int(level.get("ask_orders"))))
     if bids or asks:
         events.append(DepthEvent(symbol=symbol, exchange=exchange,
                                  bids=tuple(bids), asks=tuple(asks), ts=ts))

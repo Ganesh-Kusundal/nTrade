@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { api } from '../api/client'
+import { DEFAULT_EXCHANGE } from '../lib/constants'
+import type { WsStatus } from '../lib/feedStatus'
 import type { Contract, Interval, Mode, ProviderInfo, Quote, Root } from '../types/market'
 
 interface ChartState {
@@ -18,7 +20,7 @@ interface ChartState {
   quote: Quote | null
   quoteError: string | null
   // live socket status — lifted so the chrome can render the true feed state
-  wsStatus: 'connected' | 'disconnected' | 'reconnecting' | 'off' | 'stale'
+  wsStatus: WsStatus
   // actions
   init: () => Promise<void>
   selectRoot: (root: string) => void
@@ -26,7 +28,7 @@ interface ChartState {
   selectInterval: (interval: Interval) => void
   setMode: (mode: Mode) => void
   refreshQuote: (symbol: string) => Promise<void>
-  setWsStatus: (status: 'connected' | 'disconnected' | 'reconnecting' | 'off' | 'stale') => void
+  setWsStatus: (status: WsStatus) => void
 }
 
 export const useChartStore = create<ChartState>()(
@@ -84,7 +86,7 @@ export const useChartStore = create<ChartState>()(
 
       refreshQuote: async (symbol) => {
         try {
-          const exchange = get().contract?.exchange ?? 'NFO'
+          const exchange = get().contract?.exchange ?? DEFAULT_EXCHANGE
           const quote = await api.quote(symbol, exchange)
           set({ quote, quoteError: null })
         } catch (err) {

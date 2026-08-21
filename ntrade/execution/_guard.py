@@ -17,6 +17,12 @@ from pathlib import Path
 from contextlib import contextmanager
 from typing import Any
 
+from ntrade.domain.constants import (
+    CIRCUIT_COOLDOWN_S,
+    CIRCUIT_FAILURE_THRESHOLD,
+    SEBI_TOTP_COOLDOWN_S,
+)
+
 
 class IdempotencyDuplicate:
     """A completed idempotent request — its recorded result is returned."""
@@ -89,8 +95,8 @@ class CircuitState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class CircuitBreakerConfig:
-    failure_threshold: int = 5
-    cooldown_seconds: float = 30.0
+    failure_threshold: int = CIRCUIT_FAILURE_THRESHOLD
+    cooldown_seconds: float = CIRCUIT_COOLDOWN_S
     half_open_max: int = 1
 
 
@@ -256,7 +262,7 @@ class TotpCooldownGuard:
         state_path: Path | str | None = None,
     ) -> None:
         self._broker = broker.lower()
-        self._cooldown_seconds = cooldown_seconds or 120.0
+        self._cooldown_seconds = cooldown_seconds or SEBI_TOTP_COOLDOWN_S
         self._state_path = Path(state_path) if state_path else Path(f"{broker.lower()}-totp-cooldown.json")
         self._lock_path = self._state_path.with_name(self._state_path.name + ".lock")
         self._last_attempt_at: float | None = None

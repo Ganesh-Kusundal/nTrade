@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
+from ntrade.domain.constants import DEFAULT_RISK_FREE_RATE, OptionType
 from ntrade.domain.instruments.base import Instrument
 
 if TYPE_CHECKING:
@@ -57,7 +58,7 @@ class Future(Instrument):
             return 0.0
         return round(self._quote.ltp - self._underlying._quote.ltp, 4)
 
-    def cost_of_carry(self, risk_free: float = 0.065) -> float:
+    def cost_of_carry(self, risk_free: float = DEFAULT_RISK_FREE_RATE) -> float:
         """Annualised cost of carry implied by the basis (approx. risk-free)."""
         if self._underlying is None or not self._underlying._quote.ltp or not self.expiry:
             return 0.0
@@ -117,7 +118,7 @@ class Option(Instrument):
         *,
         strike: float,
         expiry: date,
-        option_type: str,  # "CE" | "PE"
+        option_type: "OptionType | str",
         underlying_symbol: str,
         exercise_style: str = "EUROPEAN",
         settlement: str = "CASH",
@@ -126,8 +127,8 @@ class Option(Instrument):
         super().__init__(symbol, exchange or self.DEFAULT_EXCHANGE, **kwargs)
         self.strike = strike
         self.expiry = expiry
-        self.option_type = option_type.upper()
-        if self.option_type not in ("CE", "PE"):
+        self.option_type = OptionType(option_type.upper())
+        if self.option_type not in (OptionType.CE, OptionType.PE):
             raise ValueError(f"option_type must be 'CE' or 'PE', got {option_type!r}")
         self.underlying_symbol = underlying_symbol
         self.exercise_style = exercise_style.upper()  # "EUROPEAN" | "AMERICAN"
@@ -182,7 +183,7 @@ class Option(Instrument):
 
     def intrinsic_value(self, spot: float | None = None) -> float:
         s = spot if spot is not None else (self._underlying._quote.ltp if self._underlying else self._quote.ltp)
-        if self.option_type == "CE":
+        if self.option_type == OptionType.CE:
             return max(s - self.strike, 0.0)
         return max(self.strike - s, 0.0)
 
@@ -193,11 +194,11 @@ class Option(Instrument):
         s = spot if spot is not None else (self._underlying._quote.ltp if self._underlying else self._quote.ltp)
         if s == 0:
             return "unknown"
-        if self.option_type == "CE":
+        if self.option_type == OptionType.CE:
             return "ITM" if s > self.strike else ("ATM" if abs(s - self.strike) / s < 0.005 else "OTM")
         return "ITM" if s < self.strike else ("ATM" if abs(s - self.strike) / s < 0.005 else "OTM")
 
-    def black_scholes(self, spot: float, risk_free: float = 0.065, sigma: float | None = None,
+    def black_scholes(self, spot: float, risk_free: float = DEFAULT_RISK_FREE_RATE, sigma: float | None = None,
                       *, now: "date | datetime | None" = None) -> float:
         """Theoretical price using Black-Scholes.
 
@@ -209,7 +210,7 @@ class Option(Instrument):
         t = self._years_to_expiry(now)
         return BlackScholes.price(spot, self.strike, t, risk_free, sigma, self.option_type)
 
-    def implied_volatility(self, market_price: float, spot: float, risk_free: float = 0.065,
+    def implied_volatility(self, market_price: float, spot: float, risk_free: float = DEFAULT_RISK_FREE_RATE,
                            *, now: "date | datetime | None" = None) -> float:
         from ntrade.domain.analytics.greeks import BlackScholes
         return BlackScholes.implied_volatility(market_price, spot, self.strike,

@@ -5,9 +5,9 @@ backtest, replay and live. Only the event source, the clock and the execution
 target change.
 
 ```
-OHLCV bars   → BacktestSimulator  → same kernel engines → fills
-Recorded events → ReplayEngine    → same kernel engines → fills
-Live Dhan    → DhanMarketFeedSource → same kernel engines → fills
+OHLCV bars      → BacktestSimulator  → same kernel engines → fills
+Recorded events → TradingSession.replay() / TradingKernel.run_replay() + ReplayClock (planned ReplayEngine) → same kernel engines → fills
+Live Dhan       → DhanMarketFeedSource → same kernel engines → fills
 ```
 
 This page covers the offline path: prove a strategy on paper, then gate it
@@ -94,22 +94,30 @@ sim = BacktestSimulator(timeframe="5m", fill_policy=FillPolicy(market_on="close"
 
 ---
 
-## 2. Replay — `ReplayEngine` & `EventStore`
+## 2. Replay — `TradingSession.replay()` / `TradingKernel.run_replay()` & `EventStore` (planned `ReplayEngine`)
 
 Replay feeds a **recorded event stream** (not bars) through a kernel with a
 `ReplayClock`. Strategies make the same decisions as the original run.
 
+> Note: `ReplayEngine` is planned — `ntrade/replay/` is empty (0 files). `from ntrade import ReplayEngine` will raise `ImportError`. Current replay uses `TradingSession.replay(events)` (`ntrade/kernel/trading_session.py:126`) or `TradingKernel(..., clock=ReplayClock()).run_replay(events)` (`ntrade/kernel/session.py:140`, `ntrade/kernel/clock.py:33`).
+
 ```python
-from ntrade import TradingKernel, EventStore, ReplayEngine
+from ntrade import TradingKernel, EventStore
+from ntrade.kernel.clock import ReplayClock
 
 store = EventStore("session-events.jsonl")          # append-only JSONL
 kernel = TradingKernel(mode="live", store=store, timeframe="1m")
 # ... run the kernel; every event is appended ...
 
-# Later — replay only the causal market stream
+# Later — replay only the causal market stream (current API)
 market_events = store.market_events()               # Tick/Quote/Depth only
-engine = ReplayEngine(timeframe="1m")
-replayed = engine.run(market_events)                # returns the kernel
+replay_kernel = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+replayed = replay_kernel.run_replay(market_events)  # returns the kernel
+
+# Planned API (not yet implemented — will ImportError):
+# from ntrade import ReplayEngine
+# engine = ReplayEngine(timeframe="1m")
+# replayed = engine.run(market_events)
 ```
 
 Replay only `store.market_events()`. Derived events (signals, fills) are

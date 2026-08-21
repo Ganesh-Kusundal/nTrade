@@ -1,16 +1,10 @@
 import type { Contract } from '../types/market'
+import { fmtExpiry } from '../lib/format'
 
 interface ContractSelectorProps {
   contracts: Contract[]
   selected: string
   onChange: (contract: Contract) => void
-}
-
-const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
-
-function fmtExpiry(iso: string): string {
-  const [y, m, d] = iso.split('-').map(Number)
-  return `${d} ${MONTHS[m - 1]} ${String(y).slice(2)}`
 }
 
 export function ContractSelector({ contracts, selected, onChange }: ContractSelectorProps) {

@@ -23,6 +23,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ntrade.domain.market_hours import session_close as _mh_session_close, session_open as _mh_session_open
+from ntrade.domain.types import strip_tz
 
 # Columns stored in every parquet row group
 _BASE_COLUMNS = [
@@ -114,10 +115,10 @@ class ParquetStorage:
                 if parquet_file.exists():
                     existing = pq.ParquetFile(parquet_file).read().to_pandas()
                     existing["timestamp"] = pd.to_datetime(existing["timestamp"])
-                    # ponytail: normalize tz-aware stored timestamps to
-                    # naive so overlap detection matches tz-naive incoming data
-                    if getattr(existing["timestamp"].dt, "tz", None) is not None:
-                        existing["timestamp"] = existing["timestamp"].dt.tz_localize(None)
+                    # Storage contract is tz-naive IST wall time — strip
+                    # any tz-aware stored timestamps so overlap detection
+                    # matches tz-naive incoming data.
+                    existing["timestamp"] = strip_tz(existing["timestamp"])
                     # Boolean row mask: True = existing row NOT in the incoming set (to keep)
                     existing = existing[~existing.set_index(key_cols).index.isin(
                         grp.set_index(key_cols).index
@@ -144,9 +145,9 @@ class ParquetStorage:
             # Read existing + new, dedupe, rewrite
             existing = pq.ParquetFile(path).read().to_pandas()
             existing["timestamp"] = pd.to_datetime(existing["timestamp"])
-            # ponytail: normalize tz to match incoming (fix dedup mismatch)
-            if getattr(existing["timestamp"].dt, "tz", None) is not None:
-                existing["timestamp"] = existing["timestamp"].dt.tz_localize(None)
+            # Storage contract is tz-naive IST wall time — strip any
+            # tz so dedup comparisons match the incoming frame.
+            existing["timestamp"] = strip_tz(existing["timestamp"])
             combined = pd.concat([existing, df], ignore_index=True)
             combined = combined.drop_duplicates(subset=["symbol", "timeframe", "timestamp"], keep="last")
             table = pa.Table.from_pandas(combined, preserve_index=False)
@@ -172,11 +173,10 @@ class ParquetStorage:
             c for c in df.columns if c not in _BASE_COLUMNS
         ]].copy()
         df["timestamp"] = pd.to_datetime(df["timestamp"])
-        # ponytail: broker data ships tz-aware (e.g. Dhan UTC+5:30). Storage
-        # contract is tz-naive IST wall time — strip to keep read()/duckdb_scan
-        # comparisons consistent (fix: Cannot compare tz-naive vs tz-aware).
-        if getattr(df["timestamp"].dt, "tz", None) is not None:
-            df["timestamp"] = df["timestamp"].dt.tz_localize(None)
+        # Storage contract is tz-naive IST wall time. Broker data ships
+        # tz-aware (e.g. Dhan UTC+5:30) — strip at the trust boundary so
+        # read()/duckdb_scan comparisons stay consistent.
+        df["timestamp"] = strip_tz(df["timestamp"])
         # Drop after-hours intraday bars at the trust boundary. Existing
         # partitions stay dirty until rewritten; readers that care (ORB
         # screener) still clip in SQL.
@@ -230,10 +230,8 @@ class ParquetStorage:
         end_ts = pd.Timestamp(end) if end is not None else None
         # Stored timestamps are tz-naive; period_range rejects tz-aware
         # endpoints, so normalize any tz-aware caller input here.
-        if start_ts is not None and start_ts.tzinfo is not None:
-            start_ts = start_ts.tz_localize(None)
-        if end_ts is not None and end_ts.tzinfo is not None:
-            end_ts = end_ts.tz_localize(None)
+        start_ts = strip_tz(start_ts)
+        end_ts = strip_tz(end_ts)
 
         # Resolve effective symbol list for batching
         if symbols is not None:
@@ -282,8 +280,7 @@ class ParquetStorage:
 
             chunk_df = pd.concat(tables, ignore_index=True)
             chunk_df["timestamp"] = pd.to_datetime(chunk_df["timestamp"])
-            if getattr(chunk_df["timestamp"].dt, "tz", None) is not None:
-                chunk_df["timestamp"] = chunk_df["timestamp"].dt.tz_localize(None)
+            chunk_df["timestamp"] = strip_tz(chunk_df["timestamp"])
             if start_ts is not None:
                 chunk_df = chunk_df[chunk_df["timestamp"] >= start_ts]
             if end_ts is not None:
@@ -298,8 +295,7 @@ class ParquetStorage:
 
         result = pd.concat(all_frames, ignore_index=True)
         result["timestamp"] = pd.to_datetime(result["timestamp"])
-        if getattr(result["timestamp"].dt, "tz", None) is not None:
-            result["timestamp"] = result["timestamp"].dt.tz_localize(None)
+        result["timestamp"] = strip_tz(result["timestamp"])
         return result.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
     # ------------------------------------------------------------------ metadata
@@ -358,14 +354,10 @@ class ParquetStorage:
             ts = "timestamp"
             parts = []
             if start is not None:
-                ts_val = pd.Timestamp(start)
-                if ts_val.tzinfo is not None:
-                    ts_val = ts_val.tz_localize(None)
+                ts_val = strip_tz(pd.Timestamp(start))
                 parts.append(f"{ts} >= TIMESTAMP '{ts_val.strftime('%Y-%m-%d %H:%M:%S')}'")
             if end is not None:
-                ts_val = pd.Timestamp(end)
-                if ts_val.tzinfo is not None:
-                    ts_val = ts_val.tz_localize(None)
+                ts_val = strip_tz(pd.Timestamp(end))
                 parts.append(f"{ts} <= TIMESTAMP '{ts_val.strftime('%Y-%m-%d %H:%M:%S')}'")
             where = " WHERE " + " AND ".join(parts)
         con.execute(

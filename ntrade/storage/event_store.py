@@ -203,25 +203,26 @@ class EventStore:
         events (signals, intents, candle/indicator/balance updates) are
         recomputed by the kernel and must never be re-fed.
 
-        Recorded order is *effect-then-cause*: the kernel's record handler runs
-        last on the base ``Event`` subscription, so each tick is appended after
-        its nested effects (the fill it triggered). We re-sort so a fill always
-        replays *after* the market event that caused it (market first on a
-        timestamp tie) — otherwise a fill would run against stale instrument
-        state and diverge from the crashed session.
+        The record handler runs LAST in MRO dispatch, so recorded order is
+        effect-then-cause: a fill sits in the stream BEFORE the tick that
+        caused it. Recovery needs cause-then-effect, so market events sort
+        ahead of fills on a timestamp tie (fill ts and tick ts share the
+        clock at poll/ingest time — ties are the norm, not the exception).
         """
         from ntrade.events.market import DepthEvent, QuoteEvent, TickEvent
         from ntrade.events.order import OrderFilledEvent
 
         market_types = (TickEvent, QuoteEvent, DepthEvent)
         types = market_types + (OrderFilledEvent,)
-        # Append order is causal order (the record handler runs after the
-        # effects a tick triggers), so the in-memory index IS the seq. ts-only
-        # ties would invert causality; use the recorded order as the tiebreak.
-        # One enumerate pass + O(n log n) sort — the old list.index() key made
-        # this O(n²) and recovery unusable beyond a few thousand events (H-4).
-        indexed = [(i, e) for i, e in enumerate(self._events) if isinstance(e, types)]
-        return [e for i, e in sorted(indexed, key=lambda p: (p[1].ts, p[0]))]
+
+        def _rank(p):
+            i, e = p
+            return (e.ts, 0 if isinstance(e, market_types) else 1, i)
+
+        return [e for i, e in sorted(
+            (p for p in enumerate(self._events) if isinstance(p[1], types)),
+            key=_rank,
+        )]
 
     def replay(self):
         """Iterate recorded events in chronological order."""

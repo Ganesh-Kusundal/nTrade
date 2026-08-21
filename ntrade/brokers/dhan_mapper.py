@@ -386,63 +386,12 @@ def chain_from_dhan_df(underlying, df: pd.DataFrame, atm: float,
 
 
 # ---- scalar helpers (delegated to domain/coercion) ---------------------------
-from ntrade.domain.coercion import to_float as _f
-from ntrade.domain.coercion import first_float as _coerce_first_float  # noqa: F401 (parity import)
-from ntrade.domain.coercion import first_int as _coerce_first_int  # noqa: F401
-from ntrade.domain.coercion import first_str as _coerce_first_str  # noqa: F401
-
-
-def _first_str(row, *keys) -> str:
-    for k in keys:
-        v = row.get(k)
-        if v is None or v == "":
-            continue
-        try:
-            if pd.isna(v):
-                continue
-        except Exception:
-            pass
-        return str(v)
-    return ""
-
-
-def _first_int(row, *keys) -> int:
-    from ntrade.domain.coercion import to_int
-
-    for k in keys:
-        v = row.get(k)
-        if v is None or v == "":
-            continue
-        try:
-            if pd.isna(v):
-                continue
-        except Exception:
-            pass
-        try:
-            return to_int(v)
-        except Exception:
-            try:
-                return int(float(v))
-            except (TypeError, ValueError):
-                continue
-    return 0
-
-
-def _first_float(row, *keys) -> float:
-    for k in keys:
-        v = row.get(k)
-        if v is None or v == "":
-            continue
-        try:
-            if pd.isna(v):
-                continue
-        except Exception:
-            pass
-        try:
-            return _f(v)
-        except Exception:
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                continue
-    return 0.0
+# Single source of truth: domain/coercion first_*/to_* already handle pandas
+# NA / empty-string / type-error fallbacks, so the broker layer must not
+# re-implement them.
+from ntrade.domain.coercion import (
+    first_float as _first_float,
+    first_int as _first_int,
+    first_str as _first_str,
+    to_float as _f,
+)

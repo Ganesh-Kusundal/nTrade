@@ -394,12 +394,12 @@ class DhanBroker(BrokerAdapter):
             "REJECTED": OrderStatus.REJECTED, "EXPIRED": OrderStatus.CANCELLED,
         }
         order.status = _DHAN_STATUS.get(status, OrderStatus.PENDING)
-        try:
-            detail = self.get_order_detail(order.order_id)
-            order.filled_qty = int(detail.get("filled_qty", order.filled_qty) or order.filled_qty)
-            order.avg_price = float(detail.get("avg_price", order.avg_price) or order.avg_price)
-        except Exception:
-            pass
+        # Detail fetch must surface like the status fetch above: a silent
+        # failure leaves filled_qty stale, the fill event never publishes,
+        # and the order is evicted as COMPLETED with zero filled quantity.
+        detail = self.get_order_detail(order.order_id)
+        order.filled_qty = int(detail.get("filled_qty", order.filled_qty) or order.filled_qty)
+        order.avg_price = float(detail.get("avg_price", order.avg_price) or order.avg_price)
         return order
 
     def get_order_detail(self, order_id: str) -> dict:

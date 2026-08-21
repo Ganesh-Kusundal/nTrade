@@ -33,6 +33,7 @@ class CandleEngine:
         # paired close tick sharing that bucket is skipped to avoid double volume
         self._bar_seeded: dict[str, int] = {}
         self._mode = mode
+        self.late_ticks = 0  # dropped out-of-order ticks (ops/tests)
         context.bus.subscribe(TickEvent, self.on_tick)
         context.bus.subscribe(QuoteEvent, self.on_quote)
 
@@ -82,6 +83,12 @@ class CandleEngine:
     def _ingest(self, symbol, exchange, price, ts, volume: int = 0) -> None:
         bucket = self._bucket(ts)
         candle = self._open.get(symbol)
+        if candle is not None and bucket < candle["bucket"]:
+            # P0-2 parity: a late/reordered tick must not close the live
+            # candle and fork the series (the API pump already guards this;
+            # the kernel now matches).
+            self.late_ticks += 1
+            return
         if candle is None or candle["bucket"] != bucket:
             if candle is not None:
                 self._close(symbol, candle)

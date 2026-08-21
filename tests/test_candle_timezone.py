@@ -110,3 +110,26 @@ def test_candle_engine_bounds_closed_candles():
         engine.on_tick(event)
     # 9 candles closed (tick 2 closes candle 1, ..., tick 10 closes candle 9), bounded to 5
     assert len(engine._closed.get("X", [])) <= 5
+
+
+def test_late_tick_does_not_fork_the_candle(force_tz):
+    """A reordered websocket frame must be dropped, not close the live candle
+    and open a phantom one from the past."""
+    force_tz("Asia/Kolkata")
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    k.register(Equity("NIFTY"))
+    m1 = datetime(2026, 1, 1, 9, 15)
+    m2 = datetime(2026, 1, 1, 9, 16)
+    k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=100.0, ts=m1))
+    k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=101.0, ts=m2))
+    # late tick for minute 1 — arrives after minute 2 started
+    k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=99.0, ts=m1))
+    k.candle_engine.flush()
+    candles = k.candle_engine.candles("NIFTY")
+    # m1 closed by the m2 tick; m2 flushed by stop(). The late 99.0 must not
+    # have forked the series: exactly 2 candles, neither touched by 99.0.
+    assert len(candles) == 2
+    assert candles[0].low == 100.0
+    assert candles[1].low == 101.0
+    assert all(c.low > 99.0 for c in candles)
+    assert k.candle_engine.late_ticks == 1

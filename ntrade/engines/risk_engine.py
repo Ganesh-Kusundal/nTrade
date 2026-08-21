@@ -113,7 +113,10 @@ class RiskEngine:
             count = self._position_count(event)
             if count >= self.max_positions:
                 return f"max positions {self.max_positions} reached"
-        if self.price_deviation_pct is not None:
+        if self.price_deviation_pct is not None and event.price:
+            # A zero-priced MARKET signal declares no price — nothing to
+            # deviation-check. |0-ref|/ref = 100% for every such signal, so
+            # an armed guard would auto-reject the strategy's whole flow.
             ref = self._reference_price(event)
             if not ref:
                 return (f"price {event.price:.2f} unverifiable: no market price "

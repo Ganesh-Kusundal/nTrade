@@ -137,6 +137,14 @@ export function PaperTradeControl({ symbol, exchange, disabled }: {
                 {busy ? 'Starting…' : 'Start'}
               </button>
               {disabled && <span className="text-muted/70">select a contract first</span>}
+              {status?.error && (
+                <span
+                  className="max-w-[24rem] truncate text-red-400"
+                  title={status.error}
+                >
+                  error: {status.error}
+                </span>
+              )}
             </>
           )}
           {error && <span className="text-red-400" title={error}>API error</span>}

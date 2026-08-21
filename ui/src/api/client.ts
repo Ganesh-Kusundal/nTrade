@@ -85,7 +85,17 @@ export const api = {
       return res.json() as Promise<PaperStatus>
     }),
   paperStop: () =>
-    fetch(`${API_BASE}/paper/stop`, { method: 'POST' }).then((res) => res.json() as Promise<PaperStatus>),
+    fetch(`${API_BASE}/paper/stop`, { method: 'POST' }).then(async (res) => {
+      if (!res.ok) {
+        let detail = `${res.status} ${res.statusText}`
+        try {
+          const body = await res.json()
+          if (typeof body?.detail === 'string') detail = body.detail
+        } catch { /* non-JSON */ }
+        throw new Error(detail)
+      }
+      return res.json() as Promise<PaperStatus>
+    }),
   paperStatus: () => request<PaperStatus>('/paper/status'),
   provider: () => request<ProviderInfo>('/market/provider'),
   roots: () => request<RootsResponse>('/market/roots'),

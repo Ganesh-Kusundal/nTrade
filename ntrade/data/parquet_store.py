@@ -13,6 +13,7 @@ duckdb + pyarrow are required — both are already installed (see pyproject.toml
 
 from __future__ import annotations
 
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -101,7 +102,13 @@ class ParquetStorage:
                 partition_dir.mkdir(parents=True, exist_ok=True)
                 parquet_file = partition_dir / "data.parquet"
 
-                # Delete overlapping rows (same symbol+timeframe+timestamp)
+                # Delete overlapping rows (same symbol+timeframe+timestamp),
+                # then append new data — ONE atomic replace for the whole
+                # partition update. Never unlink-then-write or rewrite-then-
+                # append: a crash mid-sequence must leave the previous
+                # partition intact, not lose it (or silently drop the
+                # overlapping rows).
+                key_cols = ["symbol", "timeframe", "timestamp"]
                 if parquet_file.exists():
                     existing = pq.ParquetFile(parquet_file).read().to_pandas()
                     existing["timestamp"] = pd.to_datetime(existing["timestamp"])
@@ -110,28 +117,27 @@ class ParquetStorage:
                     if getattr(existing["timestamp"].dt, "tz", None) is not None:
                         existing["timestamp"] = existing["timestamp"].dt.tz_localize(None)
                     # Boolean row mask: True = existing row NOT in the incoming set (to keep)
-                    key_cols = ["symbol", "timeframe", "timestamp"]
                     existing = existing[~existing.set_index(key_cols).index.isin(
                         grp.set_index(key_cols).index
                     )]
-                    if not existing.empty:
-                        # Rewrite the partition file without the overlapping rows
-                        self._write_parquet(existing, parquet_file)
-                    else:
-                        parquet_file.unlink()
-                    # Then append new data
-                    to_write = grp
+                    to_write = (pd.concat([existing, grp], ignore_index=True)
+                                if not existing.empty else grp)
                 else:
                     to_write = grp
 
                 if not to_write.empty:
                     self._write_parquet(to_write, parquet_file)
-                    written += len(to_write)
+                    written += len(grp)
 
         return written
 
     def _write_parquet(self, df: pd.DataFrame, path: Path) -> None:
-        """Write a DataFrame to parquet (append if file exists)."""
+        """Write a DataFrame to parquet (append if file exists).
+
+        Atomic: write to a tmp sibling then os.replace — a crash mid-write
+        leaves the previous partition intact instead of truncating history
+        (same pattern as the token-state guard in execution/_guard.py).
+        """
         if path.exists():
             # Read existing + new, dedupe, rewrite
             existing = pq.ParquetFile(path).read().to_pandas()
@@ -142,12 +148,17 @@ class ParquetStorage:
             combined = pd.concat([existing, df], ignore_index=True)
             combined = combined.drop_duplicates(subset=["symbol", "timeframe", "timestamp"], keep="last")
             table = pa.Table.from_pandas(combined, preserve_index=False)
-            # ponytail: use_dictionary=False prevents dictionary-vs-large_string
-            # type mismatch when appending frames with different column sets
-            pq.write_table(table, str(path), use_dictionary=False)
         else:
             table = pa.Table.from_pandas(df, preserve_index=False)
-            pq.write_table(table, str(path), use_dictionary=False)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        try:
+            # ponytail: use_dictionary=False prevents dictionary-vs-large_string
+            # type mismatch when appending frames with different column sets
+            pq.write_table(table, str(tmp), use_dictionary=False)
+            os.replace(str(tmp), str(path))
+        except BaseException:
+            tmp.unlink(missing_ok=True)  # never leave .tmp litter on failure
+            raise
 
     def _prepare_frame(self, df: pd.DataFrame, session_filter=None) -> pd.DataFrame:
         """Ensure required columns + types for parquet storage."""

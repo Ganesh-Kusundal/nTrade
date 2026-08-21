@@ -13,19 +13,25 @@ from ntrade.domain.constants import Timeframe, DEFAULT_TIMEFRAME
 from ntrade.domain.market_hours import IST
 from ntrade.events.market import CandleClosedEvent, QuoteEvent, TickEvent
 
+from ntrade.domain.timeframes import timeframe_seconds as _timeframe_seconds
+
+# Legacy name kept for backwards compat (tests/test_interval_tables_agree.py imports it).
+# Prefer importing from ntrade.domain.timeframes directly in new code.
 _INTERVAL_SECONDS = {
     Timeframe.S1: 1, Timeframe.S5: 5, Timeframe.MIN: 60, Timeframe.T5: 300,
-    Timeframe.T15: 900, Timeframe.H1: 3600, Timeframe.D1: 86400,
+    Timeframe.T15: 900, Timeframe.H1: 3600, Timeframe.D1: 86400, "1D": 86400,
 }
 
 
 class CandleEngine:
     def __init__(self, context, timeframe: str = DEFAULT_TIMEFRAME, *, max_candles: int = 10_000, mode: str = "live"):
-        if timeframe not in _INTERVAL_SECONDS:
+        try:
+            self.seconds = _timeframe_seconds(timeframe)
+        except ValueError:
+            # Preserve the legacy error message contract for callers matching on text.
             raise ValueError(f"Unsupported timeframe {timeframe!r}; expected one of {sorted(_INTERVAL_SECONDS)}")
         self.ctx = context
         self.timeframe = timeframe
-        self.seconds = _INTERVAL_SECONDS[timeframe]
         self._open: dict[str, dict] = {}
         self._closed: dict[str, list[CandleClosedEvent]] = {}
         self._max_candles = max_candles

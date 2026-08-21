@@ -17,16 +17,14 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from ntrade.domain.analytics.indicators import atr, ema, vwap
+from ntrade.domain.market_hours import IST as _IST
 from ntrade.engines.strategy_engine import Strategy
 
 logger = logging.getLogger("ntrade.strategy.orb_vwap")
-
-_IST = ZoneInfo("Asia/Kolkata")
 
 
 def _ist_dt(ts) -> datetime | None:

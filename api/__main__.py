@@ -5,7 +5,7 @@ Provider selection: ``--provider synthetic|dhan|parquet`` (env
 silent synthetic default). The built UI is served from ``ui/dist`` when present.
 
 Live streaming is ON by default and gated by NSE/MCX session hours
-(:mod:`api.market_hours`). Pass ``--no-live-stream`` for historical-only.
+(:mod:`ntrade.domain.market_hours`). Pass ``--no-live-stream`` for historical-only.
 """
 
 from __future__ import annotations

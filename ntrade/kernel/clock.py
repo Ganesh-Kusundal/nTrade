@@ -9,9 +9,8 @@ replay and backtest (zero parity).
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
-_IST = ZoneInfo("Asia/Kolkata")
+from ntrade.domain.market_hours import IST as _IST
 
 
 class TradingClock:

@@ -32,13 +32,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
-from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     import pandas as pd
 
 from ntrade.domain.constants import Exchange, Timeframe
-from ntrade.domain.market_hours import DAILY_TIMEFRAMES, session_close
+from ntrade.domain.market_hours import DAILY_TIMEFRAMES, IST, session_close, session_open
+from ntrade.domain.timeframes import WIRE_INTERVALS, SESSION_BAR_MINUTES, interval_bar_minutes as _interval_bar_minutes
 
 log = logging.getLogger("api.marketdata")
 
@@ -47,17 +47,13 @@ log = logging.getLogger("api.marketdata")
 SUPPORTED_ROOTS = ("NIFTY", "BANKNIFTY",
                    "CRUDEOIL", "CRUDEOILM", "GOLD", "GOLDM", "SILVER", "SILVERM")
 
-# IST market session: 09:15–15:30. Bars are generated on this grid and then
-# converted to UTC epoch seconds for the wire.
-_SESSION_TZ = ZoneInfo("Asia/Kolkata")
-_SESSION_OPEN = time(9, 15)
-_SESSION_CLOSE = time(15, 30)
-_SESSION_MINUTES = 375  # 09:15 → 15:30
+# Backwards-compat alias — new code should import from ntrade.domain.timeframes.
+_SESSION_TZ = IST
+_SESSION_OPEN = session_open("NSE")
+_SESSION_CLOSE = session_close("NSE")
+_SESSION_MINUTES = SESSION_BAR_MINUTES
 
-# UI interval -> session bar span in minutes (1D = one bar per session day).
-# Keyed by the exact wire strings the REST layer accepts (not the Timeframe
-# enum values, which are lowercase and would miss "1D").
-_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "1D": 375}
+_INTERVAL_MINUTES = {iv: _interval_bar_minutes(iv) for iv in WIRE_INTERVALS}
 VALID_INTERVALS = tuple(_INTERVAL_MINUTES)
 
 # 90 calendar days of 1m MCX (09:00–23:30) is ~78k bars if every day traded.

@@ -5,11 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from zoneinfo import ZoneInfo
-
 from ntrade.domain.constants import QUOTE_MAX_AGE_S
-
-_IST = ZoneInfo("Asia/Kolkata")
+from ntrade.domain.market_hours import IST as _IST
 
 
 @dataclass(frozen=True)

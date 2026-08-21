@@ -7,7 +7,7 @@ fabricates a candle. A watchdog emits ``live_status: stale`` when an open
 sub stops receiving ticks, and the feed is rebuilt on disconnect.
 
 Bars are anchored to the exchange session open (NSE 09:15 / MCX 09:00 IST).
-Streaming is gated by :mod:`api.market_hours`.
+Streaming is gated by :mod:`ntrade.domain.market_hours`.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from typing import Callable
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ntrade.domain.market_hours import IST, is_market_open, session_open
+from ntrade.domain.timeframes import interval_span_minutes as _interval_span_minutes, WIRE_INTERVALS
 from api.marketdata import MarketDataService
 
 log = logging.getLogger("api.live")
@@ -32,7 +33,8 @@ ws_router = APIRouter()
 
 _TICK_S = 1.0
 _MAX_SUBS = 64
-_SPAN_MIN = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "1D": 1440}
+# Backwards-compat alias — new code should import interval_span_minutes from domain.timeframes.
+_SPAN_MIN = {iv: _interval_span_minutes(iv) for iv in WIRE_INTERVALS}
 
 
 class LiveCandlePump:

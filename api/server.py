@@ -51,7 +51,7 @@ def create_app(provider: str | None = None, env: dict | None = None,
     ``master``/``tick_s`` are injectable for tests.
 
     ``live_stream`` (default ``True``): run the live candle pump. Streaming is
-    still gated per exchange by :mod:`api.market_hours` (NSE 09:15–15:30,
+    still gated per exchange by :mod:`ntrade.domain.market_hours` (NSE 09:15–15:30,
     MCX 09:00–23:30 IST). Pass ``False`` for historical-only demos/tests.
     """
     service = build_service(provider, env=env, master=master)

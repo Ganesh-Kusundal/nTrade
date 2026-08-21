@@ -26,7 +26,8 @@ class BuyOnTick(Strategy):
     def on_tick(self, event):
         if not self.emitted:
             self.emit_signal(symbol=event.symbol, exchange=event.exchange,
-                             side=self.side, quantity=self.quantity, price=self.price)
+                             side=self.side, quantity=self.quantity, price=self.price,
+                             order_type="LIMIT")
             self.emitted = True
 
 

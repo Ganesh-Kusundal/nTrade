@@ -99,10 +99,12 @@ class BuySellOnCandles(Strategy):
         self.count += 1
         if self.count == 3:
             self.emit_signal(symbol=event.symbol, exchange=event.exchange,
-                             side="BUY", quantity=10, price=event.close)
+                             side="BUY", quantity=10, price=event.close,
+                             reference_price=event.close)
         elif self.count == 8:
             self.emit_signal(symbol=event.symbol, exchange=event.exchange,
-                             side="SELL", quantity=10, price=event.close)
+                             side="SELL", quantity=10, price=event.close,
+                             reference_price=event.close)
 
 
 def _ohlcv(bars: int = 20, step_price: float = 1.0) -> pd.DataFrame:
@@ -129,13 +131,14 @@ def test_backtest_simulator_produces_equity_curve():
     assert result.trades[0]["side"] == "BUY"
     assert result.trades[1]["side"] == "SELL"
     assert len(result.equity_curve) == 20
-    # With flush-driven candle close: candle i closes during bar i (not bar i+1).
-    # Buy fires on candle-2 close (count==3): LIMIT fills at min(103, bar2.open=102) = 102.
-    # Sell fires on candle-7 close (count==8): LIMIT fills at max(108, bar7.open=107) = 108.
-    # → profit = (108 - 102) * 10 = 60
-    assert result.trades[0]["fill_price"] == 102.0
+    # MARKET signals fill at the reference price — the bar close that
+    # generated the signal (count==3 → bar-2 close 103; count==8 → bar-7
+    # close 108). The old LIMIT heuristic filled the BUY at bar-2 OPEN (102)
+    # — a look-ahead this fix removes.
+    # → profit = (108 - 103) * 10 = 50
+    assert result.trades[0]["fill_price"] == 103.0
     assert result.trades[1]["fill_price"] == 108.0
-    assert result.final_equity == pytest.approx(100_000.0 + 10 * 6.0)
+    assert result.final_equity == pytest.approx(100_000.0 + 10 * 5.0)
 
 
 def test_backtest_fill_policy():
@@ -164,11 +167,11 @@ def test_backtest_commissions_and_drawdown():
                             commission=PercentageCommission(pct=0.01))
     sim.register_strategy(BuySellOnCandles())
     result = sim.run(_ohlcv())
-    # buy 10@102 + sell 10@108 → notional 1020 + 1080, 1% each
-    assert result.commissions_total == pytest.approx(10.20 + 10.80)
+    # buy 10@103 + sell 10@108 → notional 1030 + 1080, 1% each
+    assert result.commissions_total == pytest.approx(10.30 + 10.80)
     assert result.max_drawdown_pct >= 0.0
     assert result.n_trades == 2
-    assert result.final_equity == pytest.approx(100_000.0 + 60.0 - result.commissions_total)
+    assert result.final_equity == pytest.approx(100_000.0 + 50.0 - result.commissions_total)
 
 
 def test_backtest_limit_fills_bar_aware():
@@ -187,7 +190,8 @@ def test_backtest_limit_fills_bar_aware():
         def on_candle_closed(self, event):
             if not self.done:
                 self.emit_signal(symbol=event.symbol, exchange=event.exchange,
-                                 side="BUY", quantity=10, price=self.limit)
+                                 side="BUY", quantity=10, price=self.limit,
+                                 order_type="LIMIT")
                 self.done = True
 
     # limit far below every low → never fills
@@ -262,7 +266,8 @@ def test_backtest_limit_fills_bar_aware_by_default():
         def on_candle_closed(self, event):
             if not self.done:
                 self.emit_signal(symbol=event.symbol, exchange=event.exchange,
-                                 side="BUY", quantity=10, price=self.limit)
+                                 side="BUY", quantity=10, price=self.limit,
+                                 order_type="LIMIT")
                 self.done = True
 
     # No explicit fill_policy — the default must still require trade-through.

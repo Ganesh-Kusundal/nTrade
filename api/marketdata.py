@@ -32,7 +32,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
-from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     import pandas as pd

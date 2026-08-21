@@ -15,14 +15,14 @@ from __future__ import annotations
 
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from datetime import time
+from ntrade.domain.market_hours import session_close as _session_close, session_open as _session_open
 
 # Columns stored in every parquet row group
 _BASE_COLUMNS = [
@@ -30,10 +30,12 @@ _BASE_COLUMNS = [
     "open", "high", "low", "close", "volume",
 ]
 
-# Inline session constants (decoupled from domain layer)
 _DAILY_TIMEFRAMES = frozenset({"1d", "d", "day"})
-_NSE_OPEN, _NSE_CLOSE = time(9, 15), time(15, 30)
-_MCX_OPEN, _MCX_CLOSE = time(9, 0), time(23, 30)
+# Local sentinels for the hot path (avoid per-row call) — initialized from market_hours.
+_NSE_OPEN = _session_open("NSE")
+_NSE_CLOSE = _session_close("NSE")
+_MCX_OPEN = _session_open("MCX")
+_MCX_CLOSE = _session_close("MCX")
 
 
 def _session_open(exchange: str) -> time:

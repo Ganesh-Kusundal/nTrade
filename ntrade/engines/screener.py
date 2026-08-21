@@ -14,15 +14,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from ntrade.domain.analytics.indicators import ema, vwap
+from ntrade.domain.market_hours import IST as _IST
 
 logger = logging.getLogger("ntrade.screener")
-
-_IST = ZoneInfo("Asia/Kolkata")
 
 
 @dataclass

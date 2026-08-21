@@ -13,16 +13,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from ntrade.domain.analytics.indicators import vwap, vwap_bands
-from ntrade.domain.market_hours import is_market_open, session_open
+from ntrade.domain.market_hours import IST as _IST, is_market_open, session_open
 
 log = logging.getLogger("ntrade.overlay")
-
-_IST = ZoneInfo("Asia/Kolkata")
 
 
 # --------------------------------------------------------------------------- DTOs

@@ -22,7 +22,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from ntrade.domain.market_hours import session_close as _session_close, session_open as _session_open
+from ntrade.domain.market_hours import session_close as _mh_session_close, session_open as _mh_session_open
 
 # Columns stored in every parquet row group
 _BASE_COLUMNS = [
@@ -32,10 +32,10 @@ _BASE_COLUMNS = [
 
 _DAILY_TIMEFRAMES = frozenset({"1d", "d", "day"})
 # Local sentinels for the hot path (avoid per-row call) — initialized from market_hours.
-_NSE_OPEN = _session_open("NSE")
-_NSE_CLOSE = _session_close("NSE")
-_MCX_OPEN = _session_open("MCX")
-_MCX_CLOSE = _session_close("MCX")
+_NSE_OPEN = _mh_session_open("NSE")
+_NSE_CLOSE = _mh_session_close("NSE")
+_MCX_OPEN = _mh_session_open("MCX")
+_MCX_CLOSE = _mh_session_close("MCX")
 
 
 def _session_open(exchange: str) -> time:

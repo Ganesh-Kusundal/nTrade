@@ -18,7 +18,7 @@ import logging
 import threading
 from typing import Any  # noqa: F401 — kept for type-checking idempotency_guard param
 
-from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
+from ntrade.domain.orders.order import Order, OrderSide, OrderType
 from ntrade.domain.orders.order import OrderStatus as _OrderStatus
 from ntrade.events.order import (
     OrderAcceptedEvent,
@@ -48,7 +48,7 @@ from ntrade.domain.constants import CIRCUIT_COOLDOWN_S, CIRCUIT_FAILURE_THRESHOL
 
 logger = logging.getLogger("ntrade.execution")
 
-_TERMINAL_STATUSES = tuple(_OrderStatus.TERMINAL)
+_TERMINAL_STATUSES = tuple(sorted(_OrderStatus.TERMINAL))
 
 
 def _fill_price(order) -> float:
@@ -265,7 +265,7 @@ class BrokerExecution:
                 continue
             # Timeout detection: PENDING orders older than threshold
             placed_at = record.get("placed_at")
-            if placed_at is not None and order.status == OrderStatus.PENDING:
+            if placed_at is not None and order.status == _OrderStatus.PENDING:
                 age = (self.ctx.now() - placed_at).total_seconds()
                 if age > self._order_timeout_seconds:  # configurable vs hardcoded 300
                     logger.warning("order %s timed out after %.0fs", order_id, age)
@@ -287,10 +287,10 @@ class BrokerExecution:
                 ))
             self._emit_fill(order_id, record["intent"], order, emitted)
             status = order.status
-            if status == OrderStatus.COMPLETED:
+            if status == _OrderStatus.COMPLETED:
                 with self._breaker_lock:
                     self._open.pop(order_id, None)
-            elif status in (OrderStatus.REJECTED, OrderStatus.CANCELLED):
+            elif status in (_OrderStatus.REJECTED, _OrderStatus.CANCELLED):
                 # a partially-filled order that is then cancelled/rejected has
                 # already had its filled shares emitted; reject only the rest
                 remaining = record["intent"].quantity - record["filled"]
@@ -363,7 +363,7 @@ class BrokerExecution:
                 continue
             try:
                 side = OrderSide(entry.side.upper())
-                status = OrderStatus(entry.status) if entry.status else OrderStatus.PENDING
+                status = _OrderStatus(entry.status) if entry.status else _OrderStatus.PENDING
             except ValueError:
                 logger.critical(
                     "orphan broker order %s has unmappable side/status "

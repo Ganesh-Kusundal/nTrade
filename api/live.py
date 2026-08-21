@@ -32,7 +32,7 @@ ws_router = APIRouter()
 
 _TICK_S = 1.0
 _MAX_SUBS = 64
-_SPAN_MIN = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "1D": 375}
+_SPAN_MIN = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "1D": 1440}
 
 
 class LiveCandlePump:

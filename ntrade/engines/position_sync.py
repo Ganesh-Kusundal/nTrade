@@ -21,9 +21,10 @@ from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
 
 
 class PositionSyncEngine:
-    def __init__(self, context, broker):
+    def __init__(self, context, broker, risk_engine=None):
         self.ctx = context
         self.broker = broker
+        self.risk_engine = risk_engine
 
     # ---------------------------------------------------------------- reconcile
     def sync(self) -> int:
@@ -81,6 +82,10 @@ class PositionSyncEngine:
             self.ctx.bus.publish(BalanceChangedEvent(
                 balance=self.ctx.account.balance, ts=self.ctx.now(),
             ))
+        # The first real balance import re-bases the risk engine's daily-loss
+        # baseline (the constructor baseline is the kernel's seed cash).
+        if balance is not None and self.risk_engine is not None:
+            self.risk_engine.rebase(balance)
         return len(portfolio.positions)
 
     @staticmethod

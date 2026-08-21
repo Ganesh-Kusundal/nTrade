@@ -88,7 +88,9 @@ class TradingKernel:
 
         # --- execution target (the only interchangeable piece) ---------------
         self.broker = broker
-        self.position_sync = PositionSyncEngine(self.ctx, broker) if broker is not None else None
+        self.position_sync = (PositionSyncEngine(self.ctx, broker,
+                                                 risk_engine=self.risk_engine)
+                              if broker is not None else None)
         if execution is None:
             execution = ExecutionRouter(self.ctx)
             if broker is not None:

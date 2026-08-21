@@ -35,6 +35,7 @@ class RiskEngine:
         self.halted = False
         self.halt_reason = ""
         self._start_balance = float(context.account.balance)
+        self._rebased = False
         self._peak_equity = None
         self.approved = 0
         self.rejected = 0
@@ -60,6 +61,17 @@ class RiskEngine:
             self._peak_equity = None
             self._start_balance = float(self.ctx.account.balance)
             self.ctx.bus.publish(RiskResumedEvent(ts=self.ctx.now()))
+
+    def rebase(self, balance: float) -> None:
+        """Adopt a synced account balance as the daily-loss baseline (once).
+
+        The constructor baseline is the kernel's seed cash; the first broker
+        position/balance sync imports reality. Later syncs must NOT re-arm
+        the loss budget (only resume() does that explicitly).
+        """
+        if not self._rebased:
+            self._start_balance = float(balance)
+            self._rebased = True
 
     def check(self) -> str | None:
         """Evaluate the circuit breakers now, returning the halt reason when

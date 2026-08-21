@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useChartStore } from '../store/chartStore'
+import { DEFAULT_EXCHANGE } from '../lib/constants'
 import { fmtISTClock } from '../lib/istTime'
 import { feedKind, FEED_META, isSessionOpen, type FeedKind } from '../lib/feedStatus'
 
@@ -22,7 +23,7 @@ export function TerminalRibbon({ now }: { now: number }) {
   const root = useChartStore((s) => s.root)
   const provider = useChartStore((s) => s.provider)
 
-  const exchange = contract?.exchange ?? (root ? (useChartStore.getState().roots.find((r) => r.root === root)?.exchange) : 'NFO')
+  const exchange = contract?.exchange ?? (root ? (useChartStore.getState().roots.find((r) => r.root === root)?.exchange) : DEFAULT_EXCHANGE)
   const open = isSessionOpen(exchange, root, now)
   const feed: FeedKind | null = provider
     ? feedKind(mode, provider.provider, provider.live ?? false, wsStatus, wsStatus === 'stale')

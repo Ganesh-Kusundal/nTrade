@@ -18,6 +18,7 @@ from __future__ import annotations
 from ntrade.domain.portfolio import Position
 from ntrade.domain.constants import Exchange
 from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
+from ntrade.domain.coercion import to_float, to_int
 
 
 class PositionSyncEngine:
@@ -50,9 +51,9 @@ class PositionSyncEngine:
             elif bp.metadata and "strategy" in bp.metadata:
                 # broker reports who opened it; prefer that in live
                 local.metadata = {"strategy": bp.metadata["strategy"]}
-            quantity = int(bp.quantity or 0)
-            avg_price = _safe_float(bp.avg_price)
-            ltp = _safe_float(bp.ltp)
+            quantity = to_int(bp.quantity)
+            avg_price = to_float(bp.avg_price)
+            ltp = to_float(bp.ltp)
             changed = (local.quantity != quantity or local.avg_price != avg_price
                        or local.ltp != ltp)
             local.quantity, local.avg_price, local.ltp = quantity, avg_price, ltp
@@ -111,8 +112,4 @@ class PositionSyncEngine:
             return None
 
 
-def _safe_float(value) -> float:
-    try:
-        return float(value or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+

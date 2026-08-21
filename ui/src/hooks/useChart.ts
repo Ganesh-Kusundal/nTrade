@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { API_BASE } from '../api/client'
 import { chartStartEpoch, chartStartIst, CHART_DAYS } from '../lib/istTime'
+import { DEFAULT_EXCHANGE } from '../lib/constants'
 import type { Candle, ChartResponse, ChartOverlays, StrategyPayload, FetchStatus, Interval } from '../types/market'
 
 export interface UseChartResult {
@@ -35,7 +36,7 @@ function clipFetched(candles: Candle[], fetchEpochS: number, days: number): Cand
 export function useChart(
   symbol: string,
   interval: Interval,
-  exchange: string = 'NFO',
+  exchange: string = DEFAULT_EXCHANGE,
   strategyId: string | null = null,
   days: number = CHART_DAYS,
   tickSize?: number | null,

@@ -377,6 +377,13 @@ class LiveCandlePump:
         except Exception:  # noqa: BLE001 — best-effort teardown of a zombie
             pass
 
+    # TODO(api slim): subscription wiring here (lines 380-396: sec_map,
+    # _segment/_quote_mode/_full_mode, _desired_wires) duplicates
+    # ntrade.sources.dhan_feed.DhanMarketFeedSource._subscriptions (157-172).
+    # Clean delegation would be to use DhanMarketFeedSource as the feed
+    # owner and remove this hand-rolled MarketFeed wiring. Kept as-is for
+    # now — risky deletion would break live pump lifecycle/reconnect —
+    # prefer a follow-up that delegates to DhanMarketFeedSource cleanly.
     def _ensure_dhan_sub(self, symbol: str, exchange: str) -> bool:
         """Subscribe ``symbol`` on the Dhan MarketFeed. Returns True if the
         feed object is up after this call (not a guarantee of ticks yet)."""

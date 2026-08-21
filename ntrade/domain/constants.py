@@ -81,3 +81,4 @@ HISTORY_MAX_AGE_MIN: float = 5.0
 
 # Cost defaults
 DEFAULT_RISK_FREE_RATE: float = 0.065  # 6.5% annual — approximate Indian risk-free
+DEFAULT_INITIAL_CASH: float = 100_000.0  # Default opening cash for paper trading, backtests, and sessions (₹1 lakh)

@@ -8,6 +8,8 @@ import type {
   TicksResponse,
   WsMessage,
 } from '../types/market'
+import { DEFAULT_EXCHANGE } from '../lib/constants'
+import type { WsStatus } from '../lib/feedStatus'
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -68,7 +70,7 @@ export interface PaperStatus {
 }
 
 export const api = {
-  paperStart: (symbol: string, exchange: string = 'NFO', lotSize?: number) =>
+  paperStart: (symbol: string, exchange: string = DEFAULT_EXCHANGE, lotSize?: number) =>
     fetch(`${API_BASE}/paper/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -108,7 +110,7 @@ export const api = {
     request<CandlesResponse>('/market/candles', {
       symbol,
       interval,
-      exchange: opts?.exchange ?? 'NFO',
+      exchange: opts?.exchange ?? DEFAULT_EXCHANGE,
       start: opts?.start ?? '',
       end: opts?.end ?? '',
       limit: opts?.limit ?? '',
@@ -116,7 +118,7 @@ export const api = {
   ticks: (
     symbol: string,
     interval: Interval,
-    exchange: string = 'NFO',
+    exchange: string = DEFAULT_EXCHANGE,
     opts?: { start?: string; end?: string },
   ) =>
     request<TicksResponse>('/market/ticks', {
@@ -126,7 +128,7 @@ export const api = {
       start: opts?.start ?? '',
       end: opts?.end ?? '',
     }),
-  quote: (symbol: string, exchange: string = 'NFO') =>
+  quote: (symbol: string, exchange: string = DEFAULT_EXCHANGE) =>
     request<Quote>('/market/quote', { symbol, exchange }),
 }
 
@@ -152,7 +154,7 @@ export class MarketSocket {
   private readonly listeners = new Set<(msg: WsMessage) => void>()
   private readonly url: string
   /** 'off' = server live_status 'off'; 'stale' = no candles within timeout. */
-  onStatus: (status: 'connected' | 'disconnected' | 'reconnecting' | 'off' | 'stale') => void = () => {}
+  onStatus: (status: WsStatus) => void = () => {}
 
   private serverStreaming = false
   private lastCandleAt = 0

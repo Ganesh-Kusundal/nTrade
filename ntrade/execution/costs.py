@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from ntrade.domain.constants import DEFAULT_RISK_FREE_RATE
+
 
 class SlippageModel(ABC):
     @abstractmethod
@@ -226,7 +228,7 @@ class FuturesCarryCosts:
     def __init__(
         self,
         *,
-        risk_free: float = 0.065,
+        risk_free: float = DEFAULT_RISK_FREE_RATE,
         dividend_yield: float = 0.0,
         roll_pct: float = 0.0002,
         carry_window_days: int = 5,

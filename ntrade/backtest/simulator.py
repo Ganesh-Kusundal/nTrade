@@ -19,7 +19,7 @@ from __future__ import annotations
 import pandas as pd
 
 from ntrade.backtest.fills import BarAwareExecution, FillPolicy
-from ntrade.domain.constants import DEFAULT_TIMEFRAME
+from ntrade.domain.constants import DEFAULT_INITIAL_CASH, DEFAULT_TIMEFRAME
 from ntrade.domain.instruments.cash import Equity
 from ntrade.events.market import DepthEvent, QuoteEvent, TickEvent
 from ntrade.events.order import OrderFilledEvent
@@ -65,7 +65,7 @@ class BacktestResult:
 
 class BacktestSimulator:
     def __init__(self, *, symbol: str = "NIFTY", exchange: str = "NSE",
-                 timeframe: str = DEFAULT_TIMEFRAME, initial_cash: float = 100_000.0,
+                  timeframe: str = DEFAULT_TIMEFRAME, initial_cash: float = DEFAULT_INITIAL_CASH,
                  slippage: SlippageModel | None = None,
                  commission: CommissionModel | None = None,
                  statutory=STATUTORY_DEFAULT,

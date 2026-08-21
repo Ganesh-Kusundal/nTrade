@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING, Iterator
 import pandas as pd
 
 from ntrade.domain.analytics.surface import GreeksTable, IVSurface
-from ntrade.domain.instruments.derivatives import Option
 from ntrade.domain.instruments.expiry import Expiry, OptionPair
 
 if TYPE_CHECKING:
+    from ntrade.domain.instruments.derivatives import Future, Option
     from ntrade.domain.instruments.protocols import InstrumentProtocol
 
 

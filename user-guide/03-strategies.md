@@ -177,8 +177,10 @@ path when you want scoped risk. Circuit breakers are covered in
 | Mode     | Event source                       | Clock             | Execution              |
 |----------|------------------------------------|-------------------|------------------------|
 | backtest | `BacktestSimulator` over OHLCV     | `SimulationClock` | `SimulatedExecution`   |
-| replay   | `ReplayEngine` / recorded events   | `ReplayClock`     | `SimulatedExecution`   |
+| replay   | `TradingSession.replay()` / `TradingKernel.run_replay()` / recorded events (planned `ReplayEngine`) | `ReplayClock` | `SimulatedExecution` |
 | live     | `DhanMarketFeedSource`             | `LiveClock`       | `BrokerExecution`      |
+
+> Note: `ReplayEngine` is planned — `ntrade/replay/` is empty. Current replay is `TradingSession.replay(events)` → `TradingKernel.run_replay(events)` with `ReplayClock` (`ntrade/kernel/trading_session.py:126`, `ntrade/kernel/session.py:140`, `ntrade/kernel/clock.py:33`); `from ntrade import ReplayEngine` will raise `ImportError`.
 
 ```python
 from ntrade import BacktestSimulator

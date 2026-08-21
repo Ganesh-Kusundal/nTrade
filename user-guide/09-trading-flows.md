@@ -246,22 +246,34 @@ Live session with EventStore(path)
 Crash / stop
         │
         ▼
-store.market_events()  ──or──  ResilientKernel.recover()
+store.market_events() → TradingSession.replay() / TradingKernel.run_replay() + ReplayClock
+  (planned: ResilientKernel.recover())
         │
         ▼
 Fresh kernel recomputes signals/fills from the causal market stream
 (positions + balance match the crashed session)
 ```
 
+> Note: `ReplayEngine` and `ResilientKernel` are planned — `ntrade/replay/` is empty (0 files). `from ntrade import ReplayEngine` will raise `ImportError`. Use `TradingSession.replay()` / `TradingKernel.run_replay()` with `ReplayClock` (see `ntrade/kernel/trading_session.py:126`, `ntrade/kernel/session.py:140`, `ntrade/kernel/clock.py:33`). `ResilientKernel.recover()` is the planned crash-recovery design; live reconciliation today is `LiveRunner` + `PositionSyncEngine`.
+
 ```python
-from ntrade import TradingKernel, EventStore, ReplayEngine
+from ntrade import TradingKernel, EventStore
+from ntrade.kernel.clock import ReplayClock
+from ntrade.kernel.trading_session import TradingSession
 
 store = EventStore("session-events.jsonl")
 kernel = TradingKernel(mode="live", store=store, timeframe="1m")
 # ... run ...
 
-# Deterministic replay of market events only
-ReplayEngine(timeframe="1m").run(store.market_events())
+# Deterministic replay of market events only (current API)
+TradingSession.replay(store.market_events()).start().stop()
+# or
+# TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m").run_replay(store.market_events())
+
+# Planned API (not yet implemented — will ImportError):
+# from ntrade import ReplayEngine
+# ReplayEngine(timeframe="1m").run(store.market_events())
+# ResilientKernel.recover(store)
 ```
 
 Never re-feed derived events (signals/fills) — the kernel recomputes them.

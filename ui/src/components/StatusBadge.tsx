@@ -1,11 +1,11 @@
-import { feedKind, FEED_META } from '../lib/feedStatus'
+import { feedKind, FEED_META, type WsStatus } from '../lib/feedStatus'
 import type { Mode } from '../types/market'
 
 interface StatusBadgeProps {
   source: string | null
   provider: string | null | undefined
   live: boolean
-  wsStatus: 'connected' | 'disconnected' | 'reconnecting' | 'off' | 'stale'
+  wsStatus: WsStatus
   mode: Mode
 }
 

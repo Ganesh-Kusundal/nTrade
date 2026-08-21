@@ -99,7 +99,11 @@ export const strategies: Record<string, StrategySpec> = {
 // ---------------------------------------------------------------------------------------
 
 /** Toggle keys a strategy wants on by default (the page turns these on in
-*  ``usePersistedState`` initial state). */
+ *  ``usePersistedState`` initial state). */
 export function strategyIndicatorKeys(spec: StrategySpec): string[] {
   return spec.indicators
+}
+
+export function strategyLabel(id: string): string {
+  return strategies[id]?.label ?? id
 }

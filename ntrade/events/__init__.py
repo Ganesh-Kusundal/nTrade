@@ -20,15 +20,23 @@ from ntrade.events.order import (
     OrderFilledEvent,
     OrderIntentEvent,
     OrderRejectedEvent,
+    OrderTimeoutEvent,
+    OrderUpdatedEvent,
 )
 from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
 from ntrade.events.risk import (
+    RiskHaltedEvent,
+    RiskResumedEvent,
     SignalApprovedEvent,
     SignalGeneratedEvent,
     SignalRejectedEvent,
 )
 from ntrade.events.lifecycle import (
+    FeedDisconnectedEvent,
+    HeartbeatEvent,
     KernelStartedEvent,
+    RunnerStartedEvent,
+    RunnerStoppedEvent,
     SessionStartedEvent,
     SessionStoppedEvent,
 )
@@ -39,7 +47,10 @@ __all__ = [
     "QuoteUpdatedEvent", "IndicatorUpdatedEvent",
     "WatchlistReady",
     "OrderIntentEvent", "OrderAcceptedEvent", "OrderRejectedEvent", "OrderFilledEvent",
+    "OrderUpdatedEvent", "OrderTimeoutEvent",
     "PositionUpdatedEvent", "BalanceChangedEvent",
     "SignalGeneratedEvent", "SignalApprovedEvent", "SignalRejectedEvent",
+    "RiskHaltedEvent", "RiskResumedEvent",
     "KernelStartedEvent", "SessionStartedEvent", "SessionStoppedEvent",
+    "RunnerStartedEvent", "RunnerStoppedEvent", "HeartbeatEvent", "FeedDisconnectedEvent",
 ]

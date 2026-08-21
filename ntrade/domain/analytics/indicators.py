@@ -6,10 +6,14 @@ No external TA library required; keeps the domain layer dependency-free.
 from __future__ import annotations
 
 import logging
+import typing
 
 import pandas as pd
 
 from ntrade.registry import IndicatorSpec, PlotSpec, indicator
+
+if typing.TYPE_CHECKING:  # explicit coupling — 'halftrend' spec calc lives in ntrade.analytics.overlay_pipeline
+    import ntrade.analytics.overlay_pipeline  # noqa: F401
 
 logger = logging.getLogger("ntrade.indicators")
 
@@ -232,7 +236,7 @@ indicator.register("st", IndicatorSpec(
     series=True, plot=PlotSpec(series_key="stx_10_3", pane="separate", color="#e91e63")))
 # Chart overlays produced by OverlayPipeline (not compute_bundle): registered
 # here so /api/market/catalog mirrors the FE's render ids (vwap already above).
-# The contract is metadata-only; the calc lives in overlay_pipeline.py.
+# The contract is metadata-only; the calc lives in ntrade.analytics.overlay_pipeline.
 indicator.register("halftrend", IndicatorSpec(
     id="halftrend", label="HalfTrend",
     params={"amplitude": 2, "channel_deviation": 2, "atr_period": 100},

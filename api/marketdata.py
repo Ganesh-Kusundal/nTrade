@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     import pandas as pd
 
+from ntrade.domain.coercion import to_float, to_int
 from ntrade.domain.constants import Exchange, Timeframe
 from ntrade.domain.market_hours import DAILY_TIMEFRAMES, IST, session_close, session_open
 from ntrade.domain.timeframes import WIRE_INTERVALS, SESSION_BAR_MINUTES, interval_bar_minutes as _interval_bar_minutes
@@ -362,6 +363,9 @@ class DhanProvider:
         self._broker = None
         self._factory = None
         self._last_error: str | None = None
+        # Thin bridge: DhanProvider delegates candle fetch / quote to DhanBroker
+        # (broker/transport/mapper). This layer only normalizes to the UI wire
+        # shape via candle_from_row/normalize_candles — no broker logic copied.
 
     # ------------------------------------------------------------------ auth
     @property
@@ -430,6 +434,11 @@ class DhanProvider:
         if df is None or df.empty:
             return []
         df = df.copy()
+        # TODO(api slim): hand-rolled lowercasing duplicates
+        # ntrade.brokers.dhan_mapper.DhanMapper.normalize_history (canonical
+        # OHLCV lowercasing + column whitelisting). Safe delegation requires
+        # verifying the extra whitelisting doesn't change the wire contract
+        # for Dhan history (keep as-is for now — behavior-identical).
         df.columns = [str(c).lower() for c in df.columns]
         rows = normalize_candles(df.to_dict("records"))
         # Clamp before write-through so the parquet lake never stores the
@@ -1009,17 +1018,28 @@ def parse_iso(value: str | None, field: str = "timestamp") -> datetime | None:
 
 
 def _f(v) -> float:
-    try:
-        return float(v or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+    """Thin wrapper delegating to ntrade.domain.coercion.to_float.
+
+    Kept as `_f` for backward compat with instrument-master parsing
+    (api callers import it indirectly); domain is single source of truth.
+    """
+    return to_float(v, 0.0)
 
 
 def _int_or_none(v) -> int | None:
+    """int coercion with None on failure (delegates to ntrade.domain.coercion.to_int).
+
+    Domain's to_int returns 0 on failure; the instrument-master needs the
+    None contract for absent security_id, so we preserve it here.
+    """
     try:
-        return int(float(v))
+        # Use domain helper but keep None semantics (don't mask missing id as 0)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return to_int(v)
     except (TypeError, ValueError):
         return None
+    # Fallback: to_int already handles float-strings (e.g. "123.0")
 
 
 # Keep `re` import future-proof for symbol validation in routes

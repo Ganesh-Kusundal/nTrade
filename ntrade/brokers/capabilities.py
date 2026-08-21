@@ -1,13 +1,13 @@
-"""Capability pattern — broker-specific extensions without polluting the base API.
+"""Capability pattern — deprecated shim (use ``ntrade.domain.ports``)."""
 
-This module is a backward-compatibility shim: the capability machinery
-(``Capability``, ``capability()``, ``registered_capabilities()`` and
-``BrokerExtensionFacade``) now lives in the domain layer
-(``ntrade.domain.ports``) — it is pure plugin infrastructure with no broker
-dependency. Broker modules register their capabilities here via the
-``@capability`` decorator (imported from this module or from the domain port).
-"""
+import warnings
 
-from ntrade.domain.ports import BrokerExtensionFacade, Capability, capability, registered_capabilities
+warnings.warn(
+    "ntrade.brokers.capabilities is deprecated; import from ntrade.domain.ports instead",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+from ntrade.domain.ports import BrokerExtensionFacade, Capability, capability, registered_capabilities  # noqa: E402, F401
 
 __all__ = ["Capability", "capability", "registered_capabilities", "BrokerExtensionFacade"]

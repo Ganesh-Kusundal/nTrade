@@ -1,4 +1,6 @@
-"""OverlayPipeline — single backend source of truth for chart overlays.
+"""Chart overlay pipeline — registered as indicator spec 'halftrend' in domain/analytics/indicators.py
+
+OverlayPipeline — single backend source of truth for chart overlays.
 
 One call turns a candle series into every overlay the UI draws: VWAP ±σ
 bands, session-anchored volume profile (POC/VAH/VAL), and — when a strategy id
@@ -17,6 +19,7 @@ from datetime import datetime
 import pandas as pd
 
 from ntrade.domain.analytics.indicators import vwap, vwap_bands
+from ntrade.domain.constants import DEFAULT_INITIAL_CASH
 from ntrade.domain.market_hours import IST as _IST, is_market_open, session_open
 
 log = logging.getLogger("ntrade.overlay")
@@ -203,7 +206,7 @@ def build_overlays(
     strategy_params: dict | None = None,
     tick_size: float | None = None,
     range_size: float | None = None,
-    balance: float = 100_000.0,
+    balance: float = DEFAULT_INITIAL_CASH,
     include_range_bars: bool = False,
 ) -> OverlayDTO:
     """Compute every overlay for a candle series.

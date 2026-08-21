@@ -29,7 +29,7 @@ from ntrade.execution.simulator import SimulatedExecution
 from ntrade.kernel.clock import LiveClock, ReplayClock, TradingClock
 from ntrade.kernel.context import TradingContext
 from ntrade.kernel.event_bus import EventBus
-from ntrade.domain.constants import DEFAULT_TIMEFRAME
+from ntrade.domain.constants import DEFAULT_INITIAL_CASH, DEFAULT_TIMEFRAME
 
 if TYPE_CHECKING:
     from ntrade.domain.ports import BrokerAdapter
@@ -51,7 +51,7 @@ class TradingKernel:
         broker: "BrokerAdapter | None" = None,
         execution=None,
         session_id: str = "",
-        initial_cash: float = 100_000.0,
+        initial_cash: float = DEFAULT_INITIAL_CASH,
         store=None,
         statutory=STATUTORY_DEFAULT,
         order_timeout_seconds: float = 300.0,

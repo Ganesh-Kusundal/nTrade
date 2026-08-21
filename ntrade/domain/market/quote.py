@@ -7,6 +7,7 @@ from datetime import datetime
 
 from ntrade.domain.constants import QUOTE_MAX_AGE_S
 from ntrade.domain.market_hours import IST as _IST
+from ntrade.domain.types import assert_naive_ist
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,9 @@ class Quote:
         reference = now if now is not None else datetime.now(tz=_IST)
         ts = self.timestamp
         if ts.tzinfo is None:
+            # Quote.timestamp is IST wall time when naive (Quote contract) —
+            # pin to IST before arithmetic so the delta is correct.
+            assert_naive_ist(ts)
             ts = ts.replace(tzinfo=_IST)
         if reference.tzinfo is None:
             reference = reference.replace(tzinfo=_IST)

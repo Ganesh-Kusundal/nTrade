@@ -1,4 +1,6 @@
 import { PaperTradeControl } from './PaperTradeControl'
+import { fmtPrice, fmtVolume } from '../lib/format'
+import { strategyLabel } from '../lib/registry'
 import type { StrategyPayload, StrategySignal } from '../types/market'
 
 function SideLabel({ children }: { children: React.ReactNode }) {
@@ -115,7 +117,7 @@ export function TerminalSidePanel({
           <SideLabel>Quote</SideLabel>
           <div className="mt-1 flex items-baseline gap-2">
             <SideValue>
-              {price == null ? '—' : price.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+              {price == null ? '—' : fmtPrice(price)}
             </SideValue>
             {price != null && change != null && (
               <span className={`font-mono text-sm ${up ? 'text-accent' : 'text-danger'}`}>
@@ -129,7 +131,7 @@ export function TerminalSidePanel({
               <span>H {quote?.high != null ? quote.high.toFixed(2) : '—'}</span>
               <span>L {quote?.low != null ? quote.low.toFixed(2) : '—'}</span>
               <span>Prev {quote?.prev_close != null ? quote.prev_close.toFixed(2) : '—'}</span>
-              <span>Vol {quote?.volume != null ? quote.volume.toLocaleString('en-IN') : '—'}</span>
+              <span>Vol {quote?.volume != null ? fmtVolume(quote.volume) : '—'}</span>
             </div>
           )}
         </div>
@@ -238,8 +240,4 @@ function phaseCls(p: string): string {
 
 function commandify(s: string | undefined): string {
   return s ? s.toUpperCase() : '—'
-}
-
-function strategyLabel(id: string): string {
-  return id === 'halftrend' ? 'HalfTrend' : id
 }

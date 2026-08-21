@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from ntrade.domain.constants import HISTORY_MAX_AGE_MIN
+from ntrade.domain.ohlcv import resample as _ohlcv_resample
 
 if TYPE_CHECKING:
     from ntrade.domain.instruments.base import Instrument
@@ -125,16 +126,9 @@ class HistoricalSeries:
         """Resample to a coarser timeframe; returns a new HistoricalSeries."""
         if self._df.empty or "timestamp" not in self._df:
             return HistoricalSeries(self.instrument, self._df, self.timeframe)
-        indexed = self._df.set_index("timestamp")
-        agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
-        agg.update({c: "sum" for c in indexed.columns if c in ("volume", "oi")})
-        # K-025: label bars at the RIGHT edge (bin start + span) to match
-        # CandleEngine's closed-candle labels (bucket + seconds). pandas
-        # defaults to label="left" (bin START) which labels a 5m bar 09:15
-        # where the engine labels 09:20 — same bin membership (closed="left"
-        # is kept so bins don't shift), different label. The index stays
-        # timezone-naive like the engine treats it.
-        resampled = indexed.resample(rule, closed="left", label="right").agg(agg).dropna(subset=["open"]).reset_index()
+        # K-025: closed-LABEL/RIGHT-edge labels via the canonical primitive
+        # (day_group=False → epoch-anchored, the HistoricalSeries convention).
+        resampled = _ohlcv_resample(self._df, rule, day_group=False)
         return HistoricalSeries(self.instrument, resampled, rule, clock=self.clock)
     # ------------------------------------------------------------------ pandas
     def indicators(self, **params) -> dict[str, float]:

@@ -11,7 +11,8 @@ from datetime import timedelta
 
 import pandas as pd
 
-from ntrade.brokers.base import BrokerAdapter
+from ntrade.domain.constants import DEFAULT_INITIAL_CASH
+from ntrade.domain.ports import BrokerAdapter
 from ntrade.domain.market.candles import CandleSeries
 from ntrade.domain.portfolio import Position
 from ntrade.domain.market.quote import Quote, Tick
@@ -35,7 +36,7 @@ class PaperBroker(BrokerAdapter):
         self._quotes: dict[str, Quote] = {}
         self._history: dict[str, pd.DataFrame] = {}
         self._orders: list[Order] = []
-        self._balance = 100_000.0
+        self._balance = DEFAULT_INITIAL_CASH
         self._positions: dict[str, Position] = {}
         self._connected = True  # always available
 
@@ -122,6 +123,7 @@ class PaperBroker(BrokerAdapter):
         live = getattr(order.instrument, "_quote", None)
         live_ltp = getattr(live, "ltp", 0.0) or 0.0
         seated = self._quotes.get(order.instrument.symbol.strip().upper())
+        # TODO: use execution.order_types.strategy_for when adding new types
         if order.order_type.value != "MARKET" and order.price:
             fill_price = order.price
         elif order.reference_price > 0.0:

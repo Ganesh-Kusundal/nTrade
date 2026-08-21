@@ -21,12 +21,15 @@ import {
   type TickBarMap,
 } from '../hooks/replayVisible'
 import { CHART_DAYS, fmtISTInput, istInputToEpoch } from '../lib/istTime'
+import { DEFAULT_EXCHANGE } from '../lib/constants'
+import { fmtExpiry } from '../lib/format'
+import { strategies, strategyLabel } from '../lib/registry'
 import { usePersistedState } from '../lib/storage'
 import { useChartStore } from '../store/chartStore'
 import type { Candle, ChartOverlays, StrategyPayload, WsMessage } from '../types/market'
 
 const STRATEGY_IDS = [
-  { id: 'halftrend', label: 'HalfTrend', sub: 'Momentum · ATR(100)/2' },
+  { id: 'halftrend', label: strategyLabel('halftrend') || strategies['halftrend'].label, sub: 'Momentum · ATR(100)/2' },
 ] as const
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -121,7 +124,7 @@ export const TradeScreen = memo(function TradeScreen() {
 
   useEffect(() => {
     if (mode !== 'live' || !symbol || interval === 'Range') return
-    socketRef.current?.subscribe(symbol, contract?.exchange ?? 'NFO', interval, strategyRef.current, contract?.tick_size)
+    socketRef.current?.subscribe(symbol, contract?.exchange ?? DEFAULT_EXCHANGE, interval, strategyRef.current, contract?.tick_size)
     return () => socketRef.current?.unsubscribe(symbol)
   }, [mode, symbol, interval, contract?.exchange, contract?.tick_size, strategyId])
 
@@ -137,7 +140,7 @@ export const TradeScreen = memo(function TradeScreen() {
   const chartDays = CHART_DAYS
   const [rangeTicks, setRangeTicks] = usePersistedState<number | null>('ntrade.rangeTicks', null)
   const { candles, overlays, strategy, status, error, reason, source, reload } = useChart(
-    symbol, interval, contract?.exchange ?? 'NFO', strategyId, chartDays,
+    symbol, interval, contract?.exchange ?? DEFAULT_EXCHANGE, strategyId, chartDays,
     contract?.tick_size, rangeTicks,
   )
   const displayAll = useMemo(() => mergeByTime(candles, liveCandles), [candles, liveCandles])
@@ -153,7 +156,7 @@ export const TradeScreen = memo(function TradeScreen() {
     let cancelled = false
     setTicksByBar(new Map())
     setTickSeconds(0)
-    api.ticks(symbol, interval, contract?.exchange ?? 'NFO', {
+    api.ticks(symbol, interval, contract?.exchange ?? DEFAULT_EXCHANGE, {
       start: fmtISTInput(candles[0].time),
       end: fmtISTInput(candles[candles.length - 1].time),
     })
@@ -258,7 +261,7 @@ export const TradeScreen = memo(function TradeScreen() {
     mode === 'replay' && status === 'ready' && replay.state.cursor === 0 &&
     (replay.state.status === 'idle' || replay.state.status === 'paused')
 
-  const exchange = contract?.exchange ?? 'NFO'
+  const exchange = contract?.exchange ?? DEFAULT_EXCHANGE
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-3">
@@ -455,10 +458,3 @@ export const TradeScreen = memo(function TradeScreen() {
     </div>
   )
 })
-
-function fmtExpiry(iso: string | undefined): string {
-  if (!iso) return '—'
-  const [y, m, d] = iso.split('-').map(Number)
-  const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
-  return `${d} ${MONTHS[m - 1]} ${String(y).slice(2)}`
-}

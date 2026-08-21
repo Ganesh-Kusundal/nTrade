@@ -1,12 +1,13 @@
-"""BrokerAdapter — the hidden transport boundary between domain objects and brokers.
+"""BrokerAdapter — deprecated shim (use ``ntrade.domain.ports``)."""
 
-This module is a backward-compatibility shim: the ``BrokerAdapter`` ABC now
-lives in the domain layer (``ntrade.domain.ports``) so the dependency arrow
-points outward — brokers implement the port, the domain never imports brokers.
-Keep importing ``BrokerAdapter`` from here or from ``ntrade.brokers``; both
-resolve to the same class.
-"""
+import warnings
 
-from ntrade.domain.ports import BrokerAdapter
+warnings.warn(
+    "ntrade.brokers.base is deprecated; import BrokerAdapter from ntrade.domain.ports instead",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+from ntrade.domain.ports import BrokerAdapter  # noqa: E402, F401
 
 __all__ = ["BrokerAdapter"]

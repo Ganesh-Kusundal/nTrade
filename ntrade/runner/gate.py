@@ -3,6 +3,7 @@ evidence checklist that must pass before a strategy is switched to live."""
 
 from __future__ import annotations
 
+from ntrade.domain.constants import DEFAULT_INITIAL_CASH
 from ntrade.events.order import OrderFilledEvent
 from ntrade.events.portfolio import BalanceChangedEvent, PositionUpdatedEvent
 
@@ -47,7 +48,7 @@ def _equity_trace(kernel, *, initial_cash: float):
         yield peak, eq
 
 
-def build_paper_report(kernel, *, initial_cash: float = 100_000.0) -> dict:
+def build_paper_report(kernel, *, initial_cash: float = DEFAULT_INITIAL_CASH) -> dict:
     fills = [e for e in kernel.bus.history if isinstance(e, OrderFilledEvent)]
     trades = [{
         "order_id": f.order_id, "symbol": f.symbol, "side": f.side,

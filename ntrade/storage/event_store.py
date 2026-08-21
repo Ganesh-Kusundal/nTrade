@@ -169,7 +169,8 @@ class EventStore:
             OrderUpdatedEvent,
         )
 
-        terminal = {"COMPLETED", "REJECTED", "CANCELLED"}
+        from ntrade.domain.orders.order import OrderStatus as _OrderStatus
+        terminal = _OrderStatus.TERMINAL
         deltas: dict[str, dict] = {}
         for event in self._events:
             if isinstance(event, OrderAcceptedEvent):

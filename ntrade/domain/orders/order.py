@@ -40,6 +40,17 @@ class OrderStatus(str, Enum):
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
 
 
+OrderStatus.TERMINAL = frozenset({OrderStatus.COMPLETED.value, OrderStatus.REJECTED.value, OrderStatus.CANCELLED.value})  # type: ignore[attr-defined]
+
+
+def _order_status_is_terminal(cls, status) -> bool:  # type: ignore[no-untyped-def]
+    v = status.value if isinstance(status, cls) else str(status)
+    return v in cls.TERMINAL  # type: ignore[attr-defined]
+
+
+OrderStatus.is_terminal = classmethod(_order_status_is_terminal)  # type: ignore[attr-defined]
+
+
 @dataclass
 class Order:
     instrument: "Instrument"

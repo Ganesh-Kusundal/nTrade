@@ -19,6 +19,7 @@ import threading
 from typing import Any  # noqa: F401 — kept for type-checking idempotency_guard param
 
 from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
+from ntrade.domain.orders.order import OrderStatus as _OrderStatus
 from ntrade.events.order import (
     OrderAcceptedEvent,
     OrderFilledEvent,
@@ -47,7 +48,7 @@ from ntrade.domain.constants import CIRCUIT_COOLDOWN_S, CIRCUIT_FAILURE_THRESHOL
 
 logger = logging.getLogger("ntrade.execution")
 
-_TERMINAL_STATUSES = ("COMPLETED", "REJECTED", "CANCELLED")
+_TERMINAL_STATUSES = tuple(_OrderStatus.TERMINAL)
 
 
 def _fill_price(order) -> float:

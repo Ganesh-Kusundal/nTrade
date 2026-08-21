@@ -17,21 +17,26 @@ def test_paper_get_quote_never_mints_placeholder():
         broker.get_quote("NIFTY OCT FUT")
 
 
-def test_paper_broker_reports_authoritative_balance_and_positions():
+def test_paper_broker_reports_authoritative_positions_static_balance():
+    """Positions are the broker book's authority; cash is NOT — the kernel's
+    PortfolioEngine is the single cash ledger (Task 2.1). PaperBroker's
+    balance stays at the seeded opening cash so get_balance() reports session
+    start; PositionSyncEngine skips cash for brokers with reports_cash=False."""
     broker = PaperBroker()
     rel = Equity("RELIANCE", broker=broker)
     broker.seed_quote("RELIANCE", 100.0)
 
-    # Buy 10 @ 100 -> balance decreases; a position appears.
+    # Buy 10 @ 100 -> a position appears; broker cash untouched.
     rel.order.place("BUY", 10, order_type=OrderType.MARKET)
-    assert broker.get_balance() < 100_000.0, "balance must decrease on a buy fill"
+    assert broker.get_balance() == 100_000.0, (
+        "broker must not mutate cash — the kernel ledger owns it")
     pos = broker.get_positions()
     assert len(pos) == 1 and pos[0].quantity == 10, "position must be tracked"
 
-    # Sell 10 @ 101 -> back to flat; balance increases by the sell notional.
+    # Sell 10 @ 101 -> back to flat.
     rel.order.place("SELL", 10, order_type=OrderType.MARKET, price=101.0)
     assert broker.get_positions() == [], "position must close on the sell"
-    assert broker.get_balance() > 99_900.0, "balance must recover on the sell"
+    assert broker.get_balance() == 100_000.0, "cash still at seeded opening"
 
 
 def test_paper_broker_short_round_trip_does_not_crash():

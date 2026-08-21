@@ -71,8 +71,11 @@ class PositionSyncEngine:
                     quantity=0, avg_price=0.0, ltp=0.0, ts=self.ctx.now(),
                 ))
 
-        # reconcile cash (broker-reported balance is authoritative in live)
-        balance = self._safe_balance()
+        # Reconcile cash only from brokers that report real money. The paper
+        # broker's balance is the seeded opening cash, not a payout — syncing
+        # it would erase the PortfolioEngine's cost-charged ledger every pass.
+        reports_cash = getattr(self.broker, "reports_cash", True)
+        balance = self._safe_balance() if reports_cash else None
         if balance is not None and balance != self.ctx.account.balance:
             self.ctx.account.balance = round(balance, 4)
             self.ctx.bus.publish(BalanceChangedEvent(

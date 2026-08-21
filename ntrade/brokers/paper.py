@@ -21,6 +21,10 @@ from ntrade.domain.orders.order import Order, OrderStatus, OrderType
 
 class PaperBroker(BrokerAdapter):
     name = "paper"
+    # The paper balance is the seeded opening cash, not real money —
+    # PositionSyncEngine must not reconcile kernel cash from it (single
+    # ledger: PortfolioEngine owns cash, charged with costs exactly once).
+    reports_cash = False
 
     def __init__(self, seed: int = 42, clock=None, **kwargs):
         # Accept (and ignore) broker-generic kwargs like env_path/env so the
@@ -137,18 +141,14 @@ class PaperBroker(BrokerAdapter):
         order.filled_qty = order.quantity
         order.avg_price = round(fill_price, 2)
         self._orders.append(order)
-        # Authoritative broker state: fills mutate balance + positions so the
-        # PositionSyncEngine reconciles paper to its own reality instead of
-        # wiping the kernel (the old get_positions()=[] wiped everything).
+        # ponytail: single ledger — the kernel's PortfolioEngine owns cash
+        # (notional + commission + statutory, charged exactly once). The
+        # broker book keeps positions/fills only; _balance stays at the
+        # seeded opening cash so get_balance() reports session start.
         fill_price = order.avg_price
-        notional = fill_price * order.quantity
         pos = self._positions.get(order.instrument.symbol)
         delta = order.quantity if order.side.value == "BUY" else -order.quantity
         qty = (pos.quantity if pos else 0) + delta
-        if order.side.value == "BUY":
-            self._balance = round(self._balance - notional, 4)
-        else:
-            self._balance = round(self._balance + notional, 4)
         if qty == 0:
             # Flattened: drop the position (mirror of PortfolioEngine).
             self._positions.pop(order.instrument.symbol, None)

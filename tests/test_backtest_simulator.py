@@ -20,11 +20,18 @@ def test_results_fills_not_truncated_by_bus_cap():
 
     class OneWay(Strategy):
         name = "oneway"
+        def __init__(self):
+            super().__init__()
+            self.count = 0
+
         def on_candle_closed(self, event):
-            # BUY once at bar 10, sell at bar 20 — deterministic, no TA
-            if event.ts == t10:
+            # BUY on the 11th closed candle, sell on the 21st — deterministic,
+            # no TA. (Bar-count, not ts-match: candle labels are naive UTC
+            # while row timestamps are naive IST wall clock.)
+            self.count += 1
+            if self.count == 11:
                 self.emit_signal(symbol=event.symbol, exchange=event.exchange, side="BUY", quantity=1, price=event.close, order_type="LIMIT")
-            elif event.ts == t20:
+            elif self.count == 21:
                 self.emit_signal(symbol=event.symbol, exchange=event.exchange, side="SELL", quantity=1, price=event.close, order_type="LIMIT")
 
     rows = []

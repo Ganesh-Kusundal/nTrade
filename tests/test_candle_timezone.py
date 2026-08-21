@@ -1,7 +1,14 @@
-"""M2 fix: candle bucketing is pinned to UTC, independent of host TZ (G2-F4)."""
+"""Candle bucketing: naive timestamps are IST wall time; labels are naive UTC.
+
+The single tz boundary is CandleEngine._bucket — live ticks arrive IST-aware
+(converted by astimezone), backtest/replay bars arrive naive-IST (converted
+here), and every downstream consumer sees identical UTC-epoch buckets for the
+same session minute regardless of host TZ.
+"""
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -30,20 +37,21 @@ def force_tz(monkeypatch):
 
 
 def test_bucket_epoch_is_pinned_to_utc(force_tz):
-    """A naive ts must bucket to the UTC-pinned epoch. WAS: ts.timestamp()
-    interpreted the naive ts in the process-local TZ (IST buckets 5.5h away)."""
+    """A naive ts (IST wall time) must bucket to the UTC epoch of that instant.
+    09:15 IST == 03:45 UTC. WAS: ts.timestamp() interpreted the naive ts in
+    the process-local TZ."""
     force_tz("Asia/Kolkata")
     k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
     ts = datetime(2026, 1, 1, 9, 15)
-    expected = int(ts.replace(tzinfo=timezone.utc).timestamp())
+    expected = int(ts.replace(tzinfo=ZoneInfo("Asia/Kolkata")).timestamp())
     expected -= expected % k.candle_engine.seconds
     assert k.candle_engine._bucket(ts) == expected
 
 
 def test_closed_candle_label_matches_utc_wall_clock(force_tz):
     """The closed label must be the naive UTC wall-clock minute after the last
-    tick. Guards against a half-fix that pins _bucket but leaves _close local
-    (which would shift the label by the TZ offset)."""
+    tick. An IST 09:15-09:16 candle carries the UTC label 03:46. Guards
+    against a half-fix that pins _bucket but leaves _close local."""
     force_tz("Asia/Kolkata")
     k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
     k.register(Equity("NIFTY"))
@@ -52,7 +60,38 @@ def test_closed_candle_label_matches_utc_wall_clock(force_tz):
     k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=101.0,
                             ts=ts + timedelta(seconds=1)))
     k.candle_engine.flush()
-    assert k.candle_engine.candles("NIFTY")[0].ts == datetime(2026, 1, 1, 9, 16)
+    assert k.candle_engine.candles("NIFTY")[0].ts == datetime(2026, 1, 1, 3, 46)
+
+
+def test_naive_ts_is_ist_wall_time(force_tz):
+    """Naive timestamps are IST wall time (the storage + backtest convention).
+    09:15 IST must bucket at the 03:45 UTC epoch — not be pinned as UTC."""
+    force_tz("Asia/Kolkata")
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    naive = datetime(2026, 1, 1, 9, 15)                      # IST wall time
+    aware = naive.replace(tzinfo=ZoneInfo("Asia/Kolkata"))   # same instant
+    assert k.candle_engine._bucket(naive) == k.candle_engine._bucket(aware)
+
+
+def test_backtest_and_live_ticks_bucket_identically():
+    """The parity point: the same session minute produces the same bucket
+    whether it arrives naive-IST (backtest bar) or IST-aware (live tick)."""
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    naive = datetime(2026, 1, 1, 9, 15)
+    aware = naive.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert k.candle_engine._bucket(naive) == k.candle_engine._bucket(aware)
+
+
+def test_orb_reads_utc_labels_as_ist_session_minutes():
+    """ORB's session windows are IST wall-clock. Kernel candle labels are
+    naive UTC, so a 09:15 IST candle arrives as 03:45 — _ist_dt must convert,
+    not relabel, or ORB trades the wrong window."""
+    from ntrade.engines.orb_vwap import _ist_dt
+
+    ist = _ist_dt(datetime(2026, 1, 1, 3, 45))   # kernel label (naive UTC)
+    assert ist is not None and ist.hour == 9 and ist.minute == 15
+    aware = _ist_dt(datetime(2026, 1, 1, 9, 15, tzinfo=ZoneInfo("Asia/Kolkata")))
+    assert aware.hour == 9 and aware.minute == 15
 
 
 def test_candle_engine_bounds_closed_candles():

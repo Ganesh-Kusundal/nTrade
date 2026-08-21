@@ -1,6 +1,7 @@
 """Tests for HistoricalSeries (dataframe-like, attached) and LiveStream."""
 
 from datetime import timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -141,10 +142,13 @@ def test_resample_labels_match_candle_engine_buckets():
     h = HistoricalSeries(Equity("RELIANCE"), df, timeframe="1m")
     coarse = h.resample("5min")
     # Engine end-of-bar labels for the same timestamps: bucket + 300s. The
-    # engine pins naive timestamps to UTC, matching the naive index here.
+    # engine treats naive timestamps as IST wall time and labels in naive UTC,
+    # so convert its label back to IST wall clock to compare with the naive-
+    # IST resample index (same instant, same right-edge bin).
     engine_labels = [
         datetime.fromtimestamp(engine._bucket(t) + engine.seconds,
-                               tz=timezone.utc).replace(tzinfo=None)
+                               tz=timezone.utc)
+        .astimezone(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
         for t in (start, start + timedelta(minutes=5))
     ]
     got = list(coarse.df["timestamp"])

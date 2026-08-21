@@ -16,7 +16,7 @@ and volume confirmation.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -38,7 +38,10 @@ def _ist_dt(ts) -> datetime | None:
         except Exception:
             pass
     try:
-        return ts.replace(tzinfo=_IST)
+        # Kernel candle labels are naive UTC (CandleEngine convention since
+        # the IST boundary fix) — interpret them as UTC, not IST wall time,
+        # or the session windows would fire 5.5h early.
+        return ts.replace(tzinfo=timezone.utc).astimezone(_IST)
     except Exception:
         return None
 

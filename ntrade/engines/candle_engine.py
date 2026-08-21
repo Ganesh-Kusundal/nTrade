@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from ntrade.domain.constants import Timeframe, DEFAULT_TIMEFRAME
+from ntrade.domain.market_hours import IST
 from ntrade.events.market import CandleClosedEvent, QuoteEvent, TickEvent
 
 _INTERVAL_SECONDS = {
@@ -37,14 +38,15 @@ class CandleEngine:
 
     # ------------------------------------------------------------------ ingest
     def _bucket(self, ts: datetime) -> int:
-        if ts.tzinfo is not None:
-            # Pump emits IST-aware ticks; convert to UTC before bucketing so
-            # candle labels and all downstream code (which uses naive-UTC per
-            # domain convention) stay consistent.
-            ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)  # naive -> UTC-pinned epoch
-        epoch = int(ts.timestamp())
+            # Naive timestamps are IST wall time (the storage + backtest
+            # convention). Convert once here — this is the single tz boundary:
+            # everything downstream sees UTC-epoch buckets regardless of the
+            # event source (live IST-aware ticks, naive-IST history bars).
+            # Pin the zone BEFORE timestamp(): timestamp() on a naive value
+            # re-reads the process-local TZ (double conversion).
+            ts = ts.replace(tzinfo=IST)
+        epoch = int(ts.timestamp())  # aware -> absolute, host-TZ independent
         return epoch - (epoch % self.seconds)
 
     def on_tick(self, event: TickEvent) -> None:

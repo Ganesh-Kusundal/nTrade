@@ -341,7 +341,10 @@ export function ChartPanel({ candles, context, indicators: indicatorsProp, onInd
     }
     const markers: SeriesMarker<UTCTimestamp>[] = []
     if (show && strat?.markers) {
+      const isReplay = !!(contextDataRef.current && contextDataRef.current.length > 0)
+      const lastTime = src.length > 0 ? src[src.length - 1].time : -1
       for (const m of strat.markers) {
+        if (isReplay && m.time > lastTime) continue
         markers.push({
           time: timeOf(m.time),
           position: m.side === 'BUY' ? 'belowBar' : 'aboveBar',

@@ -37,6 +37,7 @@ class OverlayDTO:
     vwap_upper: list[dict] | None = None
     vwap_lower: list[dict] | None = None
     volume_profile: dict | None = None
+    adx: dict | None = None
     strategy: dict | None = None
 
     def to_dict(self) -> dict:
@@ -50,6 +51,7 @@ class OverlayDTO:
                 "vwap_upper": self.vwap_upper,
                 "vwap_lower": self.vwap_lower,
                 "volume_profile": self.volume_profile,
+                "adx": self.adx,
             },
             "strategy": self.strategy,
         }
@@ -139,60 +141,38 @@ def _build_volume_profile(df: pd.DataFrame, session: pd.DataFrame) -> dict | Non
     }
 
 
-# ----------------------------------------------------------------------- halftrend
-def _build_halftrend(df: pd.DataFrame, params: dict | None) -> dict | None:
-    """Compute HalfTrend markers directly for the chart overlay path.
-
-    This is the backend source of truth for the HalfTrend series shown on the
-    chart. The paper/live path uses the HalfTrendStrategy class; this function
-    produces the same buy/sell markers from the same domain math (zero-parity).
-    """
+def _build_adx(df: pd.DataFrame, period: int = 14) -> dict | None:
     if df.empty:
         return None
-    from ntrade.domain.analytics.halftrend import halftrend as _ht
-    amp = int(params.get("amplitude", 2)) if params else 2
-    cdev = int(params.get("channel_deviation", 2)) if params else 2
-    apt = int(params.get("atr_period", 100)) if params else 100
-    out = _ht(df, amplitude=amp, channel_deviation=cdev, atr_period=apt)
-    if out.empty:
+    from ntrade.domain.analytics.indicators import adx as _adx_fn
+    adx_df = _adx_fn(df, period=period)
+    n = len(df)
+    series = [
+        {
+            "time": int(df["time"].iloc[i]),
+            "adx": round(float(adx_df["adx"].iloc[i]), 2) if pd.notna(adx_df["adx"].iloc[i]) else None,
+            "plus_di": round(float(adx_df["plus_di"].iloc[i]), 2) if pd.notna(adx_df["plus_di"].iloc[i]) else None,
+            "minus_di": round(float(adx_df["minus_di"].iloc[i]), 2) if pd.notna(adx_df["minus_di"].iloc[i]) else None,
+        }
+        for i in range(n)
+    ]
+    return {"period": period, "series": series}
+
+
+# ----------------------------------------------------------------------- halftrend
+def _build_halftrend(df: pd.DataFrame, params: dict | None) -> dict | None:
+    """Compute HalfTrend markers for the chart overlay path.
+
+    Delegates to the registered ``halftrend`` strategy's overlay builder
+    (``strategy.get("halftrend").overlay_fn``) so the math stays in one place —
+    the same function the registry-driven ``build_overlays`` now calls. Kept as
+    a stable name for callers/tests that import it directly.
+    """
+    from ntrade.registry import strategy as _strategy_reg
+    spec = _strategy_reg.get("halftrend")
+    if spec.overlay_fn is None:
         return None
-    markers = []
-    # ponytail: skip ATR warmup — trend flips before atr_period are on
-    # uninitialized state and produce spurious signals
-    for i in range(apt, len(out)):
-        row = out.iloc[i]
-        prev = out.iloc[i - 1]
-        if pd.notna(row.get("buySignal")) and bool(row["buySignal"]):
-            markers.append({
-                "index": int(i),
-                "time": int(df["time"].iloc[i]),
-                "side": "BUY",
-                "price": round(float(df["close"].iloc[i]), 4),
-                "ht": round(float(row["ht"]), 4) if pd.notna(row["ht"]) else None,
-                "trend": int(row["trend"]),
-            })
-        elif pd.notna(row.get("sellSignal")) and bool(row["sellSignal"]):
-            markers.append({
-                "index": int(i),
-                "time": int(df["time"].iloc[i]),
-                "side": "SELL",
-                "price": round(float(df["close"].iloc[i]), 4),
-                "ht": round(float(row["ht"]), 4) if pd.notna(row["ht"]) else None,
-                "trend": int(row["trend"]),
-            })
-    return {
-        "id": "halftrend",
-        "markers": markers,
-        "series": {
-            "ht": [round(float(x), 4) if pd.notna(x) else None
-                   for x in out["ht"].tolist()],
-            "trend": [int(x) for x in out["trend"].tolist()],
-            "atrHigh": [round(float(x), 4) if pd.notna(x) else None
-                        for x in out["atrHigh"].tolist()],
-            "atrLow": [round(float(x), 4) if pd.notna(x) else None
-                       for x in out["atrLow"].tolist()],
-        },
-    }
+    return spec.overlay_fn(df, params)
 
 
 # -------------------------------------------------------------------- pipeline
@@ -239,11 +219,22 @@ def build_overlays(
         dto.vwap = None
 
     dto.volume_profile = _build_volume_profile(df, session)
+    dto.adx = _build_adx(df)
 
     if strategy_id:
-        if strategy_id == "halftrend":
-            dto.strategy = _build_halftrend(df, strategy_params) or {
-                "id": "halftrend", "markers": [], "series": {"ht": [], "trend": [], "atrHigh": [], "atrLow": []}}
+        from ntrade.registry import strategy as _strategy_reg
+        if strategy_id not in _strategy_reg:
+            raise KeyError(
+                f"unknown strategy_id {strategy_id!r}; available: "
+                f"{sorted(_strategy_reg.registry)}"
+            )
+        spec = _strategy_reg.get(strategy_id)
+        if spec.overlay_fn is not None:
+            dto.strategy = spec.overlay_fn(df, strategy_params) or {
+                "id": strategy_id, "markers": [], "series": {}
+            }
+        # Strategies without a custom overlay (e.g. orb_vwap) still get an
+        # empty marker block so the chart can render indicator series it reads.
 
     return dto
 

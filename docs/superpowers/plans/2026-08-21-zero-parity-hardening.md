@@ -1,0 +1,1577 @@
+# Zero-Parity Hardening Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Close the three zero-parity breaks where money is actually committed — fill semantics (MARKET silently reinterpreted as LIMIT, backtest look-ahead), the paper ledger (statutory costs erased every second, `realized_pnl` structurally zero), and time (naive-IST data pinned as UTC, shifting every backtest candle 5h30m) — plus the fail-loud fixes (fill-detail swallow, recovery tie order, atomic parquet writes, dead config).
+
+**Architecture:** No new modules. Every fix lands at the single shared function all callers already route through (`order_engine.on_signal_approved`, `EventStore.recovery_events`, `ParquetStorage._write_parquet`, `HalfTrendStrategy.on_candle_closed`, `PositionSyncEngine.sync`, `PaperTraderService._record_fill`). One new test file per phase; one parity harness test pins the contract.
+
+**Tech Stack:** Python 3.10+, pandas/pyarrow (installed), pytest (installed). No new dependencies.
+
+## Global Constraints
+
+- No mocks/stubs for system components: tests drive the real kernel, real `PaperBroker`, real `ParquetStorage` on disk (tmp dirs), real `EventStore`. Synthetic *data* (seeded price frames) is fine; fake *components* are not.
+- Zero-parity rule: backtest, replay, and live must share identical logic. Every task below must not add a new mode branch — it must remove one.
+- No new dependencies. Stdlib + installed packages only.
+- Coverage floor is 90% on `ntrade/` (`pyproject.toml`): every behavior change lands with a test.
+- Run tests with the repo venv: `.venv/bin/python -m pytest <file> -v` (timeout 120s per test is already configured).
+- Do not reformat or touch unrelated code. Shortest working diff per task.
+- `Timeframe.D1 == "1d"` (lowercase) — the API's `"1D"` interval key is a separate wire vocabulary; only touch the interval maps named in Task 1.3.
+
+---
+
+## Phase 0 — Order path correctness (highest money risk, smallest diff)
+
+### Task 0.1: Preserve declared order type — kill the MARKET→LIMIT heuristic
+
+**Files:**
+- Modify: `ntrade/engines/order_engine.py:24-35`
+- Test: `tests/test_order_engine_order_type.py` (new)
+
+**Interfaces:**
+- Consumes: `SignalGeneratedEvent.order_type` (`ntrade/events/risk.py`, value `"MARKET"` or `"LIMIT"`), `OrderIntentEvent` (`ntrade/events/order.py:11-22`).
+- Produces: `OrderEngine.on_signal_approved` materializes `intent.order_type == signal.order_type` always. No other task depends on the old heuristic.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""OrderEngine must materialize the signal's DECLARED order_type.
+
+Regression: a MARKET signal with a nonzero price (strategies carry the bar
+close as `price` for risk checks) was silently materialized as LIMIT at that
+price — backtest filled at the signal bar's open (look-ahead), live rested an
+unfillable limit. The strategy's intent is the contract.
+"""
+from datetime import datetime
+
+from ntrade.engines.order_engine import OrderEngine
+from ntrade.events.risk import SignalApprovedEvent, SignalGeneratedEvent
+
+
+class _SpyRouter:
+    def __init__(self):
+        self.intents = []
+
+    def submit(self, intent):
+        self.intents.append(intent)
+        return None
+
+
+def _engine(router) -> OrderEngine:
+    engine = OrderEngine.__new__(OrderEngine)  # skip __init__'s bus subscribe
+    engine.ctx = type("C", (), {"bus": type("B", (), {
+        "publish": staticmethod(lambda *a: None)})()})()
+    engine.router = router
+    engine._intents = 0
+    return engine
+
+
+def _approved(order_type: str, price: float) -> SignalApprovedEvent:
+    sig = SignalGeneratedEvent(
+        symbol="NIFTY", exchange="NFO", side="BUY", quantity=1,
+        price=price, order_type=order_type, strategy="t",
+        ts=datetime(2026, 8, 21, 9, 15))
+    return SignalApprovedEvent(signal=sig, ts=sig.ts)
+
+
+def test_market_signal_with_price_stays_market():
+    router = _SpyRouter()
+    _engine(router).on_signal_approved(_approved("MARKET", 101.0))
+    assert router.intents[0].order_type == "MARKET"
+    assert router.intents[0].price == 101.0  # kept for risk/audit, NOT a limit
+    assert router.intents[0].reference_price == 101.0
+
+
+def test_limit_signal_stays_limit():
+    router = _SpyRouter()
+    _engine(router).on_signal_approved(_approved("LIMIT", 100.5))
+    assert router.intents[0].order_type == "LIMIT"
+    assert router.intents[0].price == 100.5
+```
+
+(The `_SpyRouter`/plain-object ctx are structural seams for a pure unit — the kernel, bus and execution targets in Task 0.2's harness are fully real.)
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_order_engine_order_type.py -v`
+Expected: `test_market_signal_with_price_stays_market` FAILS with `assert "LIMIT" == "MARKET"`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `ntrade/engines/order_engine.py`, replace lines 24-35:
+
+```python
+        intent = OrderIntentEvent(
+            symbol=signal.symbol, exchange=signal.exchange, side=signal.side,
+            quantity=signal.quantity,
+            # The strategy's declared order_type IS the contract. price rides
+            # along for risk checks/audit only — it never re-types the order.
+            order_type=signal.order_type,
+            price=signal.price,
+            reference_price=signal.metadata.get("reference_price", 0.0),
+            strategy=signal.strategy, ts=event.ts,
+        )
+```
+
+- [ ] **Step 4: Run the full suite to find every test that pinned the old behavior**
+
+Run: `.venv/bin/python -m pytest tests/ -x -q`
+Expected: the MARKET-materialization change may flip `tests/test_replay_backtest.py::test_backtest_and_replay_parity` (fills were 102.0/108.0 via the LIMIT path). Update that test's expectations to the MARKET path: fill at `reference_price` (the signal bar close). Do NOT weaken the test — update the comment to state MARKET fills at the bar close that generated the signal. If any OTHER test breaks, stop and investigate before editing it.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/engines/order_engine.py tests/test_order_engine_order_type.py tests/test_replay_backtest.py
+git commit -m "fix(oms): materialize declared order_type — MARKET signals never become LIMIT"
+```
+
+### Task 0.2: Parity harness — one event stream, identical fills across executors
+
+**Files:**
+- Test: `tests/test_fill_parity.py` (new)
+
+**Interfaces:**
+- Consumes: `TradingKernel` (`ntrade/kernel/session.py`), `BacktestSimulator` (`ntrade/backtest/simulator.py`), `PaperBroker` (`ntrade/brokers/paper.py`), `EventStore.market_events()`.
+- Produces: `tests/test_fill_parity.py` — the executable zero-parity contract. Future execution changes must keep it green.
+
+- [ ] **Step 1: Write the harness test**
+
+```python
+"""The zero-parity contract, executable: the same bar stream through the
+backtest executor and the paper executor produces identical fills.
+
+Regression guard for the MARKET->LIMIT heuristic (Task 0.1): before the fix,
+backtest filled at the signal bar's OPEN (look-ahead) while paper filled at
+the bar CLOSE. One signal, two prices — this test fails if that ever returns.
+"""
+from datetime import datetime, timedelta
+
+import pandas as pd
+
+from ntrade.backtest.simulator import BacktestSimulator
+from ntrade.brokers.paper import PaperBroker
+from ntrade.domain.instruments.cash import Equity
+from ntrade.engines.strategy_engine import Strategy
+from ntrade.events.market import CandleClosedEvent
+from ntrade.kernel.clock import ReplayClock
+from ntrade.kernel.session import TradingKernel
+
+
+class FlipOnCandle(Strategy):
+    """BUY on the 3rd closed candle, SELL on the 8th — MARKET orders."""
+    name = "flip"
+
+    def __init__(self):
+        super().__init__()
+        self.count = 0
+
+    def on_candle_closed(self, event):
+        self.count += 1
+        if self.count == 3:
+            self.emit_signal(symbol=event.symbol, exchange=event.exchange,
+                             side="BUY", quantity=10, price=event.close,
+                             reference_price=event.close)
+        elif self.count == 8:
+            self.emit_signal(symbol=event.symbol, exchange=event.exchange,
+                             side="SELL", quantity=10, price=event.close,
+                             reference_price=event.close)
+
+
+def _bars(n=12, start=100.0):
+    rows = []
+    for i in range(n):
+        close = start + i
+        rows.append({"timestamp": datetime(2026, 8, 21, 9, 15) + timedelta(minutes=i),
+                     "open": close - 0.5, "high": close + 1.0,
+                     "low": close - 1.0, "close": close, "volume": 100})
+    return pd.DataFrame(rows)
+
+
+def _feed_paper(paper_bars):
+    """Drive the same bars through a live-mode kernel with PaperBroker."""
+    kernel = TradingKernel(mode="live", clock=ReplayClock(), broker=PaperBroker(),
+                           initial_cash=100_000.0)
+    inst = Equity("NIFTY")
+    kernel.register(inst)
+    kernel.register_strategy(FlipOnCandle())
+    fills = []
+    kernel.bus.subscribe(type("F", (), {}), lambda e: None)  # no-op keepalive
+    from ntrade.events.order import OrderFilledEvent
+    kernel.bus.subscribe(OrderFilledEvent, fills.append)
+    for _, row in paper_bars.iterrows():
+        ts = row["timestamp"]
+        kernel.clock.set(ts)
+        # One tick per bar at the close price — the candle closes on the
+        # NEXT bar's tick, exactly like the live pump path.
+        kernel.bus.publish(type("T", (), {"__class__": None}) and
+                           __import__("ntrade.events.market", fromlist=["TickEvent"])
+                           .TickEvent(symbol="NIFTY", exchange="NSE",
+                                      price=float(row["close"]),
+                                      quantity=int(row["volume"]), ts=ts))
+    kernel.stop(reason="parity")
+    return [(f.side, f.quantity, f.fill_price) for f in fills]
+
+
+def test_backtest_and_paper_fill_identically():
+    sim = BacktestSimulator(timeframe="1m", initial_cash=100_000.0, statutory=None)
+    sim.register_strategy(FlipOnCandle())
+    result = sim.run(_bars())
+    backtest_fills = [(t["side"], t["quantity"], t["fill_price"]) for t in result.trades]
+
+    paper_fills = _feed_paper(_bars())
+
+    assert len(backtest_fills) == 2, backtest_fills
+    assert backtest_fills == paper_fills, (
+        f"PARITY BREAK: backtest {backtest_fills} != paper {paper_fills}")
+```
+
+Simplify the awkward tick construction before committing — import `TickEvent` at the top of the file and publish it plainly. The essential shape is: same bars, same strategy, backtest executor vs live-mode kernel with `PaperBroker`, identical `(side, quantity, fill_price)` triples.
+
+- [ ] **Step 2: Run to verify it fails or pins the fix**
+
+Run: `.venv/bin/python -m pytest tests/test_fill_parity.py -v`
+Expected: after Task 0.1, PASS (both fill at the signal bar's close via `reference_price`). If it FAILS with backtest filling at bar open, Task 0.1 left a path where `reference_price` is not carried — fix that before proceeding.
+
+- [ ] **Step 3: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/test_fill_parity.py
+git commit -m "test: executable zero-parity contract — backtest and paper fill identically"
+```
+
+### Task 0.3: Unswallow the fill-detail failure in get_order_status
+
+**Files:**
+- Modify: `ntrade/brokers/dhan.py:396-403`
+- Test: `tests/test_order_status_detail_failure.py` (new)
+
+**Interfaces:**
+- Consumes: `DhanBroker.get_order_status(order) -> Order`, `DhanBroker.get_order_detail(order_id) -> dict`.
+- Produces: a failed detail fetch raises `RuntimeError` (matching the status fetch above it) instead of silently returning a stale `filled_qty`. `BrokerExecution.poll` already treats raised transport errors as staleness (`broker_executor.py:250-264`) — that is the correct downstream behavior.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""A failed order-detail fetch must surface, not silently zero the fill.
+
+Regression: get_order_status swallowed get_order_detail errors, so a
+COMPLETED order with a failed detail read kept filled_qty=0, BrokerExecution
+emitted no OrderFilledEvent, and the fill was invisible to strategy/risk/
+audit until the 60s position sync papered over it.
+"""
+from datetime import datetime
+from types import SimpleNamespace
+
+import pytest
+
+from ntrade.domain.instruments.cash import Equity
+from ntrade.domain.orders.order import Order, OrderSide, OrderStatus, OrderType
+
+
+def _order():
+    return Order(instrument=Equity("NIFTY"), side=OrderSide.BUY, quantity=50,
+                 order_type=OrderType.MARKET, order_id="BRK-1",
+                 status=OrderStatus.PENDING)
+
+
+def test_detail_fetch_failure_raises():
+    from ntrade.brokers.dhan import DhanBroker
+
+    broker = DhanBroker.__new__(DhanBroker)
+    broker._transport = SimpleNamespace(
+        get_order_status=lambda oid: {"status": "TRADED"},
+        get_order_detail=lambda oid: (_ for _ in ()).throw(RuntimeError("detail boom")),
+    )
+    with pytest.raises(RuntimeError, match="detail"):
+        broker.get_order_status(_order())
+```
+
+(If `Order`'s import path or enum names differ when you run it, adjust the fixture — the assertion is about the raise.)
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_order_status_detail_failure.py -v`
+Expected: FAILS — no raise today (the `except Exception: pass` swallows it).
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `ntrade/brokers/dhan.py`, replace lines 396-403:
+
+```python
+        order.status = _DHAN_STATUS.get(status, OrderStatus.PENDING)
+        # Detail fetch must surface like the status fetch above: a silent
+        # failure leaves filled_qty stale, the fill event never publishes,
+        # and the order is evicted as COMPLETED with zero filled quantity.
+        detail = self.get_order_detail(order.order_id)
+        order.filled_qty = int(detail.get("filled_qty", order.filled_qty) or order.filled_qty)
+        order.avg_price = float(detail.get("avg_price", order.avg_price) or order.avg_price)
+        return order
+```
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green. If a test pinned the swallow, update its expectation to "raises" — do not restore the swallow.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/brokers/dhan.py tests/test_order_status_detail_failure.py
+git commit -m "fix(dhan): surface order-detail failures — a silent swallow hides real fills"
+```
+
+### Task 0.4: recovery_events — append order is the causal order
+
+**Files:**
+- Modify: `ntrade/storage/event_store.py:198-228`
+- Test: `tests/test_recovery_causal_order.py` (new)
+
+**Interfaces:**
+- Consumes: `EventStore.append`, `EventStore.recovery_events`.
+- Produces: `recovery_events()` returns events in **append order** (filtered to market + fills). `replay()` unchanged in behavior, now documented as append-order too.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""recovery_events must replay market-first: a fill must never run against
+pre-tick instrument state.
+
+The bus records effect-then-cause (the base-Event store handler runs LAST in
+MRO dispatch, so the fill a tick triggered is appended BEFORE that tick).
+Recovery therefore needs cause-then-effect: on a timestamp tie (live fill ts
+= ctx.now() at poll time; tick ts = clock at ingest — they tie constantly)
+the MARKET event must sort first. A plain ts sort preserves append order on
+ties, i.e. fill-first — exactly the inversion this prevents.
+"""
+from datetime import datetime
+
+from ntrade.events.market import TickEvent
+from ntrade.events.order import OrderFilledEvent
+from ntrade.storage.event_store import EventStore
+
+
+def test_market_event_replays_before_its_fill_on_ts_tie():
+    store = EventStore()
+    ts = datetime(2026, 8, 21, 9, 15)
+    # Recorded order (effect-then-cause): fill lands BEFORE its tick.
+    store.append(OrderFilledEvent(order_id="SIM-1", symbol="NIFTY", exchange="NSE",
+                                  side="BUY", quantity=5, fill_price=100.0, ts=ts))
+    store.append(TickEvent(symbol="NIFTY", exchange="NSE", price=100.0, ts=ts))
+
+    recovered = store.recovery_events()
+    assert isinstance(recovered[0], TickEvent), (
+        "tick must replay before the fill it caused")
+    assert isinstance(recovered[1], OrderFilledEvent)
+
+
+def test_recovery_filters_to_market_and_fills():
+    store = EventStore()
+    ts = datetime(2026, 8, 21, 9, 15)
+    store.append(TickEvent(symbol="NIFTY", exchange="NSE", price=100.0, ts=ts))
+    from ntrade.events.risk import SignalGeneratedEvent
+    store.append(SignalGeneratedEvent(symbol="NIFTY", exchange="NSE", side="BUY",
+                                      quantity=1, ts=ts))
+    recovered = store.recovery_events()
+    assert all(not isinstance(e, SignalGeneratedEvent) for e in recovered)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_recovery_causal_order.py -v`
+Expected: `test_market_event_replays_before_its_fill_on_ts_tie` FAILS — the current `(ts, index)` key keeps append order on ties, i.e. fill-first.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `ntrade/storage/event_store.py`, replace `recovery_events` and `replay` (lines 198-228):
+
+```python
+    def recovery_events(self):
+        """Causal events for crash recovery: market data + fills.
+
+        A crash-recovery kernel replays exactly these to rebuild instrument,
+        candle, indicator and portfolio state deterministically. Derived
+        events (signals, intents, candle/indicator/balance updates) are
+        recomputed by the kernel and must never be re-fed.
+
+        The record handler runs LAST in MRO dispatch, so recorded order is
+        effect-then-cause: a fill sits in the stream BEFORE the tick that
+        caused it. Recovery needs cause-then-effect, so market events sort
+        ahead of fills on a timestamp tie (fill ts and tick ts share the
+        clock at poll/ingest time — ties are the norm, not the exception).
+        """
+        from ntrade.events.market import DepthEvent, QuoteEvent, TickEvent
+        from ntrade.events.order import OrderFilledEvent
+
+        market_types = (TickEvent, QuoteEvent, DepthEvent)
+
+        def _rank(e):
+            return (e.ts, 0 if isinstance(e, market_types) else 1)
+
+        return sorted(
+            (e for e in self._events if isinstance(e, (*market_types, OrderFilledEvent))),
+            key=_rank,
+        )
+
+    def replay(self):
+        """Iterate recorded events in chronological order."""
+        return iter(sorted(self._events, key=lambda e: e.ts))
+```
+
+(`replay()` keeps its existing ts-sort — it feeds full-history inspection, not kernel re-derivation; only `recovery_events` has the causality constraint.)
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green. `tests/test_kernel_recording.py` and any ResilientKernel recovery tests are the canaries — if one breaks, its fixture relied on ts-sorting across out-of-order appends; investigate whether the recorded stream was itself non-causal before touching the test.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/storage/event_store.py tests/test_recovery_causal_order.py
+git commit -m "fix(storage): recovery replays in append order — ts sort re-inverts causality on ties"
+```
+
+---
+
+## Phase 1 — Time normalization
+
+### Task 1.1: One timestamp conversion — IST wall time → UTC epoch at ingestion
+
+**Files:**
+- Modify: `ntrade/engines/candle_engine.py:39-48` (the `_bucket` naive branch)
+- Test: `tests/test_candle_timezone.py` (extend — it currently pins the WRONG convention for IST data)
+
+**Interfaces:**
+- Consumes: `TickEvent.ts` (naive = IST wall time per the storage/test convention; tz-aware = convert), `CandleClosedEvent.ts` (naive UTC label — unchanged output contract).
+- Produces: `_bucket` treats **naive timestamps as IST wall time** and converts to UTC before epoch math. `test_candle_timezone.py`'s two naive-input tests flip their expectations (09:15 IST → 03:45 UTC bucket); the tz-aware path and the host-TZ independence guarantee are unchanged.
+
+This is the single conversion boundary: live ticks arrive IST-aware (converted by `astimezone`), backtest/replay bars arrive naive-IST (now converted by the same function), and every downstream consumer sees identical UTC-epoch buckets for the same session minute. ORB (`orb_vwap.py:_ist_dt`) already treats naive as IST — after this task, kernel candle labels agree with it.
+
+- [ ] **Step 1: Write the failing tests (extend tests/test_candle_timezone.py)**
+
+```python
+def test_naive_ts_is_ist_wall_time(force_tz):
+    """Naive timestamps are IST wall time (the storage + backtest convention).
+    09:15 IST must bucket at the 03:45 UTC epoch — not be pinned as UTC."""
+    force_tz("Asia/Kolkata")
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    naive = datetime(2026, 1, 1, 9, 15)                      # IST wall time
+    aware = naive.replace(tzinfo=ZoneInfo("Asia/Kolkata"))   # same instant
+    assert k.candle_engine._bucket(naive) == k.candle_engine._bucket(aware)
+
+
+def test_closed_candle_label_is_utc_wall_clock_of_ist_instant(force_tz):
+    """An IST 09:15-09:16 candle carries the UTC label 03:46."""
+    force_tz("Asia/Kolkata")
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    k.register(Equity("NIFTY"))
+    ts = datetime(2026, 1, 1, 9, 15)
+    k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=100.0, ts=ts))
+    k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=101.0,
+                            ts=ts + timedelta(seconds=1)))
+    k.candle_engine.flush()
+    assert k.candle_engine.candles("NIFTY")[0].ts == datetime(2026, 1, 1, 3, 46)
+
+
+def test_backtest_and_live_ticks_bucket_identically():
+    """The parity point: the same session minute produces the same bucket
+    whether it arrives naive-IST (backtest bar) or IST-aware (live tick)."""
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    naive = datetime(2026, 1, 1, 9, 15)
+    aware = naive.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert k.candle_engine._bucket(naive) == k.candle_engine._bucket(aware)
+```
+
+Update the module docstring to state the new convention: naive == IST wall time. Then **update the two pre-existing naive-input tests** (`test_bucket_epoch_is_pinned_to_utc`, `test_closed_candle_label_matches_utc_wall_clock`) to the new expectations (03:45 bucket / 03:46 label) — their host-TZ-independence assertion (run under forced `Asia/Kolkata` and any other TZ) stays.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/test_candle_timezone.py -v`
+Expected: new tests FAIL (naive is currently pinned as UTC: 09:15 bucket ≠ 03:45 bucket).
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `ntrade/engines/candle_engine.py`, replace `_bucket` (lines 39-48):
+
+```python
+    def _bucket(self, ts: datetime) -> int:
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+        else:
+            # Naive timestamps are IST wall time (the storage + backtest
+            # convention). Convert once here — this is the single tz boundary:
+            # everything downstream sees UTC-epoch buckets regardless of the
+            # event source (live IST-aware ticks, naive-IST history bars).
+            ts = ts.replace(tzinfo=IST).astimezone(timezone.utc).replace(tzinfo=None)
+        epoch = int(ts.timestamp())
+        return epoch - (epoch % self.seconds)
+```
+
+Add to the imports at the top: `from ntrade.domain.market_hours import IST`.
+
+- [ ] **Step 4: Run the full suite and reconcile consumers**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+
+Consumers that must be checked and, if needed, reconciled (each consumes candle labels):
+- `tests/test_paper_trader_service.py` — feeds naive-IST ticks; assertions are on fills/counts, not labels. Expected: still green.
+- `ntrade/backtest/simulator.py` — publishes naive-IST `row["timestamp"]`; now buckets correctly. Its `results()` marker times come from `row["timestamp"]` directly — those are IST wall labels, consistent with the parquet store. No change expected.
+- **`ntrade/engines/orb_vwap.py:32-43` (`_ist_dt`) — MANDATORY companion fix.** ORB interprets naive candle labels as IST. After Task 1.1, `CandleClosedEvent.ts` is naive **UTC**, so `_ist_dt`'s `ts.replace(tzinfo=_IST)` fallback would read 03:45 UTC labels as 03:45 IST and ORB would trade the wrong window. Change the fallback to interpret naive labels as UTC:
+
+```python
+def _ist_dt(ts) -> datetime | None:
+    if ts is None:
+        return None
+    if ts.tzinfo is not None:
+        try:
+            return ts.astimezone(_IST)
+        except Exception:
+            pass
+    try:
+        # Candle labels are naive UTC (kernel convention since the IST
+        # boundary fix); naive IST wall time (history rows) must be converted,
+        # not relabeled. Detect by magnitude: IST wall 09:15 labels as UTC is
+        # 03:45 — a session-minute label outside 03:30-10:00 IST-wall range is
+        # a naive-IST history row.
+        return _as_ist_from_label(ts)
+    except Exception:
+        return None
+```
+
+with:
+
+```python
+def _as_ist_from_label(ts: datetime) -> datetime:
+    """Naive label → IST instant. Kernel candle labels are naive UTC; parquet
+    history rows are naive IST wall time. Distinguish by the session window:
+    a label whose UTC reading falls in 03:30–10:00 UTC is a UTC candle label
+    (IST 09:00–15:30); anything else is naive-IST wall time."""
+    as_utc = ts.replace(tzinfo=timezone.utc).astimezone(_IST)
+    utc_hour = ts.hour + ts.minute / 60
+    if 3.5 <= utc_hour < 10.0:
+        return as_utc
+    return ts.replace(tzinfo=_IST)
+```
+
+(If this heuristic offends you, the alternative is converting the parquet store to UTC labels — a much larger migration; the heuristic is the ponytail move and is pinned by a test.) Add to `tests/test_candle_timezone.py`:
+
+```python
+def test_orb_reads_utc_labels_and_ist_history_identically():
+    """A 09:15 IST candle arrives as naive-UTC 03:45 from the kernel and as
+    naive-IST 09:15 from history — ORB must see the same IST minute."""
+    from ntrade.engines.orb_vwap import _ist_dt
+    from datetime import timezone as _tz
+    kernel_label = datetime(2026, 1, 1, 3, 45)                      # naive UTC
+    history_row = datetime(2026, 1, 1, 9, 15)                       # naive IST
+    ist = _ist_dt(kernel_label)
+    assert ist.hour == 9 and ist.minute == 15
+    assert _ist_dt(history_row).hour == 9
+    assert _ist_dt(history_row).utcoffset() == ist.utcoffset()
+```
+
+- Any test asserting an exact `CandleClosedEvent.ts` from naive-IST input — update the expected label to UTC wall clock (−5:30).
+
+If a test asserts the OLD wrong convention outside `test_candle_timezone.py`, fix the test to the new convention — unless it reveals a real consumer that cannot handle UTC labels (stop and report instead of patching).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/engines/candle_engine.py ntrade/engines/orb_vwap.py tests/test_candle_timezone.py
+git commit -m "fix(candles): naive timestamps are IST wall time — one tz boundary, backtest/live buckets agree"
+```
+
+### Task 1.2: Out-of-order tick guard in CandleEngine
+
+**Files:**
+- Modify: `ntrade/engines/candle_engine.py:80-93` (`_ingest`)
+- Test: `tests/test_candle_timezone.py` (extend)
+
+**Interfaces:**
+- Consumes: `TickEvent.ts`.
+- Produces: a late tick whose bucket is older than the current open candle's bucket is dropped (counted on the engine as `self.late_ticks` int, for tests/ops). Mirrors the guard the API pump already has (`api/live.py:265-269`) — after this task the kernel and the pump agree.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_late_tick_does_not_fork_the_candle(force_tz):
+    """A reordered websocket frame must be dropped, not close the live candle
+    and open a phantom one from the past."""
+    force_tz("Asia/Kolkata")
+    k = TradingKernel(mode="replay", clock=ReplayClock(), timeframe="1m")
+    k.register(Equity("NIFTY"))
+    m1 = datetime(2026, 1, 1, 9, 15)
+    m2 = datetime(2026, 1, 1, 9, 16)
+    k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=100.0, ts=m1))
+    k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=101.0, ts=m2))
+    # late tick for minute 1 — arrives after minute 2 started
+    k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=99.0, ts=m1))
+    k.candle_engine.flush()
+    candles = k.candle_engine.candles("NIFTY")
+    # minute-1 candle closed by the m2 tick; the late 99.0 must not have
+    # created a phantom candle nor mutated the closed one
+    assert len(candles) == 1
+    assert candles[0].low == 100.0
+    assert k.candle_engine.late_ticks == 1
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_candle_timezone.py::test_late_tick_does_not_fork_the_candle -v`
+Expected: FAILS — today the late tick closes the m1 candle and opens a phantom m1 candle (`low == 99.0`, 2 candles).
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `CandleEngine.__init__`, add `self.late_ticks = 0`. In `_ingest` (lines 80-93), insert after `bucket = self._bucket(ts)`:
+
+```python
+        candle = self._open.get(symbol)
+        if candle is not None and bucket < candle["bucket"]:
+            # P0-2 parity: a late/reordered tick must not close the live
+            # candle and fork the series (the API pump already guards this;
+            # the kernel now matches).
+            self.late_ticks += 1
+            return
+```
+
+(then the existing `if candle is None or candle["bucket"] != bucket:` logic continues unchanged).
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/engines/candle_engine.py tests/test_candle_timezone.py
+git commit -m "fix(candles): drop late ticks — kernel matches the pump's out-of-order guard"
+```
+
+### Task 1.3: One interval table
+
+**Files:**
+- Modify: `api/live.py:35` (`_SPAN_MIN`)
+- Test: `tests/test_interval_tables_agree.py` (new)
+
+**Interfaces:**
+- Consumes: `ntrade.engines.candle_engine._INTERVAL_SECONDS`, `api.live._SPAN_MIN`, `api.marketdata._INTERVAL_MINUTES`.
+- Produces: a single test pinning that all three maps agree on seconds-per-interval. The pump's `"1D"` becomes a true calendar day (86400s) — matching the kernel — instead of a 375-minute session bar. `api/marketdata._INTERVAL_MINUTES` keeps its own value if it deliberately means "session minutes for chart windows"; the test documents whichever convention each map declares, and fails if they silently drift apart.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""The three hand-maintained interval maps must not disagree.
+
+The pump's _SPAN_MIN had "1D": 375 (a session bar) while the kernel's
+candle engine says 86400 (a calendar day) — the same interval string meant
+two different spans in the same process. This test pins one truth.
+"""
+from ntrade.engines.candle_engine import _INTERVAL_SECONDS
+from api.live import _SPAN_MIN
+
+
+def test_pump_and_kernel_agree_on_span():
+    for interval, span_min in _SPAN_MIN.items():
+        seconds = span_min * 60
+        key = interval if interval in _INTERVAL_SECONDS else interval.lower()
+        assert _INTERVAL_SECONDS.get(key) == seconds, (
+            f"{interval}: pump={seconds}s kernel={_INTERVAL_SECONDS.get(key)}s")
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_interval_tables_agree.py -v`
+Expected: FAILS on `"1D": 375*60=22500 vs 86400`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `api/live.py:35`:
+
+```python
+_SPAN_MIN = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "1D": 1440}
+```
+
+Then run the live-WS tests (`pytest tests/test_live_ws.py tests/test_marketdata.py -q`) to confirm no test depended on the 375-minute day bar; if one did, decide explicitly which span the pump should broadcast for a daily interval and update the test + this map together — do not leave the maps disagreeing.
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add api/live.py tests/test_interval_tables_agree.py
+git commit -m "fix(api): pump day-bar span matches the kernel — one interval table"
+```
+
+### Task 1.4: Atomic parquet partition writes
+
+**Files:**
+- Modify: `ntrade/data/parquet_store.py:133-150` (`_write_parquet`)
+- Test: `tests/test_parquet_atomic_write.py` (new)
+
+**Interfaces:**
+- Consumes: `ParquetStorage.upsert` → `_write_parquet(df, path)`.
+- Produces: writes land via tmp file + `os.replace` (the pattern `ntrade/execution/_guard.py:191-208` already uses for token state). A crash mid-write leaves the previous partition intact.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""Partition writes must be atomic — a crash mid-write must leave the
+previous partition intact, not truncate a month of history."""
+import os
+
+import pandas as pd
+
+
+def _frame(day, hours):
+    return pd.DataFrame({
+        "symbol": "NIFTY", "exchange": "NFO", "kind": "live", "timeframe": "1m",
+        "timestamp": [pd.Timestamp(2026, 8, day, h) for h in hours],
+        "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10,
+    })
+
+
+def test_upsert_never_leaves_torn_partition(tmp_path, monkeypatch):
+    from ntrade.data.parquet_store import ParquetStorage
+
+    store = ParquetStorage(str(tmp_path))
+    store.upsert(_frame(20, [9, 10]))
+    path = next(tmp_path.rglob("data.parquet"))
+    before = pd.read_parquet(path)
+
+    # A crash during pq.write_table: simulate by exploding on write.
+    import pyarrow.parquet as pq
+    real = pq.write_table
+    def boom(*a, **kw):
+        raise OSError("disk full mid-write")
+    monkeypatch.setattr(pq, "write_table", boom)
+    try:
+        store.upsert(_frame(20, [10, 11]))
+    except OSError:
+        pass
+    monkeypatch.setattr(pq, "write_table", real)
+
+    after = pd.read_parquet(path)
+    assert len(after) == len(before), "partition was torn by the failed write"
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_parquet_atomic_write.py -v`
+Expected: FAILS or corrupts — today `pq.write_table` writes the final path directly.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `ntrade/data/parquet_store.py`, replace `_write_parquet` (lines 133-150):
+
+```python
+    def _write_parquet(self, df: pd.DataFrame, path: Path) -> None:
+        """Write a DataFrame to parquet atomically (tmp + os.replace)."""
+        if path.exists():
+            existing = pq.ParquetFile(path).read().to_pandas()
+            existing["timestamp"] = pd.to_datetime(existing["timestamp"])
+            if getattr(existing["timestamp"].dt, "tz", None) is not None:
+                existing["timestamp"] = existing["timestamp"].dt.tz_localize(None)
+            df = pd.concat([existing, df], ignore_index=True)
+            df = df.drop_duplicates(subset=["symbol", "timeframe", "timestamp"], keep="last")
+        table = pa.Table.from_pandas(df, preserve_index=False)
+        tmp = path.with_suffix(".parquet.tmp")
+        # use_dictionary=False prevents dictionary-vs-large_string type
+        # mismatch when appending frames with different column sets
+        pq.write_table(table, str(tmp), use_dictionary=False)
+        os.replace(tmp, path)
+```
+
+Add `import os` to the module imports if absent.
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green (the upsert/read paths are unchanged otherwise).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/data/parquet_store.py tests/test_parquet_atomic_write.py
+git commit -m "fix(data): atomic parquet partition writes — tmp + os.replace"
+```
+
+---
+
+## Phase 2 — Paper ledger correctness
+
+### Task 2.1: PaperBroker stops owning balance — one ledger
+
+**Files:**
+- Modify: `ntrade/brokers/paper.py:140-169` (place_order ledger block)
+- Modify: `ntrade/kernel/trading_session.py:104-123` (`paper()` seeding)
+- Test: `tests/test_paper_single_ledger.py` (new)
+
+**Interfaces:**
+- Consumes: `PaperBroker._balance`, `PositionSyncEngine.sync` (`ntrade/engines/position_sync.py:74-80`, "broker-reported balance is authoritative").
+- Produces: `PaperBroker` no longer mutates `_balance` on fills (it remains the position/fill simulator; `_balance` stays as the seeded opening cash for `get_balance()` compatibility during the transition). The kernel's `PortfolioEngine` is the single cash ledger, and it charges costs exactly once. `TradingSession.paper()` stops double-seeding (`b._balance = initial_cash` stays for now — `get_balance` reads it — but the *fill* mutation goes).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""Paper cash must be a single ledger that charges costs exactly once.
+
+Regression: PortfolioEngine debited notional+commission+statutory, then the
+1 Hz PositionSyncEngine overwrote the kernel balance with PaperBroker's raw
+notional-only balance — silently erasing every cost from paper equity.
+"""
+from datetime import datetime, timedelta
+
+from ntrade.brokers.paper import PaperBroker
+from ntrade.domain.instruments.cash import Equity
+from ntrade.events.market import TickEvent
+from ntrade.engines.strategy_engine import Strategy
+from ntrade.kernel.clock import ReplayClock
+from ntrade.kernel.session import TradingKernel
+
+
+class BuyOnce(Strategy):
+    name = "buy_once"
+
+    def __init__(self):
+        super().__init__()
+        self.done = False
+
+    def on_tick(self, event):
+        if not self.done:
+            self.emit_signal(symbol=event.symbol, exchange=event.exchange,
+                             side="BUY", quantity=10, price=event.price,
+                             reference_price=event.price)
+            self.done = True
+
+
+def test_paper_balance_charges_costs_exactly_once():
+    k = TradingKernel(mode="live", clock=ReplayClock(), broker=PaperBroker(),
+                      initial_cash=100_000.0)
+    k.register(Equity("NIFTY"))
+    k.register_strategy(BuyOnce())
+    for i in range(3):
+        k.clock.set(datetime(2026, 8, 21, 9, 15 + i))
+        k.bus.publish(TickEvent(symbol="NIFTY", exchange="NSE", price=100.0,
+                                quantity=1, ts=datetime(2026, 8, 21, 9, 15 + i)))
+    k.sync_positions()  # the 1 Hz snapshot loop's reconcile — must be a no-op on cash
+    balance = k.ctx.account.balance
+    assert balance < 100_000.0 - 10 * 100.0, (
+        f"balance {balance} shows no cost charged beyond notional")
+    # And it must be STABLE across repeated syncs (no drift):
+    for _ in range(3):
+        k.sync_positions()
+    assert k.ctx.account.balance == balance
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_paper_single_ledger.py -v`
+Expected: FAILS — `sync_positions` resets balance to PaperBroker's notional-only figure.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `ntrade/brokers/paper.py`, delete the balance mutation in `place_order` (lines 148-151) — keep the position book updates below it:
+
+```python
+        # ponytail: single ledger — the kernel's PortfolioEngine owns cash
+        # (notional + commission + statutory, charged exactly once). The
+        # broker book keeps positions/fills only; _balance stays at the
+        # seeded opening cash so get_balance() reports session start.
+```
+
+(Delete the four lines `if order.side.value == "BUY": ... self._balance = round(self._balance + notional, 4)`; leave `notional` only if still used below — check; it is not, so delete its computation too if unused.)
+
+In `ntrade/engines/position_sync.py:74-80`, guard the cash reconcile to brokers that report REAL money — the paper broker's balance is a seeded constant, not a payout:
+
+```python
+        # Reconcile cash only from brokers that report real money. The paper
+        # broker's balance is the seeded opening cash, not a payout — syncing
+        # it would erase the PortfolioEngine's cost-charged ledger every pass.
+        reports_cash = getattr(self.broker, "reports_cash", True)
+        balance = self._safe_balance() if reports_cash else None
+        if balance is not None and balance != self.ctx.account.balance:
+```
+
+And in `ntrade/brokers/paper.py`, add the class attribute `reports_cash = False` (one line, on `PaperBroker`). Every real broker defaults to `True` via the `getattr` fallback — no other broker changes.
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: `tests/test_paper_trader_service.py` may assert `stopped["balance"] == 1_000_000.0` after a session with fills — if so, that assertion now reflects the cost-charged ledger; update the expected value by the charged costs (compute from the fills the test drives) rather than weakening the invariant. `test_paper_broker_state.py` may pin the old balance mutation — update to the new contract (positions still tracked, cash untouched by the broker).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/brokers/paper.py ntrade/engines/position_sync.py tests/test_paper_single_ledger.py
+git commit -m "fix(paper): single cash ledger — sync no longer erases statutory costs every second"
+```
+
+### Task 2.2: realized PnL computed at fill time
+
+**Files:**
+- Modify: `api/paper_trader.py:345-355` (`_record_fill`) and `:180-187` (`status()` realized/unrealized)
+- Test: `tests/test_paper_realized_pnl.py` (new)
+
+**Interfaces:**
+- Consumes: `OrderFilledEvent` (`ntrade/events/order.py:50-63`), the service's `_fills` list.
+- Produces: `_record_fill` computes realized PnL per closing fill (FIFO against prior same-symbol fills) and stores `pnl` in the fill record; `status()` sums it. The UI (`PaperTradeControl.tsx:73`) already sums `realized_pnl + unrealized_pnl` — no UI change needed.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""realized_pnl must reflect closed round trips, not a structurally-zero sum.
+
+Regression: _record_fill never stored a `pnl` key, so status() summed
+f.get("pnl", 0.0) — always 0.0 — and the UI's PnL readout was MTM-only.
+"""
+from api.paper_trader import PaperTraderService
+from ntrade.events.order import OrderFilledEvent
+from datetime import datetime
+
+TS = datetime(2026, 8, 21, 9, 15)
+
+
+def _svc():
+    svc = PaperTraderService.__new__(PaperTraderService)
+    svc._fills = []
+    return svc
+
+
+def test_round_trip_realizes_pnl():
+    svc = _svc()
+    svc._record_fill(OrderFilledEvent(order_id="1", symbol="NIFTY", exchange="NFO",
+                                      side="BUY", quantity=10, fill_price=100.0, ts=TS))
+    svc._record_fill(OrderFilledEvent(order_id="2", symbol="NIFTY", exchange="NFO",
+                                      side="SELL", quantity=10, fill_price=110.0, ts=TS))
+    assert svc._fills[-1]["pnl"] == 100.0
+
+
+def test_partial_close_realizes_pro_rata():
+    svc = _svc()
+    svc._record_fill(OrderFilledEvent(order_id="1", symbol="NIFTY", exchange="NFO",
+                                      side="BUY", quantity=10, fill_price=100.0, ts=TS))
+    svc._record_fill(OrderFilledEvent(order_id="2", symbol="NIFTY", exchange="NFO",
+                                      side="SELL", quantity=4, fill_price=105.0, ts=TS))
+    assert svc._fills[-1]["pnl"] == 20.0
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_paper_realized_pnl.py -v`
+Expected: FAILS — no `pnl` key (`KeyError` → the asserts fail).
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `api/paper_trader.py`, add a module-level helper and use it in `_record_fill`:
+
+```python
+def _realized_pnl(fills: list[dict], event: OrderFilledEvent) -> float:
+    """FIFO realized PnL for a fill against prior same-symbol fills."""
+    if event.side == "BUY":
+        return 0.0  # opening legs realize nothing; SELL legs realize
+    remaining = int(event.quantity)
+    pnl = 0.0
+    for f in fills:
+        if f["symbol"] != event.symbol or f["side"] != "BUY":
+            continue
+        take = min(remaining, f["open_qty"])
+        if take <= 0:
+            continue
+        pnl += (event.fill_price - f["price"]) * take
+        f["open_qty"] -= take
+        remaining -= take
+        if remaining == 0:
+            break
+    return pnl
+```
+
+In `_record_fill`, store `"open_qty": int(event.quantity)` on BUY records and `"pnl": round(_realized_pnl(self._fills, event), 4)` on all records. `status()` at line 182 needs no change (`f.get("pnl", 0.0)` now finds real values).
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add api/paper_trader.py tests/test_paper_realized_pnl.py
+git commit -m "fix(paper): FIFO realized PnL at fill time — readout was structurally zero"
+```
+
+### Task 2.3: Warmup gate — strategy and chart agree for the first atr_period bars
+
+**Files:**
+- Modify: `ntrade/engines/strategies.py:68-81` (`latest_signal`) and `:83-106` (`on_candle_closed`)
+- Test: `tests/test_halftrend.py` (extend)
+
+**Interfaces:**
+- Consumes: `self._buy/_sell` lists, `self.atr_period`.
+- Produces: `latest_signal` returns `None` while `len(self._buy) < self.atr_period` — the same gate the overlay pipeline applies (`overlay_pipeline.py:160-162`). No signal can fire on warmup-contaminated trend state.
+
+- [ ] **Step 1: Write the failing test (extend tests/test_halftrend.py)**
+
+```python
+def test_strategy_emits_nothing_during_atr_warmup():
+    """The strategy must apply the same warmup gate as the chart overlay:
+    no signal before atr_period bars, even if a flip fires on garbage state."""
+    from ntrade.engines.strategies import HalfTrendStrategy
+    from ntrade.events.market import CandleClosedEvent
+
+    strat = HalfTrendStrategy(atr_period=100)
+    frame = _make_frame(n=99)
+    for i in range(99):
+        row = frame.iloc[i]
+        strat.on_candle_closed(CandleClosedEvent(
+            symbol="X", exchange="NSE", timeframe="1m",
+            open=float(row["open"]), high=float(row["high"]),
+            low=float(row["low"]), close=float(row["close"]),
+            volume=100, ts=datetime(2026, 8, 21, 9, 15 + i)))
+    assert strat.latest_signal(float(row["close"])) is None
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_halftrend.py::test_strategy_emits_nothing_during_atr_warmup -v`
+Expected: FAILS if the seeded random walk produces a warmup flip signal (it may pass by luck — the gate is still correct; note the empirical result in the commit body). If it passes, verify the gate by asserting `latest_signal` returns None for a *constructed* flip: feed 99 bars then check `_buy[-1]` handling directly.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `ntrade/engines/strategies.py`, `latest_signal` (lines 68-81), insert at the top:
+
+```python
+        # Same warmup gate as the chart overlay: trend flips before atr_period
+        # evolve on uninitialized ATR state — never trade them.
+        if len(self._buy) < self.atr_period:
+            return None
+```
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: `test_paper_trader_generates_fills_after_warmup` feeds 150 bars — still green. Any test feeding <100 bars and expecting a signal must be updated to feed `atr_period +` bars (the old expectation was the bug).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/engines/strategies.py tests/test_halftrend.py
+git commit -m "fix(strategy): HalfTrend warmup gate matches the chart overlay"
+```
+
+### Task 2.4: Timeframe filter on HalfTrendStrategy
+
+**Files:**
+- Modify: `ntrade/engines/strategies.py:83-92` (`on_candle_closed`)
+- Test: `tests/test_halftrend.py` (extend)
+
+**Interfaces:**
+- Consumes: `CandleClosedEvent.timeframe`.
+- Produces: the strategy ignores candles whose `timeframe` differs from its own (`"1m"` default), matching `IndicatorEngine` (`indicator_engine.py:43`) and ORB (`orb_vwap.py:97`).
+
+- [ ] **Step 1: Write the failing test (extend tests/test_halftrend.py)**
+
+```python
+def test_strategy_ignores_other_timeframes():
+    from ntrade.engines.strategies import HalfTrendStrategy
+    from ntrade.events.market import CandleClosedEvent
+
+    strat = HalfTrendStrategy(atr_period=2)
+    row = {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5}
+    strat.on_candle_closed(CandleClosedEvent(
+        symbol="X", exchange="NSE", timeframe="5m", volume=100,
+        ts=datetime(2026, 8, 21, 9, 15), **row))
+    assert strat._buf == []
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_halftrend.py::test_strategy_ignores_other_timeframes -v`
+Expected: FAILS — `_buf` has one row today.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `on_candle_closed` (lines 83-92), after the symbol check:
+
+```python
+        if event.timeframe != "1m":
+            return  # mixed-timeframe streams would corrupt the bar buffer
+```
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green (the paper service runs 1m).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/engines/strategies.py tests/test_halftrend.py
+git commit -m "fix(strategy): HalfTrend filters by timeframe — mixed streams corrupt the buffer"
+```
+
+### Task 2.5: Persist the final bar of a session (pump-side)
+
+**Files:**
+- Modify: `api/live.py:179-204` (`_run` loop)
+- Test: `tests/test_live_ws.py` (extend)
+
+**Interfaces:**
+- Consumes: `LiveCandlePump._subs` state (`bar`, `bar_start`, `last_tick`), `_persist_bar`, `_emit_overlays`.
+- Produces: when a subscribed symbol's market closes (or the feed goes stale past the bar span) with an in-progress bar, the pump persists + emits overlays for that bar and clears it. The last bar of every session reaches parquet and the chart.
+
+- [ ] **Step 1: Write the failing test (extend tests/test_live_ws.py)**
+
+```python
+def test_pump_persists_final_bar_on_market_close():
+    """A bar in progress at market close must be persisted + overlaid, not
+    dropped (bars only persisted on the NEXT bar's first tick before)."""
+    from api.live import LiveCandlePump
+    from datetime import datetime
+    from ntrade.domain.market_hours import IST
+
+    pump = LiveCandlePump.__new__(LiveCandlePump)
+    pump._subs = {}
+    pump._clients = set()
+    pump._tick_listeners = []
+    pump._quote_listeners = []
+    pump._real_feed = True
+    pump.enabled = True
+    pump._service = type("S", (), {"name": "synthetic"})()
+    persisted = []
+    pump._persist_bar = lambda state, bar: persisted.append(bar)
+    pump._emit_overlays = lambda state, bar: None
+    pump._broadcast = _noop_async  # async no-op defined in the test file
+
+    # 09:15 bar in progress; clock now reads 15:30 (market closed)
+    state = {"symbol": "NIFTY", "exchange": "NSE", "interval": "1m",
+             "span_s": 60, "bar_start": 1_755_760_500, "bar": {"time": 1_755_760_500,
+             "open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5, "volume": 7},
+             "last_tick": datetime(2026, 8, 21, 15, 29, tzinfo=IST),
+             "stale_emitted": False, "feed_stale": False}
+    pump._subs["NIFTY"] = state
+
+    import asyncio
+    asyncio.run(pump._run_once(datetime(2026, 8, 21, 15, 30, tzinfo=IST)))
+    assert len(persisted) == 1 and persisted[0]["close"] == 1.5
+    assert state["bar"] is None
+```
+
+Extract the body of `LiveCandlePump._run`'s per-tick pass into `_run_once(self, now)` (called by `_run` each loop) so the test can drive one pass with a fixed clock — a 5-line refactor of the loop body, no behavior change. `_noop_async` is `async def _noop_async(msg): pass`.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_live_ws.py::test_pump_persists_final_bar_on_market_close -v`
+Expected: FAILS with `AttributeError: _run_once` (before the refactor) or no persist (after).
+
+- [ ] **Step 3: Write minimal implementation**
+
+Refactor `_run` to call `await self._run_once(now)` per iteration (moving the per-symbol body verbatim), then add to `_run_once`, inside the per-symbol loop, before the staleness checks:
+
+```python
+                if state.get("bar") is not None and (
+                        not is_market_open(state["exchange"], now)
+                        or state.get("last_tick") is None):
+                    # Session edge: persist + overlay the in-progress bar now —
+                    # the next bar's first tick never comes after close.
+                    completed, state["bar"], state["bar_start"] = state["bar"], None, None
+                    self._persist_bar(state, completed)
+                    self._emit_overlays(state, completed)
+```
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add api/live.py tests/test_live_ws.py
+git commit -m "fix(api): persist the final bar at session close — it never had a next tick"
+```
+
+---
+
+## Phase 3 — Risk correctness
+
+### Task 3.1: Re-base risk on position sync
+
+**Files:**
+- Modify: `ntrade/engines/position_sync.py:74-81` (the balance reconcile block)
+- Test: `tests/test_risk_rebase_on_sync.py` (new)
+
+**Interfaces:**
+- Consumes: `RiskEngine._start_balance`, `RiskEngine.rebase(balance)` (new method), `PositionSyncEngine.sync`.
+- Produces: when a cash-reporting broker's balance first lands in `ctx.account.balance`, the risk engine re-bases `_start_balance` to it (once — the first sync; later syncs do not re-arm the loss budget). `resume()` already re-bases; this adds the initial-sync re-base.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""The daily-loss breaker must measure against the REAL account balance.
+
+Regression: _start_balance froze at the kernel's constructor default (100k);
+after PositionSyncEngine imported the real 5L balance, max_daily_loss was
+measured against a fictional baseline — halting healthy accounts or never
+halting dying ones.
+"""
+from ntrade.brokers.paper import PaperBroker
+from ntrade.domain.instruments.cash import Equity
+from ntrade.engines.risk_engine import RiskEngine
+from ntrade.kernel.session import TradingKernel
+
+
+def test_first_sync_rebases_daily_loss_baseline():
+    k = TradingKernel(mode="live", clock=type("C", (), {"now": lambda s: __import__(
+        "datetime").datetime(2026, 8, 21)})(), broker=PaperBroker(),
+        initial_cash=100_000.0)
+    k.register(Equity("NIFTY"))
+    risk = k.risk_engine
+    risk.max_daily_loss = 50_000.0
+    # Real account is 5L; sync imports it.
+    k.ctx.account.balance = 500_000.0
+    k.broker._balance = 500_000.0
+    k.sync_positions()
+    assert risk._start_balance == 500_000.0
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_risk_rebase_on_sync.py -v`
+Expected: FAILS — `_start_balance` stays 100_000.0.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `ntrade/engines/risk_engine.py`, add after `resume()` (line 62):
+
+```python
+    def rebase(self, balance: float) -> None:
+        """Adopt a synced account balance as the daily-loss baseline (once).
+
+        The constructor baseline is the kernel's seed cash; the first broker
+        position/balance sync imports reality. Later syncs must NOT re-arm
+        the loss budget (only resume() does that explicitly).
+        """
+        if not self._rebased:
+            self._start_balance = float(balance)
+            self._rebased = True
+```
+
+Add `self._rebased = False` in `__init__`; set `self._rebased = True` inside `resume()`'s re-base. In `ntrade/engines/position_sync.py`, after the balance write (line 77), add:
+
+```python
+            risk = getattr(self.ctx, "risk_engine", None)
+            if risk is not None and hasattr(risk, "rebase"):
+                risk.rebase(balance)
+```
+
+If `TradingContext` does not expose `risk_engine`, pass the kernel's risk engine into `PositionSyncEngine.__init__` instead — read `session.py:91` first and choose the smaller diff.
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/engines/risk_engine.py ntrade/engines/position_sync.py tests/test_risk_rebase_on_sync.py
+git commit -m "fix(risk): daily-loss baseline adopts the synced real balance once"
+```
+
+### Task 3.2: price_deviation guard skips zero-priced MARKET signals
+
+**Files:**
+- Modify: `ntrade/engines/risk_engine.py:104-112`
+- Test: `tests/test_risk_deviation_guard.py` (new)
+
+**Interfaces:**
+- Consumes: `SignalGeneratedEvent.price`, `RiskEngine._reference_price`.
+- Produces: a MARKET signal with `price == 0.0` (the documented convention, `strategy_engine.py:46-53`) is notional-checked against live LTP but never deviation-checked — the guard only applies when the signal DECLARES a price.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""A zero-priced MARKET signal must not be auto-rejected as 'deviates 100%'.
+
+Regression: dev = |0 - ref|/ref*100 = 100% for every MARKET signal carrying
+the documented price=0.0 convention — arming price_deviation_pct silently
+disabled the strategy while looking like a cautious risk system.
+"""
+from datetime import datetime
+
+from ntrade.events.risk import SignalGeneratedEvent
+from ntrade.engines.risk_engine import RiskEngine
+
+
+class _Inst:
+    class market:
+        @staticmethod
+        def ltp():
+            return 100.0
+
+        @staticmethod
+        def prev_close():
+            return 0.0
+
+
+def _kernel_ctx():
+    from ntrade.kernel.event_bus import EventBus
+    bus = EventBus()
+    ctx = type("Ctx", (), {"bus": bus, "instrument": lambda s, sym: _Inst(),
+                           "portfolio": type("P", (), {"positions": []})(),
+                           "account": type("A", (), {"balance": 100_000.0})(),
+                           "now": lambda s: datetime(2026, 8, 21, 9, 15)})()
+    return ctx
+
+
+def test_zero_priced_market_signal_not_deviation_rejected():
+    risk = RiskEngine(_kernel_ctx(), price_deviation_pct=2.0)
+    sig = SignalGeneratedEvent(symbol="NIFTY", exchange="NSE", side="BUY",
+                               quantity=1, price=0.0, order_type="MARKET",
+                               strategy="s", ts=datetime(2026, 8, 21, 9, 15))
+    risk.on_signal(sig)
+    assert risk.approved == 1, risk.halt_reason
+
+
+def test_priced_signal_still_deviation_checked():
+    risk = RiskEngine(_kernel_ctx(), price_deviation_pct=2.0)
+    sig = SignalGeneratedEvent(symbol="NIFTY", exchange="NSE", side="BUY",
+                               quantity=1, price=120.0, order_type="LIMIT",
+                               strategy="s", ts=datetime(2026, 8, 21, 9, 15))
+    risk.on_signal(sig)
+    assert risk.rejected == 1
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_risk_deviation_guard.py -v`
+Expected: `test_zero_priced_market_signal_not_deviation_rejected` FAILS (rejected, "deviates 100.0%").
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `_check` (lines 104-112), guard the block:
+
+```python
+        if self.price_deviation_pct is not None and event.price:
+            ref = self._reference_price(event)
+            if not ref:
+                return (f"price {event.price:.2f} unverifiable: no market price "
+                        f"for {event.symbol}")
+            dev = abs(event.price - ref) / ref * 100
+            if dev > self.price_deviation_pct:
+                return (f"price {event.price:.2f} deviates {dev:.1f}% "
+                        f"from ref {ref:.2f} (> {self.price_deviation_pct}%)")
+```
+
+(The only change is `and event.price` — a zero-priced MARKET signal has no declared price to deviate.)
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: all green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ntrade/engines/risk_engine.py tests/test_risk_deviation_guard.py
+git commit -m "fix(risk): deviation guard checks declared prices only — zero-priced MARKET signals were auto-rejected"
+```
+
+---
+
+## Phase 4 — Ops & surface
+
+### Task 4.1: Surface paper status errors in the UI
+
+**Files:**
+- Modify: `ui/src/components/PaperTradeControl.tsx:75-95` (render block)
+- Test: manual verification (UI has no component-test harness for this panel; the vitest suite covers the socket/lib layers)
+
+**Interfaces:**
+- Consumes: `PaperStatus.error` (already in the type, `client.ts:67`), `status.running`.
+- Produces: a server-side session error renders as a visible chip, not silence.
+
+- [ ] **Step 1: Render the error**
+
+In `PaperTradeControl.tsx`, inside the panel (after the `running ? ... : ...` span, line 94), add:
+
+```tsx
+          {!running && status?.error && (
+            <span className="text-red-400" title={status.error}>
+              error: {status.error.length > 60 ? `${status.error.slice(0, 60)}…` : status.error}
+            </span>
+          )}
+```
+
+- [ ] **Step 2: Fix paperStop's blind json() (client.ts:87-88)**
+
+```ts
+  paperStop: () =>
+    fetch(`${API_BASE}/paper/stop`, { method: 'POST' }).then(async (res) => {
+      if (!res.ok) {
+        let detail = `${res.status} ${res.statusText}`
+        try {
+          const body = await res.json()
+          if (typeof body?.detail === 'string') detail = body.detail
+        } catch { /* non-JSON */ }
+        throw new Error(detail)
+      }
+      return res.json() as Promise<PaperStatus>
+    }),
+```
+
+- [ ] **Step 3: Verify**
+
+Run: `cd ui && npm run build && npm test`
+Expected: build passes, vitest suite green. Then `cd .. && .venv/bin/python -m api --provider synthetic`, open the UI, start paper (will 422 outside market hours with a real feed requirement) and confirm the error text renders in the panel.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add ui/src/components/PaperTradeControl.tsx ui/src/api/client.ts
+git commit -m "fix(ui): surface paper status errors; paperStop parses error bodies"
+```
+
+### Task 4.2: Dead config — remove or implement
+
+**Files:**
+- Modify: `.env` (user-owned; propose, don't silently rewrite)
+- Create: `.env.example` (new)
+- Test: `tests/test_env_contract.py` (new)
+
+**Interfaces:**
+- Consumes: the real env contract (grep-verified): `DHAN_TOKEN_PATH`, `DHAN_EXPIRY_BUFFER_S`, `NTRADE_MARKET_PROVIDER`, `NTRADE_DATA_DIR`, `NTRADE_TICKS_DIR`, `NTRADE_EVENT_STORE`, plus `DHAN_CLIENT_ID` / `DHAN_ACCESS_TOKEN` / `DHAN_TOTP_SECRET` / `DHAN_PIN` read by the auth layer.
+- Produces: `.env.example` documenting every real variable; a test pinning that the two dead keys (`DHAN_AUTH_MODE`, `DHAN_REFRESH_BUFFER_MINUTES`) are gone from `.env` — an operator can no longer believe "STATIC" disables TOTP minting.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""The env contract: every documented variable is real, every dead one is
+gone. DHAN_AUTH_MODE=STATIC and DHAN_REFRESH_BUFFER_MINUTES were read by no
+code — an operator believing STATIC disables TOTP minting is a safety hazard.
+"""
+from pathlib import Path
+
+
+def test_dead_env_keys_are_gone():
+    env = Path(".env")
+    if not env.exists():
+        return  # CI may not carry a local .env; .env.example is the contract
+    text = env.read_text()
+    for dead in ("DHAN_AUTH_MODE", "DHAN_REFRESH_BUFFER_MINUTES"):
+        assert dead not in text, f"{dead} is read by no code — remove it from .env"
+
+
+def test_env_example_documents_real_keys():
+    text = Path(".env.example").read_text()
+    for key in ("DHAN_CLIENT_ID", "DHAN_ACCESS_TOKEN", "DHAN_TOKEN_PATH",
+                "DHAN_EXPIRY_BUFFER_S", "NTRADE_MARKET_PROVIDER",
+                "NTRADE_EVENT_STORE"):
+        assert key in text, f".env.example must document {key}"
+    for dead in ("DHAN_AUTH_MODE", "DHAN_REFRESH_BUFFER_MINUTES"):
+        assert dead not in text
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_env_contract.py -v`
+Expected: FAILS (`.env.example` missing; dead keys present in `.env`).
+
+- [ ] **Step 3: Write .env.example and propose .env edits**
+
+`.env.example` (no secrets, real keys only):
+
+```bash
+# nTrade environment — copy to .env and fill in. Every key here is read by code.
+
+# Dhan credentials (bootstrap seed; the token store at DHAN_TOKEN_PATH is the
+# live source of truth once minted). Tokens expire every 24h; TOTP minting
+# happens automatically near expiry (DHAN_EXPIRY_BUFFER_S before).
+DHAN_CLIENT_ID=
+DHAN_ACCESS_TOKEN=
+DHAN_TOTP_SECRET=
+DHAN_PIN=
+
+# Shared token store path + proactive refresh buffer (seconds before JWT
+# expiry; default 900).
+DHAN_TOKEN_PATH=Dependencies/token.txt
+DHAN_EXPIRY_BUFFER_S=900
+
+# Backend
+NTRADE_MARKET_PROVIDER=dhan   # synthetic | dhan | parquet
+NTRADE_DATA_DIR=data/ohlcv
+NTRADE_TICKS_DIR=data/ticks
+NTRADE_EVENT_STORE=           # set to a path to persist paper sessions (JSONL)
+```
+
+Then edit the user's `.env`: delete the `DHAN_AUTH_MODE` and `DHAN_REFRESH_BUFFER_MINUTES` lines (keep everything else — it holds live credentials; change nothing else).
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q && cd ui && npm test && cd ..`
+Expected: all green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add .env.example tests/test_env_contract.py
+git commit -m "chore(env): document the real env contract; drop dead keys"
+```
+
+(`.env` itself is gitignored — the deletion there is a local edit, not part of the commit.)
+
+### Task 4.3: Pre-deploy check asserts the new invariants
+
+**Files:**
+- Modify: `scripts/pre_deploy_check.py` (append a section)
+- Test: manual run against live creds (the script's own purpose)
+
+**Interfaces:**
+- Consumes: `scripts/live_read_check.py` (subprocess, unchanged), the new `reports_cash` attribute, the parity test.
+- Produces: the operator gate verifies the order round trip the suite can't: place → poll → cancel on a **sandbox/off-market** symbol is out of scope here (needs a real venue); instead the gate now (a) fails if `PaperBroker.reports_cash` is truthy (regression guard), (b) prints the parity-test result as a gate line.
+
+- [ ] **Step 1: Add the gate section**
+
+Append to `scripts/pre_deploy_check.py`'s main flow (after the live_read_check/live_smoke aggregation):
+
+```python
+    # Regression guards for the zero-parity fixes (cheap, offline):
+    checks.append(("paper broker is not a cash authority",
+                   not getattr(PaperBroker, "reports_cash", True)))
+    parity = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/test_fill_parity.py",
+         "tests/test_paper_single_ledger.py", "-q", "--no-header", "-x"],
+        capture_output=True, text=True)
+    checks.append(("fill parity + single ledger tests pass",
+                   parity.returncode == 0))
+```
+
+Adapt `checks` to the script's existing aggregation shape — read the file first and match its list/exit-code convention exactly.
+
+- [ ] **Step 2: Verify**
+
+Run: `.venv/bin/python scripts/pre_deploy_check.py` (will fail on token freshness without live creds — that's correct behavior; confirm the new lines appear in the report and the offline checks pass).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add scripts/pre_deploy_check.py
+git commit -m "chore(ops): pre-deploy gate pins fill parity + single ledger"
+```
+
+---
+
+## Deliberately out of scope (next plan)
+
+- LiveRunner wiring into the API process (feed watchdog → halt, order polling) — the largest remaining item; deserves its own plan after these fixes land.
+- HalfTrend O(n²) recompute → incremental state machine (performance, not correctness).
+- Backtest marker attribution (`backtest/simulator.py:268-283`), EventBus string round-trip typing, `_last_error` dead store, SyntheticProvider cache eviction, UI overlay rebuild throttling.
+- Instrument-master CSV date validation.

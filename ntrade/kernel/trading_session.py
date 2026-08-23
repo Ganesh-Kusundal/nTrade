@@ -244,11 +244,41 @@ class TradingSession:
         """Register a strategy via the StrategyRunner; returns its unique name."""
         return self._runner.add(strategy, name=name, risk=risk)
 
+    def load_strategy(self, strategy_id: str, *, risk: dict | None = None,
+                      **params) -> "Strategy":
+        """Resolve a strategy by registry id and register it on this session.
+
+        Single loader for every mode: backtest, replay, live and paper all go
+        through ``strategy.instantiate(id)`` so registering once makes a
+        strategy usable everywhere. ``params`` override the spec defaults
+        (e.g. ``symbol``, ``exchange``, ``lot_size``).
+        """
+        from ntrade.registry import strategy as _strategy_reg
+        inst = _strategy_reg.instantiate(strategy_id, **params)
+        self.register_strategy(inst, risk=risk)
+        # Pre-select the indicators this strategy reads so the live scalar
+        # engine only computes what the strategy consumes (no silent misses).
+        spec = _strategy_reg.get(strategy_id)
+        if spec.indicators:
+            self._kernel.indicator_engine.set_indicators(spec.indicators)
+        return inst
+
     def start(self) -> "TradingSession":
         """Start the kernel (and replay events if in replay mode)."""
         self._kernel.start()
         if self._mode == "replay" and hasattr(self, "_replay_events"):
             self._kernel.run_replay(self._replay_events)
+        return self
+
+    def warm_indicators(self, symbol: str, rows: list[dict]) -> "TradingSession":
+        """Seed the live indicator window with historical bars (cold-start).
+
+        Live/paper decisions depend on scalar indicators; without seeding, the
+        first ~10 bars carry no indicator values. Call this before ``start()``
+        with pre-market history so the strategy reads real values from bar one.
+        Rows carry open/high/low/close/volume (naive IST wire rows).
+        """
+        self._kernel.indicator_engine.warm_up(symbol, rows)
         return self
 
     def stop(self, reason: str = "") -> "TradingSession":

@@ -143,11 +143,24 @@ export interface VolumeProfilePayload {
   levels: VolumeProfileLevel[]
 }
 
+export interface AdxPoint {
+  time: number
+  adx: number | null
+  plus_di?: number | null
+  minus_di?: number | null
+}
+
+export interface AdxPayload {
+  period: number
+  series: AdxPoint[]
+}
+
 export interface ChartOverlays {
   vwap: VwapPoint[] | null
   vwap_upper: VwapPoint[] | null
   vwap_lower: VwapPoint[] | null
   volume_profile: VolumeProfilePayload | null
+  adx?: AdxPayload | null
 }
 
 /** A strategy signal produced by the backend replay (entry or exit marker). */

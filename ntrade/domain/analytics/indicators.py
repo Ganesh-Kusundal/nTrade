@@ -41,6 +41,49 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.ewm(alpha=1 / period, min_periods=period).mean()
 
 
+def adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """Average Directional Index (ADX) with +DI and -DI (Wilder's DMI).
+    
+    Returns a DataFrame with columns ['adx', 'plus_di', 'minus_di'].
+    """
+    if df is None or df.empty or len(df) < 2:
+        return pd.DataFrame(columns=["adx", "plus_di", "minus_di"], index=df.index if df is not None else None)
+    
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+    prev_close = close.shift(1)
+    
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+    
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+    
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+    
+    smooth_tr = tr.ewm(alpha=1 / period, min_periods=period).mean()
+    smooth_plus_dm = plus_dm.ewm(alpha=1 / period, min_periods=period).mean()
+    smooth_minus_dm = minus_dm.ewm(alpha=1 / period, min_periods=period).mean()
+    
+    safe_tr = smooth_tr.where(smooth_tr > 0, 1e-10)
+    plus_di = (100.0 * smooth_plus_dm / safe_tr).clip(lower=0.0, upper=100.0)
+    minus_di = (100.0 * smooth_minus_dm / safe_tr).clip(lower=0.0, upper=100.0)
+    
+    di_sum = plus_di + minus_di
+    safe_di_sum = di_sum.where(di_sum > 0, 1e-10)
+    dx = (100.0 * (plus_di - minus_di).abs() / safe_di_sum).clip(lower=0.0, upper=100.0)
+    
+    adx_series = dx.ewm(alpha=1 / period, min_periods=period).mean().clip(lower=0.0, upper=100.0)
+    
+    return pd.DataFrame(
+        {"adx": adx_series, "plus_di": plus_di, "minus_di": minus_di},
+        index=df.index,
+    )
+
+
 def sma(df: pd.DataFrame, period: int = 20) -> pd.Series:
     """Simple moving average over close."""
     return df["close"].astype(float).rolling(period, min_periods=period).mean()
@@ -213,6 +256,9 @@ def renko_bricks(df: pd.DataFrame, box_size: float = 7.0) -> pd.DataFrame:
 indicator.register("rsi", IndicatorSpec(
     id="rsi", label="RSI", params={"rsi_period": 14},
     series=True, plot=PlotSpec(series_key="rsi_14", pane="separate", color="#7e57c2")))
+indicator.register("adx", IndicatorSpec(
+    id="adx", label="Average Directional Index (ADX)", params={"adx_period": 14},
+    series=True, plot=PlotSpec(series_key="adx_14", pane="separate", color="#f59e0b")))
 indicator.register("atr", IndicatorSpec(
     id="atr", label="ATR", params={"atr_period": 14},
     series=True, plot=PlotSpec(series_key="atr_14", pane="separate", color="#ff9800")))
@@ -249,63 +295,135 @@ indicator.register("absorptions", IndicatorSpec(
     series=False, plot=PlotSpec(series_key="absorptions", pane="overlay", color="#ab47bc")))
 
 
+# ---------------------------------------------------------------------------
+# Registry-driven indicator compute. Each entry maps an indicator id to a
+# computer that populates `result` for one candle frame. New indicator =
+# `indicator.register(id, ...)` + `register_computer(id, fn)` in the same
+# module — no edits to compute_bundle or any caller. `compute_bundle` iterates
+# the registry instead of a hardcoded if-chain, so a registered indicator is
+# actually computed (the old chain silently skipped unlisted ids).
+# ---------------------------------------------------------------------------
+_COMPUTERS: dict[str, typing.Callable] = {}
+
+
+def register_computer(id: str, fn: typing.Callable) -> None:
+    """Register a scalar computer for indicator `id`.
+
+    `fn(df, params, result)` writes its scalar(s) into `result`, using the
+    spec defaults from `params` and skipping gracefully when inputs are
+    absent (e.g. hma only when `hma_period` is requested).
+    """
+    _COMPUTERS[id] = fn
+
+
+def _last(series: pd.Series) -> float:
+    return float(series.iloc[-1])
+
+
+def _compute_rsi(df, params, result):
+    p = int(params.get("rsi_period", 14))
+    result[f"rsi_{p}"] = _last(rsi(df, p))
+
+
+def _compute_adx(df, params, result):
+    p = int(params.get("adx_period", 14))
+    res = adx(df, p)
+    if not res.empty and pd.notna(res["adx"].iloc[-1]):
+        result[f"adx_{p}"] = float(res["adx"].iloc[-1])
+        result[f"plus_di_{p}"] = float(res["plus_di"].iloc[-1])
+        result[f"minus_di_{p}"] = float(res["minus_di"].iloc[-1])
+
+
+def _compute_atr(df, params, result):
+    p = int(params.get("atr_period", 14))
+    result[f"atr_{p}"] = _last(atr(df, p))
+
+
+def _compute_vwap(df, params, result):
+    result["vwap"] = _last(vwap(df))
+
+
+def _compute_hma(df, params, result):
+    if not params.get("hma_period"):
+        return
+    p = int(params["hma_period"])
+    result[f"hma_{p}"] = _last(hma(df, p))
+
+
+def _compute_vwap_bands(df, params, result):
+    if not params.get("vwap_bands_std"):
+        return
+    std = float(params["vwap_bands_std"])
+    try:
+        u, lo = vwap_bands(df, std)
+        if pd.notna(u) and pd.notna(lo):
+            result["vwap_upper"], result["vwap_lower"] = u, lo
+    except Exception as exc:  # noqa: BLE001 — visibility, not silence (L1)
+        logger.warning("vwap_bands failed on %d rows: %s", len(df), exc)
+
+
+def _compute_ema(df, params, result):
+    for p in params.get("ema_periods", (9, 21)):
+        result[f"ema_{int(p)}"] = _last(ema(df, int(p)))
+
+
+def _compute_sma(df, params, result):
+    for p in params.get("sma_periods", ()):
+        result[f"sma_{int(p)}"] = _last(sma(df, int(p)))
+
+
+def _compute_st(df, params, result):
+    period = int(params.get("st_period", 10))
+    mult = float(params.get("st_mult", 3.0))
+    # Normalize 3.0 -> 3 so the column name matches supertrend()'s
+    # "STX_{period}_{multiplier}" format (multiplier=3.0 -> "STX_10_3").
+    key_mult = int(mult) if mult == int(mult) else mult
+    col = f"STX_{period}_{key_mult}"
+    # supertrend returns "up"/"down" strings per bar — store the last value
+    # as-is (not coerced to float) to match the original bundle contract.
+    result[f"stx_{period}_{key_mult}"] = supertrend(df, period, key_mult)[col].iloc[-1]
+
+
+def _compute_avg_volume(df, params, result):
+    result["avg_volume"] = float(df["volume"].astype(float).mean())
+
+
+for _id, _fn in (
+    ("rsi", _compute_rsi), ("adx", _compute_adx), ("atr", _compute_atr), ("vwap", _compute_vwap),
+    ("hma", _compute_hma), ("vwap_bands", _compute_vwap_bands),
+    ("ema", _compute_ema), ("sma", _compute_sma), ("st", _compute_st),
+    ("avg_volume", _compute_avg_volume),
+):
+    register_computer(_id, _fn)
+
+
+# The default bundle mirrors the historical compute set so callers that don't
+# name indicators still get the same scalars as before. hma and vwap_bands are
+# param-gated (they self-skip unless their std/period is requested) but are
+# always eligible — the original compute_bundle checked them on every call.
+_DEFAULT_BUNDLE = ("rsi", "adx", "atr", "vwap", "hma", "vwap_bands", "ema", "sma", "st", "avg_volume")
+
+
 def compute_bundle(df: pd.DataFrame, **params) -> dict[str, float]:
-    """Compute a standard indicator bundle over the latest completed candle."""
+    """Compute an indicator bundle over the latest completed candle.
+
+    Without ``indicators=`` it runs the default bundle (behavior-preserving).
+    Pass ``indicators=(...)`` to compute a subset. Each id resolves through the
+    computer registry, so a registered indicator is always actually computed.
+    Data-dependent failures are logged and skipped (L1), never silently
+    swallowed into a missing key.
+    """
     if df is None or df.empty or "close" not in df:
         return {}
-    rsi_period = int(params.get("rsi_period", 14))
-    atr_period = int(params.get("atr_period", 14))
-    st_period = int(params.get("st_period", 10))
-    st_mult = float(params.get("st_mult", 3.0))
-    st_key_mult = int(st_mult) if st_mult == int(st_mult) else st_mult
-    ema_periods = params.get("ema_periods", (9, 21))
-    sma_periods = params.get("sma_periods", ())
+    ids = params.pop("indicators", None) or _DEFAULT_BUNDLE
     result: dict[str, float] = {}
-    def _capture(name: str, fn, *, store_key: str | None = None):
-        """Compute one indicator; log+skip instead of silently swallowing so a
-        data-dependent failure is visible (L1) rather than a quiet missing key."""
+    for id in ids:
+        fn = _COMPUTERS.get(id)
+        if fn is None:
+            logger.debug("no computer registered for indicator %r", id)
+            continue
         try:
-            value = fn()
-            if value is not None and not pd.isna(value):
-                result[store_key or name] = value
+            fn(df, params, result)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("indicator %s failed on %d rows: %s",
-                           name, len(df), exc)
-
-    def _series_last(name: str, series_fn, *, store_key: str | None = None):
-        def _run():
-            s = series_fn()
-            v = s.iloc[-1]
-            return float(v)
-        _capture(name, _run, store_key=store_key)
-
-    _series_last("rsi", lambda: rsi(df, rsi_period), store_key=f"rsi_{rsi_period}")
-    _series_last("atr", lambda: atr(df, atr_period), store_key=f"atr_{atr_period}")
-    _series_last("vwap", lambda: vwap(df), store_key="vwap")
-    if params.get("hma_period"):
-        _series_last(f"hma_{params['hma_period']}",
-                     lambda p=params["hma_period"]: hma(df, int(p)),
-                     store_key=f"hma_{int(params['hma_period'])}")
-    if params.get("vwap_bands_std"):
-        try:
-            u, lo = vwap_bands(df, float(params["vwap_bands_std"]))
-            # NaN (e.g. zero-volume frame) is skipped, matching _capture's
-            # convention — the bundle never carries NaN indicator keys.
-            if pd.notna(u) and pd.notna(lo):
-                result["vwap_upper"], result["vwap_lower"] = u, lo
-        except Exception as exc:  # noqa: BLE001 — same visibility rule as _capture
-            logger.warning("vwap_bands failed on %d rows: %s", len(df), exc)
-    _capture("avg_volume", lambda: float(df["volume"].astype(float).mean()))
-
-    def _supertrend_last():
-        st = supertrend(df, st_period, st_mult)
-        return st[f"STX_{st_period}_{st_mult}"].iloc[-1]
-    _capture("supertrend", _supertrend_last, store_key=f"stx_{st_period}_{st_key_mult}")
-
-    for period in ema_periods:
-        _series_last(f"ema{int(period)}", lambda p=period: ema(df, int(p)),
-                     store_key=f"ema_{int(period)}")
-    for period in sma_periods:
-        _series_last(f"sma{int(period)}", lambda p=period: sma(df, int(p)),
-                     store_key=f"sma_{int(period)}")
+            logger.warning("indicator %s failed on %d rows: %s", id, len(df), exc)
     return result

@@ -99,6 +99,32 @@ def main(argv: list[str] | None = None) -> int:
     stages.append(("live read", live_read))
     stages.append(("live smoke", [sys.executable, args.live_smoke]))
 
+    # Regression guards for zero-parity fixes (cheap, offline):
+    from ntrade.brokers.paper import PaperBroker  # noqa: E402
+
+    offline_checks: list[tuple[str, bool]] = [
+        ("paper broker is not a cash authority",
+         not getattr(PaperBroker, "reports_cash", True)),
+    ]
+    parity = subprocess.run(
+        [sys.executable, "-m", "pytest",
+         "tests/test_fill_parity.py",
+         "tests/test_paper_single_ledger.py",
+         "-q", "--no-header", "-x"],
+        capture_output=True, text=True, check=False,
+    )
+    offline_checks.append(("fill parity + single ledger tests pass",
+                           parity.returncode == 0))
+
+    print("\n== offline parity guards ==")
+    for label, ok in offline_checks:
+        print(f"  [{'PASS' if ok else 'FAIL'}] {label}")
+        if not ok:
+            exit_code = 1
+            if parity.returncode != 0 and label.startswith("fill parity"):
+                print(parity.stdout[-2000:] if parity.stdout else "")
+                print(parity.stderr[-2000:] if parity.stderr else "")
+
     code = run_stages(stages)
     exit_code = exit_code or code
     print(f"\nPRE-DEPLOY CHECK: {'PASS' if exit_code == 0 else 'FAIL'}")

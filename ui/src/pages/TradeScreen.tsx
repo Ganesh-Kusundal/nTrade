@@ -1,14 +1,17 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { shallow } from 'zustand/shallow'
 import { MarketSocket, api } from '../api/client'
-import { ChartPanel, type IndicatorToggles } from '../components/ChartPanel'
-import { BrokerErrorNotice, EmptyState, ErrorState, FeedNotice, LoadingState, ReplayReadyState } from '../components/ChartStates'
-import { ContractSelector } from '../components/ContractSelector'
-import { IntervalSelector } from '../components/IntervalSelector'
-import { ModeToggle } from '../components/ModeToggle'
-import { SymbolSelector } from '../components/SymbolSelector'
-import { TerminalSidePanel } from '../components/TerminalSidePanel'
-import { ReplayControls } from '../components/ReplayControls'
+import { ChartPanel } from '../components/ChartPanel'
+import {
+  BrokerErrorNotice,
+  EmptyState,
+  ErrorState,
+  FeedNotice,
+  LoadingState,
+  ReplayReadyState,
+} from '../components/ChartStates'
+import { TradingViewSidebar } from '../components/TradingViewSidebar'
+import { BottomDock } from '../components/BottomDock'
 import { feedKind, type FeedKind } from '../lib/feedStatus'
 import { useChart } from '../hooks/useChart'
 import { useReplay } from '../hooks/useReplay'
@@ -22,38 +25,34 @@ import {
 } from '../hooks/replayVisible'
 import { CHART_DAYS, fmtISTInput, istInputToEpoch } from '../lib/istTime'
 import { DEFAULT_EXCHANGE } from '../lib/constants'
-import { fmtExpiry } from '../lib/format'
-import { strategies, strategyLabel } from '../lib/registry'
 import { usePersistedState } from '../lib/storage'
 import { useChartStore } from '../store/chartStore'
+import { simulateReplayPaperTrades, INITIAL_REPLAY_CAPITAL } from '../lib/replayPaperTrader'
 import type { Candle, ChartOverlays, StrategyPayload, WsMessage } from '../types/market'
 
-const STRATEGY_IDS = [
-  { id: 'halftrend', label: strategyLabel('halftrend') || strategies['halftrend'].label, sub: 'Momentum · ATR(100)/2' },
-] as const
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="flex min-w-[140px] flex-1 flex-col gap-1.5 sm:flex-none">
-      <span className="treadout-label">{label}</span>
-      {children}
-    </label>
-  )
-}
-
-export { Field }
-
-export const TradeScreen = memo(function TradeScreen() {
+export const TradeScreen = memo(function TradeScreen({
+  catalogEpoch: _catalogEpoch,
+}: {
+  catalogEpoch?: number
+} = {}) {
   const {
-    roots, contracts, root, contract, interval, mode, quote, quoteError, provider, wsStatus,
-    rootsError, contractsError, selectRoot, selectContract, selectInterval, setMode,
+    contract,
+    interval,
+    mode,
+    quote,
+    quoteError,
+    provider,
+    wsStatus,
+    rootsError,
+    contractsError,
+    strategyId,
+    indicators,
+    toggleIndicator,
+    rangeTicks,
     setWsStatus: setWsStatusStore,
   } = useChartStore(
     (s) => ({
       provider: s.provider,
-      roots: s.roots,
-      contracts: s.contracts,
-      root: s.root,
       contract: s.contract,
       interval: s.interval,
       mode: s.mode,
@@ -62,10 +61,10 @@ export const TradeScreen = memo(function TradeScreen() {
       wsStatus: s.wsStatus,
       rootsError: s.rootsError,
       contractsError: s.contractsError,
-      selectRoot: s.selectRoot,
-      selectContract: s.selectContract,
-      selectInterval: s.selectInterval,
-      setMode: s.setMode,
+      strategyId: s.strategyId,
+      indicators: s.indicators,
+      toggleIndicator: s.toggleIndicator,
+      rangeTicks: s.rangeTicks,
       setWsStatus: s.setWsStatus,
     }),
     shallow,
@@ -78,23 +77,12 @@ export const TradeScreen = memo(function TradeScreen() {
   const [liveStrategy, setLiveStrategy] = useState<StrategyPayload | null>(null)
 
   const symbol = contract?.symbol ?? ''
-  // Strategy selection lives above the WS effect + chart fetch so the live
-  // subscribe and the historical chart request both read the current id.
-  const [strategyId, setStrategyId] = usePersistedState<string>('ntrade.strategy', 'halftrend')
-  const _setStrategyId = setStrategyId
   const symbolRef = useRef(symbol)
   const modeRef = useRef(mode)
   const strategyRef = useRef(strategyId)
   symbolRef.current = symbol
   modeRef.current = mode
   strategyRef.current = strategyId
-
-  // HalfTrend is the only registered strategy: force any stale persisted id
-  // (e.g. a pre-rollout 'valentini'/'morning_vah_val') back to 'halftrend'.
-  // Must run in an effect, not the render body — a render-time setState loops.
-  useEffect(() => {
-    _setStrategyId('halftrend')
-  }, [_setStrategyId])
 
   useEffect(() => {
     const s = new MarketSocket()
@@ -109,8 +97,6 @@ export const TradeScreen = memo(function TradeScreen() {
       if (msg.type === 'candle' && modeRef.current === 'live') {
         flush(msg.candle)
       } else if (msg.type === 'overlays' && modeRef.current === 'live') {
-        // Same backend pipeline as /api/market/chart — fold in live patches so
-        // VWAP/VP/HalfTrend markers stay in lockstep with the feed.
         setLiveOverlays(msg.overlays ?? null)
         setLiveStrategy(msg.strategy ?? null)
       }
@@ -120,11 +106,17 @@ export const TradeScreen = memo(function TradeScreen() {
       s.disconnect()
       socketRef.current = null
     }
-  }, [])
+  }, [setWsStatusStore])
 
   useEffect(() => {
     if (mode !== 'live' || !symbol || interval === 'Range') return
-    socketRef.current?.subscribe(symbol, contract?.exchange ?? DEFAULT_EXCHANGE, interval, strategyRef.current, contract?.tick_size)
+    socketRef.current?.subscribe(
+      symbol,
+      contract?.exchange ?? DEFAULT_EXCHANGE,
+      interval,
+      strategyRef.current,
+      contract?.tick_size,
+    )
     return () => socketRef.current?.unsubscribe(symbol)
   }, [mode, symbol, interval, contract?.exchange, contract?.tick_size, strategyId])
 
@@ -134,14 +126,15 @@ export const TradeScreen = memo(function TradeScreen() {
     setLiveStrategy(null)
   }, [symbol, interval, mode])
 
-  // Fetched from the backend's single calc path (/api/market/chart). The FE
-  // renders it verbatim — VWAP / volume profile / HalfTrend math is owned by
-  // the backend (zero-parity with paper/live).
   const chartDays = CHART_DAYS
-  const [rangeTicks, setRangeTicks] = usePersistedState<number | null>('ntrade.rangeTicks', null)
-  const { candles, overlays, strategy, status, error, reason, source, reload } = useChart(
-    symbol, interval, contract?.exchange ?? DEFAULT_EXCHANGE, strategyId, chartDays,
-    contract?.tick_size, rangeTicks,
+  const { candles, overlays, strategy, status, error, reason, reload } = useChart(
+    symbol,
+    interval,
+    contract?.exchange ?? DEFAULT_EXCHANGE,
+    strategyId,
+    chartDays,
+    contract?.tick_size,
+    rangeTicks,
   )
   const displayAll = useMemo(() => mergeByTime(candles, liveCandles), [candles, liveCandles])
 
@@ -156,10 +149,11 @@ export const TradeScreen = memo(function TradeScreen() {
     let cancelled = false
     setTicksByBar(new Map())
     setTickSeconds(0)
-    api.ticks(symbol, interval, contract?.exchange ?? DEFAULT_EXCHANGE, {
-      start: fmtISTInput(candles[0].time),
-      end: fmtISTInput(candles[candles.length - 1].time),
-    })
+    api
+      .ticks(symbol, interval, contract?.exchange ?? DEFAULT_EXCHANGE, {
+        start: fmtISTInput(candles[0].time),
+        end: fmtISTInput(candles[candles.length - 1].time),
+      })
       .then((res) => {
         if (cancelled) return
         const map: TickBarMap = new Map()
@@ -176,11 +170,14 @@ export const TradeScreen = memo(function TradeScreen() {
     return () => {
       cancelled = true
     }
-  }, [mode, symbol, interval, candles[0]?.time, candles[candles.length - 1]?.time, contract?.exchange])
+  }, [mode, symbol, interval, candles, contract?.exchange])
 
   const stepsPerBar = tickSeconds > 0 ? tickSeconds : 1
 
-  const [windowRange, setWindowRange] = usePersistedState<{ from: number; to: number } | null>('ntrade.replayWindow', null)
+  const [windowRange, setWindowRange] = usePersistedState<{ from: number; to: number } | null>(
+    'ntrade.replayWindow',
+    null,
+  )
   const lastKeyRef = useRef<string | null>(null)
   useEffect(() => {
     const key = `${symbol}|${interval}`
@@ -191,8 +188,8 @@ export const TradeScreen = memo(function TradeScreen() {
     if (key === lastKeyRef.current) return
     lastKeyRef.current = key
     setWindowRange(null)
-    setRangeTicks(null)
-  }, [symbol, interval])
+  }, [symbol, interval, setWindowRange])
+
   const dataFrom = displayAll[0]?.time ?? 0
   const dataTo = displayAll[displayAll.length - 1]?.time ?? 0
   const defaultWindow = useMemo(() => lastNDays(displayAll, chartDays), [displayAll, chartDays])
@@ -204,6 +201,7 @@ export const TradeScreen = memo(function TradeScreen() {
     const to = Math.max(Math.min(windowRange.to, dataTo), from)
     return { from, to }
   }, [mode, windowRange, defaultWindow, displayAll, dataFrom, dataTo])
+
   const windowed = useMemo(
     () => windowBars(displayAll, effectiveWindow),
     [displayAll, effectiveWindow],
@@ -215,33 +213,32 @@ export const TradeScreen = memo(function TradeScreen() {
     if (mode === 'replay') replay.dispatch({ type: 'reset' })
   }, [mode, symbol, interval, windowRange])
 
-  // --- indicator toggles --------------------------------------------
-  const [indicatorsToggles, setIndicators] = usePersistedState<IndicatorToggles>('ntrade.indicators', {
-    vwap: true,
-    volumeProfile: true,
-    strategy: true,
-  })
+  const displayed =
+    mode === 'replay'
+      ? visibleBars(windowed, replay.state.cursor, stepsPerBar, ticksByBar)
+      : windowed
 
-  const displayed = mode === 'replay'
-    ? visibleBars(windowed, replay.state.cursor, stepsPerBar, ticksByBar)
-    : windowed
-
-  // Liveness gate: in live mode the strategy overlay is only trusted while
-  // the feed is genuinely streaming. Stale/synthetic/offline candles must not
-  // silently drive it — but the historical chart (server overlays from the
-  // last load) still renders so the user never sees a blank screen.
   const feed: FeedKind | null = provider
     ? feedKind(mode, provider.provider, provider.live ?? false, wsStatus, wsStatus === 'stale')
     : null
   const showFeedNotice = mode === 'live' && provider != null && feed !== 'streaming'
 
-  // Strategy markers come from the backend (single calc path). In live mode,
-  // prefer the latest WS overlay patch once streaming; otherwise the
-  // historical chart payload. While the feed is NOT streaming we still show
-  // the markers from the last chart load (display-only), never recompute them.
   const strategyResult: StrategyPayload | null =
     mode === 'live' ? (liveStrategy ?? strategy) : strategy
 
+  // Replay paper trading account simulation against 1M capital
+  const replayAccount = useMemo(() => {
+    if (mode !== 'replay' || !symbol) return null
+    return simulateReplayPaperTrades(
+      displayed,
+      strategyResult?.markers,
+      symbol,
+      contract?.lot_size ?? 1,
+      INITIAL_REPLAY_CAPITAL,
+    )
+  }, [mode, displayed, strategyResult?.markers, symbol, contract?.lot_size])
+
+  // Keyboard shortcut for replay play/pause
   useEffect(() => {
     if (mode !== 'replay') return
     const onKey = (e: KeyboardEvent) => {
@@ -258,203 +255,106 @@ export const TradeScreen = memo(function TradeScreen() {
   }, [mode, replay])
 
   const showReplayReady =
-    mode === 'replay' && status === 'ready' && replay.state.cursor === 0 &&
+    mode === 'replay' &&
+    status === 'ready' &&
+    replay.state.cursor === 0 &&
     (replay.state.status === 'idle' || replay.state.status === 'paused')
 
   const exchange = contract?.exchange ?? DEFAULT_EXCHANGE
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 p-3">
-      {/* instrument band */}
-      <div className="flex flex-wrap items-end gap-3">
-        <Field label="Root Symbol">
-          <SymbolSelector
-            roots={roots}
-            selected={root}
-            onSelect={selectRoot}
-            disabled={roots.length === 0}
-          />
-        </Field>
-        <Field label="Contract / Expiry">
-          <div className="flex items-start gap-2">
-            <ContractSelector
-              contracts={contracts}
-              selected={symbol}
-              onChange={selectContract}
-            />
-            {symbol && (
-              <span className="mt-0.5 rounded-md border border-line/60 bg-panel2/60 px-2 py-1 text-[11px] font-mono text-muted whitespace-nowrap">
-                {contract?.expiry != null ? `${fmtExpiry(contract.expiry)}` : ''}
-                {contract?.is_front_month && !contract?.is_expired ? ' · Front' : ''}
-                {contract?.is_expired ? ' · Expired' : ''}
-                {' '}· Lot {contract?.lot_size ?? '—'} · Tick {contract?.tick_size ?? '—'}
-              </span>
-            )}
-          </div>
-        </Field>
-        <Field label="Interval">
-          <IntervalSelector value={interval} onChange={selectInterval} />
-        </Field>
-        {interval === 'Range' && (
-          <Field label="Range Size">
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                className={`tpill ${rangeTicks == null ? 'tpill-active' : ''}`}
-                onClick={() => setRangeTicks(null)}
-                aria-pressed={rangeTicks == null}
-                title="Auto size from ATR(14), rounded to the tick grid"
-              >
-                Auto
-              </button>
-              <input
-                type="number"
-                min={1}
-                className="tinput w-24"
-                placeholder="ticks"
-                aria-label="Range size in ticks"
-                value={rangeTicks ?? ''}
-                onChange={(e) => {
-                  const v = e.target.value === '' ? null : Math.round(Number(e.target.value))
-                  setRangeTicks(v == null ? null : Math.max(1, v))
-                }}
-              />
-              <span className="text-[11px] text-muted/60">
-                {rangeTicks != null && contract?.tick_size
-                  ? `≈ ${(rangeTicks * contract.tick_size).toLocaleString(undefined, { maximumFractionDigits: 2 })} pts`
-                  : 'auto'}
-              </span>
-            </div>
-          </Field>
-        )}
-        {mode === 'live' && interval === 'Range' && (
-          <span className="rounded-md border border-line/60 bg-panel2/60 px-2 py-1 text-[11px] text-muted">
-            Range is historical — no live updates
-          </span>
-        )}
-        {source && (
-          <span className="rounded-md border border-line/60 bg-panel2/60 px-2 py-1 text-[11px] font-mono text-muted/70" title="Candle data provenance">
-            {source}
-          </span>
-        )}
-
-        <div className="flex items-center gap-2">
-          {/* strategy selector */}
-          <div className="flex items-center gap-1.5">
-            <span className="treadout-label">Strategy</span>
-            <div className="flex items-center gap-1">
-              {STRATEGY_IDS.map(({ id, label, sub }) => (
-                <button
-                  key={id}
-                  type="button"
-                  className={`rounded-md border text-xs leading-none transition-colors duration-150 ${
-                    strategyId === id
-                      ? 'border-accent/80 bg-accent/15 text-accent ring-1 ring-accent/40'
-                      : 'border-line/60 bg-panel2/60 text-muted hover:border-line hover:text-ink'
-                  }`}
-                  onClick={() => setStrategyId(id)}
-                  aria-pressed={strategyId === id}
-                  title={sub}
-                >
-                  <span className="block font-semibold">{label}</span>
-                  <span className="block text-[9px] leading-tight opacity-70">{sub}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="ml-auto flex items-center gap-2 pb-0.5">
-          <ModeToggle mode={mode} onChange={setMode} />
-        </div>
-      </div>
-
+    <div className="flex h-full w-full min-h-0 flex-col overflow-hidden bg-base">
+      {/* Error notices */}
       {(rootsError || contractsError) && (
-        <div className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+        <div className="border-b border-danger/40 bg-danger/10 px-3 py-1.5 text-xs text-danger">
           {rootsError ?? contractsError}
         </div>
       )}
 
-      {/* chart + side panel */}
-      <div className="flex min-h-0 gap-3 flex-1">
-        <div className="relative min-w-0 flex-1 overflow-hidden">
-          <ChartPanel
-            candles={displayed}
-            context={mode === 'replay' ? windowed : undefined}
-            indicators={indicatorsToggles}
-            onIndicators={(key) =>
-              setIndicators((s) => ({ ...s, [key]: !s[key] }))
-            }
-            overlays={mode === 'live' ? (liveOverlays ?? overlays) : overlays}
-            strategy={strategyResult}
-            symbol={contract?.symbol}
-            interval={interval}
-            exchange={exchange}
-            root={contract?.root}
-            className="h-full w-full"
-          />
-          {status === 'loading' && <LoadingState label={`Loading ${interval} candles…`} />}
-          {status === 'error' && <ErrorState message={error ?? 'Unknown error'} onRetry={reload} />}
-          {status === 'empty' && liveCandles.length === 0 && (
-            reason
-              ? <EmptyState
-                  title="No data from broker"
-                  hint={reason}
-                />
-              : <EmptyState
+      {/* Main Workspace: Left TV Toolbar + Central Chart */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Left TradingView tool rail */}
+        <TradingViewSidebar />
+
+        {/* Central Chart Area */}
+        <main className="relative flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden">
+          <div className="relative flex-1 min-h-0 w-full overflow-hidden">
+            <ChartPanel
+              candles={displayed}
+              indicators={indicators}
+              onIndicators={toggleIndicator}
+              overlays={mode === 'live' ? (liveOverlays ?? overlays) : overlays}
+              strategy={strategyResult}
+              replayPosition={replayAccount?.open_position}
+              symbol={contract?.symbol}
+              interval={interval}
+              exchange={exchange}
+              root={contract?.root}
+              className="h-full w-full"
+            />
+            {status === 'loading' && <LoadingState label={`Loading ${interval} candles…`} />}
+            {status === 'error' && (
+              <ErrorState message={error ?? 'Unknown error'} onRetry={reload} />
+            )}
+            {status === 'empty' && liveCandles.length === 0 && (
+              reason ? (
+                <EmptyState title="No data from broker" hint={reason} />
+              ) : (
+                <EmptyState
                   title="No candles for this contract"
                   hint="The provider returned no data for the selected contract and interval. Try another interval or contract."
                 />
-          )}
-          {showFeedNotice && status !== 'loading' && (
-            <FeedNotice
-              label={feed === 'stale' ? 'Live feed stale — waiting for ticks…' : 'Live feed unavailable — historical only'}
-            />
-          )}
-          {quoteError && status !== 'loading' && (
-            <BrokerErrorNotice message={quoteError} />
-          )}
-          {showReplayReady && <ReplayReadyState />}
-        </div>
-        <TerminalSidePanel
-          quote={quote}
-          contract={contract}
-          symbol={symbol}
-          exchange={exchange}
-          strategyId={strategyId}
-          strategyResult={strategyResult}
-          mode={mode}
-        />
+              )
+            )}
+            {showFeedNotice && status !== 'loading' && (
+              <FeedNotice
+                label={
+                  feed === 'stale'
+                    ? 'Live feed stale — waiting for ticks…'
+                    : 'Live feed unavailable — historical only'
+                }
+              />
+            )}
+            {quoteError && status !== 'loading' && <BrokerErrorNotice message={quoteError} />}
+            {showReplayReady && <ReplayReadyState />}
+          </div>
+        </main>
       </div>
 
-      {/* replay control bar */}
-      {mode === 'replay' && (
-        <ReplayControls
-          state={replay.state}
-          candles={windowed}
-          fromValue={fmtISTInput(effectiveWindow?.from ?? dataFrom)}
-          toValue={fmtISTInput(effectiveWindow?.to ?? dataTo)}
-          onFromChange={(v) => {
-            const from = istInputToEpoch(v)
-            if (from == null) return
-            const to = windowRange?.to ?? dataTo
-            setWindowRange({ from: Math.min(Math.max(from, dataFrom), to), to })
-          }}
-          onToChange={(v) => {
-            const to = istInputToEpoch(v)
-            if (to == null) return
-            const from = windowRange?.from ?? dataFrom
-            setWindowRange({ from, to: Math.max(Math.min(to, dataTo), from) })
-          }}
-          onPlay={replay.play}
-          onPause={replay.pause}
-          onResume={replay.resume}
-          onSeek={replay.seek}
-          onReset={replay.reset}
-          onJumpToLatest={replay.jumpToLatest}
-          onSpeed={replay.setSpeed}
-        />
-      )}
+      {/* TradingView Bottom Dock: Collapsible Position Management, Strategy Signals, Paper Trading, Replay */}
+      <BottomDock
+        quote={quote}
+        contract={contract}
+        symbol={symbol}
+        exchange={exchange}
+        strategyId={strategyId}
+        strategyResult={strategyResult}
+        mode={mode}
+        replayState={mode === 'replay' ? replay.state : undefined}
+        replayCandles={windowed}
+        replayAccount={replayAccount}
+        replayFromValue={fmtISTInput(effectiveWindow?.from ?? dataFrom)}
+        replayToValue={fmtISTInput(effectiveWindow?.to ?? dataTo)}
+        onReplayFromChange={(v) => {
+          const from = istInputToEpoch(v)
+          if (from == null) return
+          const to = windowRange?.to ?? dataTo
+          setWindowRange({ from: Math.min(Math.max(from, dataFrom), to), to })
+        }}
+        onReplayToChange={(v) => {
+          const to = istInputToEpoch(v)
+          if (to == null) return
+          const from = windowRange?.from ?? dataFrom
+          setWindowRange({ from, to: Math.max(Math.min(to, dataTo), from) })
+        }}
+        onReplayPlay={replay.play}
+        onReplayPause={replay.pause}
+        onReplayResume={replay.resume}
+        onReplaySeek={replay.seek}
+        onReplayReset={replay.reset}
+        onReplayJumpToLatest={replay.jumpToLatest}
+        onReplaySpeed={replay.setSpeed}
+      />
     </div>
   )
 })

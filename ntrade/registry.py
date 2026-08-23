@@ -175,6 +175,26 @@ class Registry:
         with self._lock:
             return dict(self._items)
 
+    def instantiate(self, id: str, **overrides: Any) -> Any:
+        """Instantiate a registered spec into a usable object.
+
+        For strategies/indicators (dataclasses carrying a ``factory``), calls
+        ``factory(**{**spec.params, **overrides})``. This is the single loader
+        every mode shares — backtest, replay, live, paper and the chart all go
+        through it, so registering once makes a component loadable everywhere.
+        Raises ``KeyError`` (frozen registry) if the id was never registered.
+        """
+        spec = self.get(id)
+        factory = getattr(spec, "factory", None)
+        if factory is None:
+            raise TypeError(
+                f"{id!r} has no factory; register it via "
+                f"spec.dataclass(..., factory=...) or strategy.instantiate"
+            )
+        params = dict(getattr(spec, "params", {}) or {})
+        params.update(overrides)
+        return factory(**params)
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._items)
@@ -219,15 +239,22 @@ class StrategySpec:
     """Contract for one strategy.
 
     ``params`` mirror the strategy ``__init__`` defaults so a caller can
-    instantiate from the spec alone: ``cls(**spec.params)``.
+    instantiate from the spec alone. ``factory`` turns the spec into a live
+    instance (``cls`` or a factory callable) — ``Registry.instantiate`` is the
+    single entry point every mode uses, so registration is the only step
+    needed to make a strategy loadable in backtest/replay/live/paper/chart.
     ``indicators`` lists the indicator ids the strategy reads (for UI overlay
     discovery; backend compute is driven by ``compute_bundle`` params).
+    ``overlay_fn`` (optional) builds the chart overlay markers from a candle
+    frame so the overlay pipeline is registry-driven, not hardcoded per id.
     """
 
     id: str
     label: str
     params: dict[str, Any] = field(default_factory=dict)
     indicators: list[str] = field(default_factory=list)
+    factory: Callable[..., Any] | None = None
+    overlay_fn: Callable[..., dict | None] | None = None
 
 
 indicator = Registry()

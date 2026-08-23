@@ -35,6 +35,26 @@ async function request<T>(path: string, params?: Record<string, string | number>
   return res.json() as Promise<T>
 }
 
+export interface CatalogResponse {
+  indicators: Array<{
+    id: string
+    label: string
+    params: Record<string, unknown>
+    series: boolean
+    plot: { series_key: string | null; pane: string; color: string | null } | null
+  }>
+  strategies: Array<{
+    id: string
+    label: string
+    params: Record<string, unknown>
+    indicators: string[]
+  }>
+}
+
+export async function fetchCatalog(): Promise<CatalogResponse> {
+  return request<CatalogResponse>('/market/catalog')
+}
+
 export interface PaperPosition {
   symbol: string
   quantity: number

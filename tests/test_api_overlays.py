@@ -66,4 +66,4 @@ def test_catalog_endpoint(client):
     ids = {i["id"] for i in body["indicators"]}
     assert {"vwap", "volume_profile", "halftrend"} <= ids
     strat_ids = {s["id"] for s in body["strategies"]}
-    assert {"halftrend"} <= strat_ids
+    assert {"halftrend", "orb_vwap"} <= strat_ids

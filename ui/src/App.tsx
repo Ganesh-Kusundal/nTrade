@@ -3,6 +3,7 @@ import { TradeScreen } from './pages/TradeScreen'
 import { useChartStore } from './store/chartStore'
 import { TerminalRibbon } from './components/TerminalRibbon'
 import { feedKind, FEED_META, type FeedKind } from './lib/feedStatus'
+import { refreshCatalog } from './lib/registry'
 
 export default function App() {
   const init = useChartStore((s) => s.init)
@@ -11,6 +12,9 @@ export default function App() {
   const provider = useChartStore((s) => s.provider)
 
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000))
+  // Bump after catalog merge so strategy/indicator pickers re-read registry maps.
+  const [catalogEpoch, setCatalogEpoch] = useState(0)
+
   useEffect(() => {
     const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000)
     return () => clearInterval(id)
@@ -18,6 +22,7 @@ export default function App() {
 
   useEffect(() => {
     void init()
+    void refreshCatalog().then(() => setCatalogEpoch((n) => n + 1))
   }, [init])
 
   const feed: FeedKind | null = provider
@@ -32,7 +37,7 @@ export default function App() {
           DEMO / {provider.provider === 'synthetic' ? 'SYNTHETIC' : 'OFFLINE'} DATA — live trading is unavailable
         </div>
       )}
-      <TerminalRibbon now={now} />
+      <TerminalRibbon now={now} catalogEpoch={catalogEpoch} />
       <main className="min-h-0 flex-1">
         <TradeScreen />
       </main>

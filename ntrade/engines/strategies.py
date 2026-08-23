@@ -114,20 +114,90 @@ class HalfTrendStrategy(Strategy):
 
 
 
-# Implementation lookup: maps a strategy id (the registry key / StrategySpec.id)
-# to the concrete class. The registry is the contract; this dict is the plumbing
-# that turns a spec into a live instance. New strategy → one register() + one
-# _strategy_classes line, zero call-site edits elsewhere.
-_strategy_classes = {
-    "halftrend": HalfTrendStrategy,
-}
+def _build_halftrend_overlay(df: pd.DataFrame, params: dict | None) -> dict | None:
+    """Chart overlay markers for HalfTrend — mirrors the strategy's signal math.
+
+    The paper/live path emits signals from ``HalfTrendStrategy``; this function
+    produces the same buy/sell markers from the same domain ``halftrend()`` math
+    so the chart overlay agrees with the kernel (zero-parity). Registered on the
+    spec so ``build_overlays`` is registry-driven, not hardcoded per id.
+    """
+    if df is None or df.empty:
+        return None
+    from ntrade.domain.analytics.halftrend import halftrend as _ht
+    amp = int(params.get("amplitude", 2)) if params else 2
+    cdev = int(params.get("channel_deviation", 2)) if params else 2
+    apt = int(params.get("atr_period", 100)) if params else 100
+    out = _ht(df, amplitude=amp, channel_deviation=cdev, atr_period=apt)
+    if out.empty:
+        return None
+    markers = []
+    # ponytail: skip ATR warmup — trend flips before atr_period are on
+    # uninitialized state and produce spurious signals
+    for i in range(apt, len(out)):
+        row = out.iloc[i]
+        if pd.notna(row.get("buySignal")) and bool(row["buySignal"]):
+            markers.append({
+                "index": int(i),
+                "time": int(df["time"].iloc[i]),
+                "side": "BUY",
+                "price": round(float(df["close"].iloc[i]), 4),
+                "ht": round(float(row["ht"]), 4) if pd.notna(row["ht"]) else None,
+                "trend": int(row["trend"]),
+            })
+        elif pd.notna(row.get("sellSignal")) and bool(row["sellSignal"]):
+            markers.append({
+                "index": int(i),
+                "time": int(df["time"].iloc[i]),
+                "side": "SELL",
+                "price": round(float(df["close"].iloc[i]), 4),
+                "ht": round(float(row["ht"]), 4) if pd.notna(row["ht"]) else None,
+                "trend": int(row["trend"]),
+            })
+    return {
+        "id": "halftrend",
+        "markers": markers,
+        "series": {
+            "ht": [round(float(x), 4) if pd.notna(x) else None
+                   for x in out["ht"].tolist()],
+            "trend": [int(x) for x in out["trend"].tolist()],
+            "atrHigh": [round(float(x), 4) if pd.notna(x) else None
+                        for x in out["atrHigh"].tolist()],
+            "atrLow": [round(float(x), 4) if pd.notna(x) else None
+                       for x in out["atrLow"].tolist()],
+        },
+    }
 
 
-# Register each strategy as a spec (id + default-constructor params + the
-# indicator ids it reads). Registration happens at import time so callers only
-# need to import `strategy` — the contract is populated by the side-effect.
+# Registration: spec carries the factory (turns id → instance) and optional
+# overlay builder. This is the ONLY place a strategy is wired — backtest,
+# replay, live, paper and the chart all resolve it through `strategy.instantiate`
+# / `spec.overlay_fn`, so adding a strategy is one register() call (plus the
+# class itself). No call-site edits elsewhere.
 strategy.register("halftrend", StrategySpec(
     id="halftrend", label="HalfTrend",
-    params={"amplitude": 2, "channel_deviation": 2, "atr_period": 100},
+    params={"amplitude": 2, "channel_deviation": 2, "atr_period": 100,
+            "symbol": None, "exchange": None},
     indicators=["halftrend"],
+    factory=HalfTrendStrategy,
+    overlay_fn=_build_halftrend_overlay,
+))
+
+# ORB+VWAP was already implemented but never registered — without registration
+# it was invisible to the registry loader, the catalog API, and the chart.
+# Registering it closes the doc/code gap (it is referenced in user guides).
+from ntrade.engines.orb_vwap import OpeningRangeBreakout  # noqa: E402
+
+strategy.register("orb_vwap", StrategySpec(
+    id="orb_vwap", label="Opening Range Breakout + VWAP",
+    params={"symbol": None, "exchange": "NFO", "timeframe": "1m",
+            "risk_per_trade_pct": 1.0, "lot_size": 1, "session_start": "09:15",
+            "orb_end": "09:30", "entry_end": "10:30", "ema_fast": 9,
+            "ema_slow": 21, "volume_mult": 1.5, "target_rr": 2.0,
+            "sl_buffer": 0.0, "max_trades_per_day": 2},
+    indicators=["vwap", "ema"],
+    factory=OpeningRangeBreakout,
+    # ORB trades the morning window against live VWAP/EMA state — the chart
+    # overlay is the same indicator series the strategy consumes, not a
+    # separate signal replay, so no custom overlay_fn is needed.
 ))

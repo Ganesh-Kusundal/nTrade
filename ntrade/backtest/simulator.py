@@ -146,6 +146,20 @@ class BacktestSimulator:
         self.kernel.register_strategy(strategy)
         return self
 
+    def load_strategy(self, strategy_id: str, **params) -> "BacktestSimulator":
+        """Resolve a strategy by registry id and register it for the run.
+
+        Same registry loader as live/replay/paper — registering once makes a
+        strategy backtestable without a mode-specific code path.
+        """
+        from ntrade.registry import strategy as _strategy_reg
+        inst = _strategy_reg.instantiate(strategy_id, **params)
+        self.kernel.register_strategy(inst)
+        spec = _strategy_reg.get(strategy_id)
+        if spec.indicators:
+            self.kernel.indicator_engine.set_indicators(spec.indicators)
+        return self
+
     # ------------------------------------------------------------------ run
     def run(self, data: pd.DataFrame) -> BacktestResult:
         """Run the kernel over an OHLCV frame (timestamp/open/high/low/close/volume)."""

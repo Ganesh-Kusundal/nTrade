@@ -21,10 +21,17 @@ class IndicatorEngine:
         self.ctx = context
         self.timeframe = timeframe
         self.params = params
+        # None = compute the default bundle; a tuple restricts to the named
+        # indicator ids (e.g. the ones a registered strategy reads).
+        self._indicators: tuple[str, ...] | None = None
         self._rows: dict[str, list[dict]] = {}
         self._latest: dict[str, dict] = {}
         self._max_rows = max_rows
         context.bus.subscribe(CandleClosedEvent, self.on_candle_closed)
+
+    def set_indicators(self, ids: tuple[str, ...] | None) -> None:
+        """Restrict the computed bundle to ``ids`` (or reset to default with None)."""
+        self._indicators = tuple(ids) if ids else None
 
     def warm_up(self, symbol: str, rows: list[dict]) -> None:
         """Seed the rolling OHLCV window from historical bars so live
@@ -52,7 +59,7 @@ class IndicatorEngine:
         if len(rows) < _MIN_ROWS:
             return
         frame = pd.DataFrame(rows[-500:])
-        bundle = compute_bundle(frame, **self.params)
+        bundle = compute_bundle(frame, indicators=self._indicators, **self.params)
         if not bundle:
             return
         instrument = self.ctx.instrument(event.symbol)

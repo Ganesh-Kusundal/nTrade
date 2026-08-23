@@ -28,7 +28,7 @@ export interface ReplayState {
   startIndex: number
 }
 
-export const SPEEDS = [1, 2, 5, 10, 30, 60] as const
+export const SPEEDS = [1, 2, 5, 10, 15, 20, 30, 60] as const
 export type ReplaySpeed = (typeof SPEEDS)[number]
 
 export type ReplayAction =

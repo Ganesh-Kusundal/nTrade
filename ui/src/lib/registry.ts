@@ -11,7 +11,14 @@
  *
  * Parity with the backend is enforced by ``tests/test_catalog_endpoint``
  * (the two registries must carry the same keys).
+ *
+ * The static maps below are the **offline fallback**. At runtime the app calls
+ * ``refreshCatalog()`` once (on bootstrap) to overlay the backend's
+ * authoritative registry, so a newly registered strategy/indicator shows up in
+ * the UI without a TS edit.
  */
+
+import { fetchCatalog, type CatalogResponse } from '../api/client'
 
 // ---------------------------------------------------------------------------------------
 // Types — mirror of ``ntrade/registry.py`` IndicatorSpec / StrategySpec / PlotSpec
@@ -42,7 +49,7 @@ export interface StrategySpec {
   category: 'scalper' | 'momentum' | 'mean_reversion'
   defaultParams?: Record<string, unknown>
   /** Which indicator keys the strategy consumes (used by TradeScreen to seed
-  *  toggle defaults — the strategy turns on its prerequisites). */
+   *  toggle defaults — the strategy turns on its prerequisites). */
   indicators: string[]
 }
 
@@ -65,6 +72,14 @@ export const indicators: Record<string, IndicatorSpec> = {
     category: 'profile',
     series: true,
     plot: { kind: 'profile', key: 'volume_profile', label: 'POC / VAH / VAL' },
+  },
+  adx: {
+    id: 'adx',
+    label: 'Average Directional Index (ADX 14)',
+    category: 'momentum',
+    series: true,
+    plot: { kind: 'line', key: 'adx', label: 'ADX (14) +DI / -DI' },
+    defaultParams: { adxPeriod: 14 },
   },
   absorptions: {
     id: 'absorption',
@@ -92,6 +107,70 @@ export const strategies: Record<string, StrategySpec> = {
     },
     indicators: [],
   },
+  // Static fallback entry so the UI can render ORB even before refreshCatalog()
+  // runs. The backend catalog is the source of truth and overrides these.
+  orb_vwap: {
+    id: 'orb_vwap',
+    label: 'Opening Range Breakout + VWAP',
+    category: 'momentum',
+    defaultParams: {
+      riskPerTradePct: 1.0,
+      emaFast: 9,
+      emaSlow: 21,
+      volumeMult: 1.5,
+      targetRR: 2.0,
+      maxTradesPerDay: 2,
+    },
+    indicators: ['vwap', 'ema'],
+  },
+}
+
+// ---------------------------------------------------------------------------------------
+// Catalog sync — overlay the backend registry onto the static mirrors.
+// ---------------------------------------------------------------------------------------
+
+/** Merge the backend catalog into the static mirrors (idempotent, run once). */
+export function mergeCatalog(catalog: CatalogResponse): void {
+  for (const s of catalog.strategies) {
+    if (!strategies[s.id]) {
+      strategies[s.id] = {
+        id: s.id,
+        label: s.label,
+        category: 'momentum',
+        defaultParams: {},
+        indicators: s.indicators ?? [],
+      }
+    } else {
+      // Keep static display fields but adopt backend truth for id/label/params.
+      strategies[s.id].id = s.id
+      strategies[s.id].label = s.label
+      strategies[s.id].indicators = s.indicators ?? strategies[s.id].indicators
+    }
+  }
+  for (const ind of catalog.indicators) {
+    if (!indicators[ind.id]) {
+      indicators[ind.id] = {
+        id: ind.id,
+        label: ind.label,
+        category: 'price',
+        series: ind.series,
+        plot: ind.plot
+          ? { kind: 'line', key: ind.plot.series_key ?? ind.id, label: ind.label }
+          : undefined,
+        defaultParams: ind.params ?? {},
+      }
+    }
+  }
+}
+
+/** Fetch + merge the backend catalog (safe: never throws, keeps static fallback). */
+export async function refreshCatalog(): Promise<void> {
+  try {
+    const catalog = await fetchCatalog()
+    mergeCatalog(catalog)
+  } catch {
+    /* offline — static mirrors remain authoritative */
+  }
 }
 
 // ---------------------------------------------------------------------------------------

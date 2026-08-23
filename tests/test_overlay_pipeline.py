@@ -124,4 +124,19 @@ def test_empty_candles_safe():
                          strategy_id="halftrend")
     assert dto.vwap is None
     assert dto.volume_profile is None
+    assert dto.adx is None
     assert dto.strategy is not None
+
+
+def test_adx_overlay_returns_adx_and_di_series():
+    candles = _make_session_candles(n=100, seed=7)
+    dto = build_overlays(candles, symbol="BANKNIFTY", exchange="NFO", interval="1m")
+    assert dto.adx is not None
+    assert dto.adx["period"] == 14
+    assert len(dto.adx["series"]) == 100
+    # After warm-up period, ADX, plus_di, and minus_di should be populated numbers
+    valid_points = [p for p in dto.adx["series"] if p["adx"] is not None]
+    assert len(valid_points) > 50
+    assert 0 <= valid_points[-1]["adx"] <= 100
+    assert 0 <= valid_points[-1]["plus_di"] <= 100
+    assert 0 <= valid_points[-1]["minus_di"] <= 100

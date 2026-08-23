@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { DEFAULT_EXCHANGE } from '../lib/constants'
 import type { WsStatus } from '../lib/feedStatus'
 import type { Contract, Interval, Mode, ProviderInfo, Quote, Root } from '../types/market'
+import type { IndicatorToggles } from '../components/ChartPanel'
 
 interface ChartState {
   // metadata
@@ -19,14 +20,28 @@ interface ChartState {
   mode: Mode
   quote: Quote | null
   quoteError: string | null
+  // strategy & indicators
+  strategyId: string
+  indicators: IndicatorToggles
+  rangeTicks: number | null
+  // modal states
+  isSymbolSearchOpen: boolean
+  isIndicatorsModalOpen: boolean
   // live socket status — lifted so the chrome can render the true feed state
   wsStatus: WsStatus
   // actions
   init: () => Promise<void>
   selectRoot: (root: string) => void
   selectContract: (contract: Contract) => void
+  selectRootAndContract: (root: string, contract: Contract) => void
   selectInterval: (interval: Interval) => void
   setMode: (mode: Mode) => void
+  setStrategyId: (id: string) => void
+  setIndicators: (updater: (prev: IndicatorToggles) => IndicatorToggles) => void
+  toggleIndicator: (key: keyof IndicatorToggles) => void
+  setRangeTicks: (ticks: number | null) => void
+  setSymbolSearchOpen: (open: boolean) => void
+  setIndicatorsModalOpen: (open: boolean) => void
   refreshQuote: (symbol: string) => Promise<void>
   setWsStatus: (status: WsStatus) => void
 }
@@ -45,6 +60,16 @@ export const useChartStore = create<ChartState>()(
       mode: 'live',
       quote: null,
       quoteError: null,
+      strategyId: 'halftrend',
+      indicators: {
+        vwap: false,
+        volumeProfile: false,
+        strategy: true,
+        adx: false,
+      },
+      rangeTicks: null,
+      isSymbolSearchOpen: false,
+      isIndicatorsModalOpen: false,
       wsStatus: 'off',
 
       init: async () => {
@@ -80,9 +105,38 @@ export const useChartStore = create<ChartState>()(
         void get().refreshQuote(contract.symbol)
       },
 
+      selectRootAndContract: (root, contract) => {
+        set({ root, contract, quote: null, quoteError: null })
+        api
+          .contracts(root)
+          .then((res) => {
+            set({ contracts: res.contracts ?? [], contractsError: null })
+          })
+          .catch((err) => set({ contractsError: err instanceof Error ? err.message : String(err) }))
+        void get().refreshQuote(contract.symbol)
+      },
+
       selectInterval: (interval) => set({ interval }),
 
       setMode: (mode) => set({ mode }),
+
+      setStrategyId: (strategyId) => set({ strategyId }),
+
+      setIndicators: (updater) => set((s) => ({ indicators: updater(s.indicators) })),
+
+      toggleIndicator: (key) =>
+        set((s) => ({
+          indicators: {
+            ...s.indicators,
+            [key]: !s.indicators[key],
+          },
+        })),
+
+      setRangeTicks: (rangeTicks) => set({ rangeTicks }),
+
+      setSymbolSearchOpen: (isSymbolSearchOpen) => set({ isSymbolSearchOpen }),
+
+      setIndicatorsModalOpen: (isIndicatorsModalOpen) => set({ isIndicatorsModalOpen }),
 
       refreshQuote: async (symbol) => {
         try {
@@ -98,9 +152,11 @@ export const useChartStore = create<ChartState>()(
     }),
     {
       name: 'ntrade.chart',
-      // Only the user's selection survives a reload — provider/roots/contracts
-      // and live quote are re-fetched on init (they go stale in minutes).
-      partialize: (s) => ({ interval: s.interval }),
+      partialize: (s) => ({
+        interval: s.interval,
+        strategyId: s.strategyId,
+        indicators: s.indicators,
+      }),
     },
   ),
 )

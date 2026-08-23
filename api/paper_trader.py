@@ -281,23 +281,23 @@ class PaperTraderService:
     def _build_session(self, symbol: str, exchange: str, lot_size: int | None,
                        strategy: str | None, strategy_params: dict | None) -> None:
         from ntrade.registry import strategy as _strategy_reg
-        from ntrade.engines.strategies import _strategy_classes
         from ntrade.kernel.trading_session import TradingSession
 
-        # Resolve the strategy by id through the registry — no hardcoded class
-        # import. The spec carries the constructor defaults; _strategy_classes
-        # maps the spec id to the concrete implementation.
+        # Resolve the strategy by id through the registry's single factory —
+        # one registration point makes it loadable in backtest/replay/live/
+        # paper. The spec carries the constructor defaults; strategy_params
+        # override them per request.
         self._lot_size = self._resolve_lot_size(symbol, lot_size)
         strategy_id = (strategy or "halftrend").strip()
         spec = _strategy_reg.get(strategy_id)
-        cls = _strategy_classes[spec.id]
         kw: dict = {}
-        kw.setdefault("amplitude", 2)
-        kw.setdefault("channel_deviation", 2)
-        kw.setdefault("atr_period", 100)
+        # The spec params already include amplitude/channel_deviation/atr_period
+        # defaults for halftrend; merge any caller-supplied overrides.
         if strategy_params:
             kw.update(strategy_params)
-        inst = cls(symbol=symbol, exchange=exchange, lot_size=self._lot_size, **kw)
+        inst = _strategy_reg.instantiate(strategy_id, symbol=symbol,
+                                         exchange=exchange,
+                                         lot_size=self._lot_size, **kw)
         session = TradingSession.paper(initial_cash=self._initial_cash,
                                        session_id=f"paper-{symbol}",
                                        store=self._store)
@@ -360,6 +360,13 @@ class PaperTraderService:
                             k.sync_positions()
                         except Exception:  # noqa: BLE001
                             pass  # reconciliation failure keeps prior state
+                        # Backtest and LiveRunner call risk_engine.check() every
+                        # iteration; the paper snapshot loop must too or daily-
+                        # loss / drawdown breakers never fire between signals.
+                        try:
+                            k.risk_engine.check()
+                        except Exception:  # noqa: BLE001
+                            pass
                         for event in k.bus.history:
                             if isinstance(event, OrderFilledEvent):
                                 self._record_fill(event)
